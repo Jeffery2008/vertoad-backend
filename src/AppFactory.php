@@ -15,9 +15,12 @@ use VertoAD\Http\Middleware\ApiEnvelopeMiddleware;
 use VertoAD\Infrastructure\Database\ConnectionFactory;
 use VertoAD\Repository\AuditLogRepository;
 use VertoAD\Repository\AuditLogRepositoryInterface;
+use VertoAD\Repository\PointsLedgerRepository;
+use VertoAD\Repository\PointsLedgerRepositoryInterface;
 use VertoAD\Repository\SystemConfigRepository;
 use VertoAD\Repository\SystemConfigRepositoryInterface;
 use VertoAD\Service\AuditLogService;
+use VertoAD\Service\PointsLedgerService;
 use VertoAD\Service\SystemConfigService;
 
 final class AppFactory
@@ -39,6 +42,10 @@ final class AppFactory
                     new AuditLogRepository($connection),
                 AuditLogService::class => static fn (AuditLogRepositoryInterface $repository): AuditLogService =>
                     new AuditLogService($repository),
+                PointsLedgerRepositoryInterface::class => static fn (Connection $connection): PointsLedgerRepositoryInterface =>
+                    new PointsLedgerRepository($connection),
+                PointsLedgerService::class => static fn (PointsLedgerRepositoryInterface $repository): PointsLedgerService =>
+                    new PointsLedgerService($repository),
                 SystemConfigRepositoryInterface::class => static fn (Connection $connection): SystemConfigRepositoryInterface =>
                     new SystemConfigRepository($connection),
                 SystemConfigService::class => static fn (SystemConfigRepositoryInterface $repository): SystemConfigService =>

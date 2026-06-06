@@ -24,16 +24,16 @@ if (function_exists('yaml_parse_file')) {
     exit(0);
 }
 
-$requiredFragments = [
-    'openapi: 3.1.0',
-    '/api/v1/health:',
-    '/api/v1/cron/status:',
-    'SuccessEnvelope:',
-    'ErrorEnvelope:',
+$requiredPatterns = [
+    'openapi: 3.1.0' => '/^openapi:\s*3\.1\.0\s*$/m',
+    '/api/v1/health:' => '/^\s{2}\/api\/v1\/health:\s*$/m',
+    '/api/v1/cron/status:' => '/^\s{2}\/api\/v1\/cron\/status:\s*$/m',
+    'SuccessEnvelope:' => '/^\s{4}SuccessEnvelope:\s*$/m',
+    'ErrorEnvelope:' => '/^\s{4}ErrorEnvelope:\s*$/m',
 ];
 
-foreach ($requiredFragments as $fragment) {
-    if (!str_contains($contents, $fragment)) {
+foreach ($requiredPatterns as $fragment => $pattern) {
+    if (preg_match($pattern, $contents) !== 1) {
         fwrite(STDERR, "OpenAPI contract is missing required fragment: {$fragment}\n");
         exit(1);
     }
