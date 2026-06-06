@@ -1,0 +1,85 @@
+<?php
+
+declare(strict_types=1);
+
+return [
+    'app' => [
+        'name' => getenv('APP_NAME') ?: 'VertoAD API',
+        'env' => getenv('APP_ENV') ?: 'local',
+        'debug' => filter_var(getenv('APP_DEBUG') ?: false, FILTER_VALIDATE_BOOL),
+    ],
+    'database' => [
+        'driver' => getenv('DB_DRIVER') ?: 'pdo_mysql',
+        'host' => getenv('DB_HOST') ?: '127.0.0.1',
+        'port' => (int) (getenv('DB_PORT') ?: 3306),
+        'database' => getenv('DB_DATABASE') ?: 'vertoad',
+        'username' => getenv('DB_USERNAME') ?: 'vertoad',
+        'password' => getenv('DB_PASSWORD') ?: '',
+        'charset' => getenv('DB_CHARSET') ?: 'utf8mb4',
+    ],
+    'redis' => [
+        'host' => getenv('REDIS_HOST') ?: '127.0.0.1',
+        'port' => (int) (getenv('REDIS_PORT') ?: 6379),
+        'password' => getenv('REDIS_PASSWORD') ?: '',
+        'database' => (int) (getenv('REDIS_DATABASE') ?: 0),
+        'prefix' => getenv('REDIS_PREFIX') ?: 'vertoad:',
+    ],
+    'storage' => [
+        's3' => [
+            'endpoint' => getenv('S3_ENDPOINT') ?: '',
+            'region' => getenv('S3_REGION') ?: 'auto',
+            'bucket' => getenv('S3_BUCKET') ?: 'vertoad',
+            'access_key_id' => getenv('S3_ACCESS_KEY_ID') ?: '',
+            'secret_access_key' => getenv('S3_SECRET_ACCESS_KEY') ?: '',
+            'path_style_endpoint' => filter_var(getenv('S3_PATH_STYLE_ENDPOINT') ?: true, FILTER_VALIDATE_BOOL),
+            'public_base_url' => getenv('R2_PUBLIC_BASE_URL') ?: '',
+        ],
+    ],
+    'oauth' => [
+        'private_key_path' => getenv('OAUTH_PRIVATE_KEY_PATH') ?: 'storage/oauth/private.key',
+        'public_key_path' => getenv('OAUTH_PUBLIC_KEY_PATH') ?: 'storage/oauth/public.key',
+        'encryption_key' => getenv('OAUTH_ENCRYPTION_KEY') ?: '',
+        'authorization_url' => getenv('OAUTH_AUTHORIZATION_URL') ?: '',
+        'token_url' => getenv('OAUTH_TOKEN_URL') ?: '',
+    ],
+    'cron' => [
+        'token' => getenv('CRON_API_TOKEN') ?: '',
+        'allowed_ips' => array_values(array_filter(array_map(
+            static fn (string $ip): string => trim($ip),
+            explode(',', getenv('CRON_API_ALLOWED_IPS') ?: '127.0.0.1,::1')
+        ))),
+        'jobs' => [
+            'redis-events-consume',
+            'aggregate-statistics',
+            'archive-parquet',
+            'duckdb-cold-query',
+            'ai-review-queue',
+            'fraud-feature-compute',
+            'expired-token-cleanup',
+            'config-cache-refresh',
+            'backup-check',
+            'webhook-retry',
+        ],
+    ],
+    'cloudflare' => [
+        'real_ip_header' => getenv('CLOUDFLARE_REAL_IP_HEADER') ?: 'CF-Connecting-IP',
+        'trusted_proxies' => array_values(array_filter(array_map(
+            static fn (string $cidr): string => trim($cidr),
+            explode(',', getenv('CLOUDFLARE_TRUSTED_PROXIES') ?: '')
+        ))),
+    ],
+    'turnstile' => [
+        'site_key' => getenv('TURNSTILE_SITE_KEY') ?: '',
+        'secret_key' => getenv('TURNSTILE_SECRET_KEY') ?: '',
+        'verify_url' => getenv('TURNSTILE_VERIFY_URL') ?: 'https://challenges.cloudflare.com/turnstile/v0/siteverify',
+    ],
+    'ai_review' => [
+        'base_url' => getenv('AI_REVIEW_BASE_URL') ?: '',
+        'api_key' => getenv('AI_REVIEW_API_KEY') ?: '',
+        'model' => getenv('AI_REVIEW_MODEL') ?: '',
+        'timeout_seconds' => (int) (getenv('AI_REVIEW_TIMEOUT_SECONDS') ?: 60),
+        'max_input_tokens' => (int) (getenv('AI_REVIEW_MAX_INPUT_TOKENS') ?: 12000),
+        'max_output_tokens' => (int) (getenv('AI_REVIEW_MAX_OUTPUT_TOKENS') ?: 2000),
+        'temperature' => (float) (getenv('AI_REVIEW_TEMPERATURE') ?: 0.2),
+    ],
+];

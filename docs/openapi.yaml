@@ -1,0 +1,295 @@
+openapi: 3.1.0
+info:
+  title: VertoAD API
+  version: 0.1.0
+  summary: Initial VertoAD backend API contract.
+  description: |
+    VertoAD API endpoints use a consistent JSON response envelope:
+    `data`, `error`, `meta`, and `request_id`.
+
+    Current conventions:
+    - Base path: `/api/v1`.
+    - Request and response bodies are JSON unless otherwise documented.
+    - Successful responses set `error` to `null`.
+    - Failed responses set `data` to `null` and populate `error`.
+    - Every response includes `request_id` for log correlation.
+    - Authenticated routes will use OAuth2 bearer tokens once authorization is enabled.
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+servers:
+  - url: http://127.0.0.1:8080
+    description: Local PHP built-in server
+  - url: https://api.example.com
+    description: Production placeholder
+tags:
+  - name: Health
+    description: Runtime liveness and readiness checks.
+  - name: Cron
+    description: Protected backend maintenance task endpoints.
+paths:
+  /api/v1/health:
+    get:
+      tags:
+        - Health
+      operationId: getHealth
+      summary: Check API health.
+      description: Returns the standard response envelope with basic service health.
+      security: []
+      responses:
+        "200":
+          description: API is reachable.
+          headers:
+            X-Request-Id:
+              description: Request correlation identifier.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/HealthData"
+                      meta:
+                        $ref: "#/components/schemas/HealthMeta"
+              examples:
+                healthy:
+                  summary: Healthy API response
+                  value:
+                    data:
+                      status: ok
+                      service: vertoad-api
+                      environment: local
+                      timestamp: "2026-06-06T14:00:00Z"
+                    error: null
+                    meta:
+                      version: "0.1.0"
+                    request_id: "req_01JZ0000000000000000000000"
+        default:
+          $ref: "#/components/responses/StandardError"
+  /api/v1/cron/status:
+    get:
+      tags:
+        - Cron
+      operationId: getCronStatus
+      summary: Check protected cron API status.
+      description: Returns enabled backend maintenance jobs and lock provider details.
+      security: []
+      parameters:
+        - name: X-Cron-Token
+          in: header
+          required: true
+          description: Shared secret configured for the protected Cron API.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Cron API is reachable and the caller is authorized.
+          headers:
+            X-Request-Id:
+              description: Request correlation identifier.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/CronStatusData"
+              examples:
+                available:
+                  summary: Authorized cron status response
+                  value:
+                    data:
+                      status: ok
+                      jobs:
+                        - redis-events-consume
+                        - aggregate-statistics
+                        - archive-parquet
+                        - duckdb-cold-query
+                        - ai-review-queue
+                        - fraud-feature-compute
+                        - expired-token-cleanup
+                        - config-cache-refresh
+                        - backup-check
+                        - webhook-retry
+                      lock_provider: redis
+                    error: null
+                    meta:
+                      api_version: v1
+                    request_id: "req_01JZ0000000000000000000000"
+        "401":
+          $ref: "#/components/responses/StandardError"
+        "403":
+          $ref: "#/components/responses/StandardError"
+        default:
+          $ref: "#/components/responses/StandardError"
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      description: Placeholder OAuth2 scheme for future protected API endpoints.
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.example.com/oauth/authorize
+          tokenUrl: https://auth.example.com/oauth/token
+          scopes:
+            ads:read: Read advertising resources.
+            ads:write: Create and update advertising resources.
+            admin: Manage tenant and platform configuration.
+  responses:
+    StandardError:
+      description: Standard API error response.
+      headers:
+        X-Request-Id:
+          description: Request correlation identifier.
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          examples:
+            validationError:
+              summary: Validation error
+              value:
+                data: null
+                error:
+                  code: validation_failed
+                  message: One or more fields are invalid.
+                  details:
+                    fields:
+                      email:
+                        - Must be a valid email address.
+                meta: {}
+                request_id: "req_01JZ0000000000000000000000"
+  schemas:
+    EnvelopeBase:
+      type: object
+      required:
+        - data
+        - error
+        - meta
+        - request_id
+      properties:
+        data:
+          description: Response payload for successful requests; null for errors.
+        error:
+          description: Error payload for failed requests; null for success.
+        meta:
+          type: object
+          description: Response metadata such as pagination, version, or diagnostics.
+          additionalProperties: true
+        request_id:
+          type: string
+          minLength: 1
+          description: Correlation identifier used for logs and support.
+      additionalProperties: false
+    SuccessEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/EnvelopeBase"
+        - type: object
+          properties:
+            error:
+              type: "null"
+    ErrorEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/EnvelopeBase"
+        - type: object
+          properties:
+            data:
+              type: "null"
+            error:
+              $ref: "#/components/schemas/ErrorObject"
+    ErrorObject:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          minLength: 1
+          description: Stable machine-readable error code.
+          examples:
+            - validation_failed
+            - unauthorized
+            - forbidden
+            - not_found
+            - rate_limited
+            - internal_error
+        message:
+          type: string
+          minLength: 1
+          description: Human-readable error message safe to return to API clients.
+        details:
+          description: Optional structured details for client-side handling.
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: array
+              items: {}
+            - type: string
+            - type: "null"
+      additionalProperties: false
+    HealthData:
+      type: object
+      required:
+        - status
+        - service
+        - environment
+        - timestamp
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+        service:
+          type: string
+          examples:
+            - vertoad-api
+        environment:
+          type: string
+          examples:
+            - local
+            - testing
+            - production
+        timestamp:
+          type: string
+          format: date-time
+      additionalProperties: false
+    HealthMeta:
+      type: object
+      properties:
+        version:
+          type: string
+          examples:
+            - "0.1.0"
+      additionalProperties: true
+    CronStatusData:
+      type: object
+      required:
+        - status
+        - jobs
+        - lock_provider
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+        jobs:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        lock_provider:
+          type: string
+          enum:
+            - redis
+      additionalProperties: false
+security:
+  - OAuth2: []

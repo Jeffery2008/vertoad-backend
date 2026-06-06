@@ -1,0 +1,11 @@
+vendor/
+.phpunit.cache/
+.env
+.env.*
+!.env.example
+
+logs/
+cache/
+build/
+dist/
+coverage/
