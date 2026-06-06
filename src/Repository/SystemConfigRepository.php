@@ -6,7 +6,7 @@ namespace VertoAD\Repository;
 
 use Doctrine\DBAL\Connection;
 
-final class SystemConfigRepository
+final class SystemConfigRepository implements SystemConfigRepositoryInterface
 {
     public function __construct(private readonly Connection $connection)
     {

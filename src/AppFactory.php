@@ -13,6 +13,9 @@ use VertoAD\Http\Action\Cron\CronStatusAction;
 use VertoAD\Http\Middleware\CronAuthMiddleware;
 use VertoAD\Http\Middleware\ApiEnvelopeMiddleware;
 use VertoAD\Infrastructure\Database\ConnectionFactory;
+use VertoAD\Repository\SystemConfigRepository;
+use VertoAD\Repository\SystemConfigRepositoryInterface;
+use VertoAD\Service\SystemConfigService;
 
 final class AppFactory
 {
@@ -29,6 +32,10 @@ final class AppFactory
             ->addDefinitions([
                 'settings' => $settings,
                 Connection::class => static fn (): Connection => (new ConnectionFactory())->create($settings['database']),
+                SystemConfigRepositoryInterface::class => static fn (Connection $connection): SystemConfigRepositoryInterface =>
+                    new SystemConfigRepository($connection),
+                SystemConfigService::class => static fn (SystemConfigRepositoryInterface $repository): SystemConfigService =>
+                    new SystemConfigService($repository),
                 CronStatusAction::class => static fn (): CronStatusAction => new CronStatusAction($settings),
                 CronAuthMiddleware::class => static fn (): CronAuthMiddleware => new CronAuthMiddleware(
                     SlimAppFactory::determineResponseFactory(),
