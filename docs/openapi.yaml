@@ -2,18 +2,19 @@ openapi: 3.1.0
 info:
   title: VertoAD API
   version: 0.1.0
-  summary: Initial VertoAD backend API contract.
+  summary: Current VertoAD backend public API contract.
   description: |
-    VertoAD API endpoints use a consistent JSON response envelope:
-    `data`, `error`, `meta`, and `request_id`.
+    This contract documents only public HTTP endpoints that are implemented in
+    the current backend slice.
 
-    Current conventions:
+    Current surface:
     - Base path: `/api/v1`.
-    - Request and response bodies are JSON unless otherwise documented.
-    - Successful responses set `error` to `null`.
-    - Failed responses set `data` to `null` and populate `error`.
-    - Every response includes `request_id` for log correlation.
-    - Authenticated routes will use OAuth2 bearer tokens once authorization is enabled.
+    - Responses are JSON unless otherwise documented.
+    - `/api/v1/health` is public.
+    - `/api/v1/cron/status` is protected by the cron shared secret and optional
+      IP allowlist.
+    - OAuth2 and the standard response envelope are roadmap items and are not
+      documented as active endpoint behavior until implemented.
 jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
 servers:
   - url: http://127.0.0.1:8080
@@ -32,144 +33,107 @@ paths:
         - Health
       operationId: getHealth
       summary: Check API health.
-      description: Returns the standard response envelope with basic service health.
+      description: Returns basic service liveness metadata.
       security: []
       responses:
         "200":
           description: API is reachable.
-          headers:
-            X-Request-Id:
-              description: Request correlation identifier.
-              schema:
-                type: string
           content:
             application/json:
               schema:
-                allOf:
-                  - $ref: "#/components/schemas/SuccessEnvelope"
-                  - type: object
-                    properties:
-                      data:
-                        $ref: "#/components/schemas/HealthData"
-                      meta:
-                        $ref: "#/components/schemas/HealthMeta"
+                $ref: "#/components/schemas/HealthData"
               examples:
                 healthy:
                   summary: Healthy API response
                   value:
-                    data:
-                      status: ok
-                      service: vertoad-api
-                      environment: local
-                      timestamp: "2026-06-06T14:00:00Z"
-                    error: null
-                    meta:
-                      version: "0.1.0"
-                    request_id: "req_01JZ0000000000000000000000"
+                    status: ok
+                    service: vertoad-api
+                    environment: local
+                    timestamp: "2026-06-06T14:00:00+00:00"
         default:
-          $ref: "#/components/responses/StandardError"
+          $ref: "#/components/responses/Error"
   /api/v1/cron/status:
     get:
       tags:
         - Cron
       operationId: getCronStatus
       summary: Check protected cron API status.
-      description: Returns enabled backend maintenance jobs and lock provider details.
-      security: []
+      description: Returns configured backend maintenance jobs and lock provider details.
+      security:
+        - CronTokenHeader: []
+        - CronTokenQuery: []
       parameters:
         - name: X-Cron-Token
           in: header
-          required: true
-          description: Shared secret configured for the protected Cron API.
+          required: false
+          description: Shared secret configured for the protected Cron API. Prefer this header over the query parameter.
+          schema:
+            type: string
+        - name: token
+          in: query
+          required: false
+          description: Query-string fallback for the cron shared secret.
           schema:
             type: string
       responses:
         "200":
           description: Cron API is reachable and the caller is authorized.
-          headers:
-            X-Request-Id:
-              description: Request correlation identifier.
-              schema:
-                type: string
           content:
             application/json:
               schema:
-                allOf:
-                  - $ref: "#/components/schemas/SuccessEnvelope"
-                  - type: object
-                    properties:
-                      data:
-                        $ref: "#/components/schemas/CronStatusData"
+                $ref: "#/components/schemas/CronStatusData"
               examples:
                 available:
                   summary: Authorized cron status response
                   value:
-                    data:
-                      status: ok
-                      jobs:
-                        - redis-events-consume
-                        - aggregate-statistics
-                        - archive-parquet
-                        - duckdb-cold-query
-                        - ai-review-queue
-                        - fraud-feature-compute
-                        - expired-token-cleanup
-                        - config-cache-refresh
-                        - backup-check
-                        - webhook-retry
-                      lock_provider: redis
-                    error: null
-                    meta:
-                      api_version: v1
-                    request_id: "req_01JZ0000000000000000000000"
+                    status: ok
+                    jobs:
+                      - redis-events-consume
+                      - aggregate-statistics
+                      - archive-parquet
+                      - duckdb-cold-query
+                      - ai-review-queue
+                      - fraud-feature-compute
+                      - expired-token-cleanup
+                      - config-cache-refresh
+                      - backup-check
+                      - webhook-retry
+                    lock_provider: redis
         "401":
-          $ref: "#/components/responses/StandardError"
+          $ref: "#/components/responses/Error"
         "403":
-          $ref: "#/components/responses/StandardError"
+          $ref: "#/components/responses/Error"
         default:
-          $ref: "#/components/responses/StandardError"
+          $ref: "#/components/responses/Error"
 components:
   securitySchemes:
-    OAuth2:
-      type: oauth2
-      description: Placeholder OAuth2 scheme for future protected API endpoints.
-      flows:
-        authorizationCode:
-          authorizationUrl: https://auth.example.com/oauth/authorize
-          tokenUrl: https://auth.example.com/oauth/token
-          scopes:
-            ads:read: Read advertising resources.
-            ads:write: Create and update advertising resources.
-            admin: Manage tenant and platform configuration.
+    CronTokenHeader:
+      type: apiKey
+      in: header
+      name: X-Cron-Token
+      description: Shared secret for protected cron endpoints.
+    CronTokenQuery:
+      type: apiKey
+      in: query
+      name: token
+      description: Query-string fallback for protected cron endpoints.
   responses:
-    StandardError:
-      description: Standard API error response.
-      headers:
-        X-Request-Id:
-          description: Request correlation identifier.
-          schema:
-            type: string
+    Error:
+      description: Error response.
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/ErrorEnvelope"
+            $ref: "#/components/schemas/ErrorObject"
           examples:
-            validationError:
-              summary: Validation error
+            unauthorized:
+              summary: Missing or invalid cron token
               value:
-                data: null
-                error:
-                  code: validation_failed
-                  message: One or more fields are invalid.
-                  details:
-                    fields:
-                      email:
-                        - Must be a valid email address.
-                meta: {}
-                request_id: "req_01JZ0000000000000000000000"
+                code: unauthorized
+                message: Cron token is missing or invalid.
   schemas:
     EnvelopeBase:
       type: object
+      description: Reserved shared envelope shape for future authenticated API slices; current implemented paths do not use it.
       required:
         - data
         - error
@@ -216,25 +180,12 @@ components:
           minLength: 1
           description: Stable machine-readable error code.
           examples:
-            - validation_failed
             - unauthorized
             - forbidden
-            - not_found
-            - rate_limited
-            - internal_error
         message:
           type: string
           minLength: 1
           description: Human-readable error message safe to return to API clients.
-        details:
-          description: Optional structured details for client-side handling.
-          oneOf:
-            - type: object
-              additionalProperties: true
-            - type: array
-              items: {}
-            - type: string
-            - type: "null"
       additionalProperties: false
     HealthData:
       type: object
@@ -291,5 +242,3 @@ components:
           enum:
             - redis
       additionalProperties: false
-security:
-  - OAuth2: []

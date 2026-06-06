@@ -45,6 +45,25 @@ composer openapi:check
 
 The OpenAPI contract lives at `docs/openapi.yaml`. The check command requires the PHP yaml extension because it uses `yaml_parse_file`.
 
+The current public contract intentionally documents only implemented endpoints:
+
+- `GET /api/v1/health`
+- `GET /api/v1/cron/status`
+
+Do not add public advertiser, publisher, ledger, reporting, OAuth, or admin endpoints to OpenAPI until the corresponding backend route and response shape exist.
+
+## Backend Boundaries
+
+The current backend slice establishes the Slim application shell, environment-backed settings, health checks, and the protected Cron API surface.
+
+System configuration is currently loaded from `.env` into PHP settings for infrastructure integrations such as MySQL, Redis, S3-compatible storage, OAuth key paths, cron protection, Cloudflare real IP handling, Turnstile, and AI review. The product roadmap calls for business configuration to move into versioned, auditable admin-managed records; until that storage and API surface exists, docs should treat `.env` settings as runtime infrastructure config only.
+
+Audit logging is a required platform boundary for sensitive operations, configuration changes, ledger adjustments, cron operations, and support/admin actions. It is not currently exposed as a public API in this slice, so contracts should describe audit behavior only when the backing implementation is present.
+
+The points ledger is a core planned boundary for advertiser balances, publisher earnings, adjustments, reversals, recharge keys, and withdrawals. Public ledger APIs are not part of the current implemented HTTP surface and should remain out of OpenAPI until routes, persistence, and tests are implemented.
+
+Near-term backend contract work should keep OpenAPI aligned with implemented routes, then add authenticated envelopes, OAuth2-protected resources, audit records, and ledger operations as those slices land.
+
 ## Healthcheck
 
 ```powershell
