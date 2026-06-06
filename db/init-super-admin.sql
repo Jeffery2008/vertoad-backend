@@ -34,22 +34,50 @@ SET @super_admin_role_id = LAST_INSERT_ID();
 
 INSERT INTO permissions (slug, description)
 VALUES
-    ('system.manage', 'Manage global platform settings.'),
-    ('organizations.manage', 'Manage organizations and memberships.'),
-    ('billing.manage', 'Manage recharge keys and ledger operations.'),
-    ('ads.manage', 'Manage sites, ad slots, campaigns, and creatives.'),
-    ('audit.read', 'Read audit and error logs.')
+    ('system.config.read', 'Read versioned platform configuration.'),
+    ('system.config.write', 'Create new platform configuration versions.'),
+    ('system.config.rollback', 'Rollback platform configuration to a prior version.'),
+    ('audit.logs.read', 'Read audit logs.'),
+    ('audit.logs.read_raw', 'Read full raw audit or error log context.'),
+    ('ledger.read', 'Read organization ledger entries and balances.'),
+    ('ledger.adjust', 'Create ledger adjustments and reversals.'),
+    ('recharge.keys.read', 'Read recharge key metadata.'),
+    ('recharge.keys.generate', 'Generate recharge key batches.'),
+    ('recharge.keys.redeem', 'Redeem recharge keys into organization points.'),
+    ('recharge.keys.view_plaintext', 'View encrypted recharge key plaintext.'),
+    ('publisher.sites.read', 'Read publisher site inventory.'),
+    ('publisher.sites.manage', 'Create and update publisher sites.'),
+    ('publisher.sites.verify', 'Run publisher site verification checks.'),
+    ('publisher.slots.read', 'Read publisher ad slots.'),
+    ('publisher.slots.manage', 'Create and update publisher ad slots.'),
+    ('cron.status.read', 'Read protected Cron job status metadata.'),
+    ('organizations.members.read', 'Read organization membership and role assignments.'),
+    ('organizations.members.manage', 'Manage organization membership and role assignments.')
 ON DUPLICATE KEY UPDATE description = VALUES(description);
 
 INSERT INTO role_permissions (role_id, permission_id)
 SELECT @super_admin_role_id, id
 FROM permissions
 WHERE slug IN (
-    'system.manage',
-    'organizations.manage',
-    'billing.manage',
-    'ads.manage',
-    'audit.read'
+    'system.config.read',
+    'system.config.write',
+    'system.config.rollback',
+    'audit.logs.read',
+    'audit.logs.read_raw',
+    'ledger.read',
+    'ledger.adjust',
+    'recharge.keys.read',
+    'recharge.keys.generate',
+    'recharge.keys.redeem',
+    'recharge.keys.view_plaintext',
+    'publisher.sites.read',
+    'publisher.sites.manage',
+    'publisher.sites.verify',
+    'publisher.slots.read',
+    'publisher.slots.manage',
+    'cron.status.read',
+    'organizations.members.read',
+    'organizations.members.manage'
 );
 
 INSERT INTO user_roles (user_id, role_id, organization_id)

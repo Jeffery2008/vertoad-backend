@@ -17,6 +17,8 @@ use VertoAD\Repository\AdSlotRepository;
 use VertoAD\Repository\AdSlotRepositoryInterface;
 use VertoAD\Repository\AuditLogRepository;
 use VertoAD\Repository\AuditLogRepositoryInterface;
+use VertoAD\Repository\OrganizationMembershipRepository;
+use VertoAD\Repository\OrganizationMembershipRepositoryInterface;
 use VertoAD\Repository\PointsLedgerRepository;
 use VertoAD\Repository\PointsLedgerRepositoryInterface;
 use VertoAD\Repository\PublisherSiteRepository;
@@ -25,14 +27,18 @@ use VertoAD\Repository\RechargeKeyRepository;
 use VertoAD\Repository\RechargeKeyRepositoryInterface;
 use VertoAD\Repository\SystemConfigRepository;
 use VertoAD\Repository\SystemConfigRepositoryInterface;
+use VertoAD\Repository\UserIdentityRepository;
+use VertoAD\Repository\UserIdentityRepositoryInterface;
 use VertoAD\Service\AdSlotSetupService;
 use VertoAD\Service\AuditLogService;
 use VertoAD\Service\PlaceholderRechargeKeyPlaintextCipher;
+use VertoAD\Service\PermissionMatcher;
 use VertoAD\Service\PointsLedgerService;
 use VertoAD\Service\PublisherSiteVerificationService;
 use VertoAD\Service\RechargeKeyPlaintextCipherInterface;
 use VertoAD\Service\RechargeKeyService;
 use VertoAD\Service\SystemConfigService;
+use VertoAD\Service\TenantAccessService;
 
 final class AppFactory
 {
@@ -49,6 +55,15 @@ final class AppFactory
             ->addDefinitions([
                 'settings' => $settings,
                 Connection::class => static fn (): Connection => (new ConnectionFactory())->create($settings['database']),
+                UserIdentityRepositoryInterface::class => static fn (Connection $connection): UserIdentityRepositoryInterface =>
+                    new UserIdentityRepository($connection),
+                OrganizationMembershipRepositoryInterface::class => static fn (Connection $connection): OrganizationMembershipRepositoryInterface =>
+                    new OrganizationMembershipRepository($connection),
+                PermissionMatcher::class => static fn (): PermissionMatcher => new PermissionMatcher(),
+                TenantAccessService::class => static fn (
+                    OrganizationMembershipRepositoryInterface $memberships,
+                    PermissionMatcher $permissions,
+                ): TenantAccessService => new TenantAccessService($memberships, $permissions),
                 PublisherSiteRepositoryInterface::class => static fn (Connection $connection): PublisherSiteRepositoryInterface =>
                     new PublisherSiteRepository($connection),
                 PublisherSiteVerificationService::class => static fn (
