@@ -13,17 +13,23 @@ use VertoAD\Http\Action\Cron\CronStatusAction;
 use VertoAD\Http\Middleware\CronAuthMiddleware;
 use VertoAD\Http\Middleware\ApiEnvelopeMiddleware;
 use VertoAD\Infrastructure\Database\ConnectionFactory;
+use VertoAD\Repository\AdSlotRepository;
+use VertoAD\Repository\AdSlotRepositoryInterface;
 use VertoAD\Repository\AuditLogRepository;
 use VertoAD\Repository\AuditLogRepositoryInterface;
 use VertoAD\Repository\PointsLedgerRepository;
 use VertoAD\Repository\PointsLedgerRepositoryInterface;
+use VertoAD\Repository\PublisherSiteRepository;
+use VertoAD\Repository\PublisherSiteRepositoryInterface;
 use VertoAD\Repository\RechargeKeyRepository;
 use VertoAD\Repository\RechargeKeyRepositoryInterface;
 use VertoAD\Repository\SystemConfigRepository;
 use VertoAD\Repository\SystemConfigRepositoryInterface;
+use VertoAD\Service\AdSlotSetupService;
 use VertoAD\Service\AuditLogService;
 use VertoAD\Service\PlaceholderRechargeKeyPlaintextCipher;
 use VertoAD\Service\PointsLedgerService;
+use VertoAD\Service\PublisherSiteVerificationService;
 use VertoAD\Service\RechargeKeyPlaintextCipherInterface;
 use VertoAD\Service\RechargeKeyService;
 use VertoAD\Service\SystemConfigService;
@@ -43,6 +49,17 @@ final class AppFactory
             ->addDefinitions([
                 'settings' => $settings,
                 Connection::class => static fn (): Connection => (new ConnectionFactory())->create($settings['database']),
+                PublisherSiteRepositoryInterface::class => static fn (Connection $connection): PublisherSiteRepositoryInterface =>
+                    new PublisherSiteRepository($connection),
+                PublisherSiteVerificationService::class => static fn (
+                    PublisherSiteRepositoryInterface $repository,
+                ): PublisherSiteVerificationService => new PublisherSiteVerificationService($repository),
+                AdSlotRepositoryInterface::class => static fn (Connection $connection): AdSlotRepositoryInterface =>
+                    new AdSlotRepository($connection),
+                AdSlotSetupService::class => static fn (
+                    PublisherSiteRepositoryInterface $sites,
+                    AdSlotRepositoryInterface $slots,
+                ): AdSlotSetupService => new AdSlotSetupService($sites, $slots),
                 AuditLogRepositoryInterface::class => static fn (Connection $connection): AuditLogRepositoryInterface =>
                     new AuditLogRepository($connection),
                 AuditLogService::class => static fn (AuditLogRepositoryInterface $repository): AuditLogService =>
