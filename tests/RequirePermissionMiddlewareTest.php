@@ -63,6 +63,19 @@ final class RequirePermissionMiddlewareTest extends TestCase
         self::assertSame(Permission::LedgerRead, $payload['error']['required_permission'] ?? null);
     }
 
+    public function testDeniesAuthenticatedUserWhenOrganizationScopeIsMissing(): void
+    {
+        $response = $this->handleProbeWithoutRouteOrganization(
+            new RequestUserContext(new AuthenticatedUser(20, 'member@example.com', false), null),
+            [],
+        );
+        $payload = json_decode((string) $response->getBody(), true);
+
+        self::assertSame(400, $response->getStatusCode());
+        self::assertSame('organization_scope_required', $payload['error']['code'] ?? null);
+        self::assertSame(Permission::LedgerRead, $payload['error']['required_permission'] ?? null);
+    }
+
     public function testDeniesCrossTenantAccess(): void
     {
         $response = $this->handleProbe(
@@ -125,6 +138,42 @@ final class RequirePermissionMiddlewareTest extends TestCase
         if ($context !== null) {
             $request = $request->withAttribute(RequestUserContext::ATTRIBUTE, $context);
         }
+
+        return $app->handle($request);
+    }
+
+    /**
+     * @param array<string, OrganizationMembership> $memberships
+     */
+    private function handleProbeWithoutRouteOrganization(
+        RequestUserContext $context,
+        array $memberships,
+    ): ResponseInterface {
+        $app = new App(new ResponseFactory());
+        $responseFactory = $app->getResponseFactory();
+        $tenantAccess = new TenantAccessService(new PermissionMiddlewareMembershipRepository($memberships), new PermissionMatcher());
+
+        $app->get('/api/v1/permission-probe', static function (
+            ServerRequestInterface $request,
+            ResponseInterface $response,
+        ): ResponseInterface {
+            $response->getBody()->write(json_encode(['status' => 'permission-ok'], JSON_THROW_ON_ERROR));
+
+            return $response->withHeader('Content-Type', 'application/json');
+        })->add(new RequirePermissionMiddleware(
+            $responseFactory,
+            $tenantAccess,
+            PermissionRequirement::forOrganization(Permission::LedgerRead),
+        ));
+
+        $app->add(new ApiEnvelopeMiddleware($responseFactory));
+        $app->addRoutingMiddleware();
+        $app->addErrorMiddleware(false, true, true);
+
+        $request = (new ServerRequestFactory())
+            ->createServerRequest('GET', '/api/v1/permission-probe')
+            ->withHeader('X-Request-Id', 'missing-scope-request')
+            ->withAttribute(RequestUserContext::ATTRIBUTE, $context);
 
         return $app->handle($request);
     }

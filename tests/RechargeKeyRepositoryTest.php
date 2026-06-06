@@ -88,6 +88,37 @@ final class RechargeKeyRepositoryTest extends TestCase
         self::assertSame('2026-06-07 10:00:00', $found?->redeemedAt?->format('Y-m-d H:i:s'));
     }
 
+    public function testFindByBlankHashReturnsNullWithoutQueryingAndMarkExpiredUpdatesStatus(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        $this->createSchema($connection);
+        $repository = new RechargeKeyRepository($connection);
+
+        self::assertNull($repository->findByKeyHash('   '));
+
+        $key = $repository->store(new RechargeKey(
+            id: null,
+            organizationId: 5,
+            keyHash: hash('sha256', 'rk_live_ABC123'),
+            encryptedPlaintextKey: 'encrypted:rk_live_ABC123',
+            pointsAmount: 500,
+            status: RechargeKeyStatus::Issued,
+            batchCode: null,
+            batchMetadata: null,
+            expiresAt: null,
+            issuedByUserId: null,
+            redeemedByUserId: null,
+            redeemedLedgerEntryId: null,
+            redeemedAt: null,
+        ));
+
+        $expired = $repository->markExpired($key);
+        $found = $repository->findByKeyHash($key->keyHash);
+
+        self::assertSame(RechargeKeyStatus::Expired, $expired->status);
+        self::assertSame(RechargeKeyStatus::Expired, $found?->status);
+    }
+
     private function createSchema(\Doctrine\DBAL\Connection $connection): void
     {
         $connection->executeStatement(

@@ -48,6 +48,37 @@ final class PublisherRepositoryTest extends TestCase
         self::assertSame('2026-06-07 08:00:00', $connection->fetchOne('SELECT verified_at FROM sites WHERE id = 1'));
     }
 
+    public function testPublisherSiteRepositoryReturnsNullForMissingSiteAndHydratesVerifiedAt(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        $connection->executeStatement(
+            'CREATE TABLE sites (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                domain TEXT NOT NULL,
+                status TEXT NOT NULL,
+                verification_token TEXT NULL,
+                verified_at TEXT NULL
+            )'
+        );
+        $connection->insert('sites', [
+            'organization_id' => 7,
+            'domain' => 'example.com',
+            'status' => 'verified',
+            'verification_token' => null,
+            'verified_at' => '2026-06-07 08:00:00',
+        ]);
+
+        $repository = new PublisherSiteRepository($connection);
+
+        self::assertNull($repository->findById(404));
+
+        $site = $repository->findById(1);
+        self::assertSame(PublisherSiteStatus::Verified, $site?->status);
+        self::assertSame('', $site?->verificationToken);
+        self::assertSame('2026-06-07 08:00:00', $site?->verifiedAt?->format('Y-m-d H:i:s'));
+    }
+
     public function testAdSlotRepositoryStoresPresetAndResponsiveMetadata(): void
     {
         $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
@@ -96,5 +127,61 @@ final class PublisherRepositoryTest extends TestCase
             ],
             json_decode((string) $row['responsive_rules_json'], true, flags: JSON_THROW_ON_ERROR),
         );
+    }
+
+    public function testAdSlotRepositoryUpdatesExistingSlotAndClearsEmptyResponsiveRules(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        $connection->executeStatement(
+            'CREATE TABLE ad_slots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                site_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                slot_key TEXT NOT NULL,
+                width INTEGER NOT NULL,
+                height INTEGER NOT NULL,
+                size_preset TEXT NULL,
+                is_responsive INTEGER NOT NULL DEFAULT 0,
+                responsive_rules_json TEXT NULL,
+                status TEXT NOT NULL
+            )'
+        );
+        $connection->insert('ad_slots', [
+            'site_id' => 12,
+            'name' => 'Old',
+            'slot_key' => 'old',
+            'width' => 300,
+            'height' => 250,
+            'size_preset' => 'medium_rectangle',
+            'is_responsive' => 1,
+            'responsive_rules_json' => '[{"min_width":0,"width":300,"height":250}]',
+            'status' => 'active',
+        ]);
+
+        $repository = new AdSlotRepository($connection);
+        $slot = new AdSlot(
+            id: 1,
+            siteId: 12,
+            name: 'Updated',
+            slotKey: 'updated',
+            size: new AdSlotSize(728, 90),
+            responsive: false,
+            responsiveRules: [],
+            presetKey: 'leaderboard',
+            status: 'paused',
+        );
+
+        self::assertSame($slot, $repository->store($slot));
+
+        $row = $connection->fetchAssociative('SELECT * FROM ad_slots WHERE id = 1');
+        self::assertIsArray($row);
+        self::assertSame('Updated', $row['name']);
+        self::assertSame('updated', $row['slot_key']);
+        self::assertSame(728, (int) $row['width']);
+        self::assertSame(90, (int) $row['height']);
+        self::assertSame('leaderboard', $row['size_preset']);
+        self::assertSame(0, (int) $row['is_responsive']);
+        self::assertNull($row['responsive_rules_json']);
+        self::assertSame('paused', $row['status']);
     }
 }

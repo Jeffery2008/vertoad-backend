@@ -69,6 +69,45 @@ final class PublisherSiteVerificationServiceTest extends TestCase
         $service->verify(12, PublisherSiteVerificationMethod::VerificationFile, 'wrong-token', new \DateTimeImmutable());
     }
 
+    public function testValidationReturnsAlreadyVerifiedSiteWithoutRecheckingEvidence(): void
+    {
+        $verifiedAt = new \DateTimeImmutable('2026-06-07 08:00:00+00:00');
+        $site = new PublisherSite(12, 7, 'example.com', PublisherSiteStatus::Verified, 'site-secret', $verifiedAt);
+        $repository = new FakePublisherSiteRepository([$site]);
+        $service = new PublisherSiteVerificationService($repository);
+
+        $verified = $service->verify(
+            12,
+            PublisherSiteVerificationMethod::HtmlMeta,
+            'wrong-token-is-ignored-for-already-verified-sites',
+            new \DateTimeImmutable('2026-06-08 08:00:00+00:00'),
+        );
+
+        self::assertSame($site, $verified);
+        self::assertSame(0, $repository->markVerifiedCalls);
+    }
+
+    public function testRejectsMissingSiteAndBlankNormalizedDomain(): void
+    {
+        $service = new PublisherSiteVerificationService(new FakePublisherSiteRepository());
+
+        try {
+            $service->expectedChallenge(0, PublisherSiteVerificationMethod::HtmlMeta);
+            self::fail('Expected non-positive site ID to be rejected.');
+        } catch (InvalidArgumentException $exception) {
+            self::assertSame('Publisher site ID must be positive.', $exception->getMessage());
+        }
+
+        $service = new PublisherSiteVerificationService(new FakePublisherSiteRepository([
+            new PublisherSite(12, 7, ' https://.../path ', PublisherSiteStatus::Pending, 'site-secret', null),
+        ]));
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Publisher site domain is required.');
+
+        $service->expectedChallenge(12, PublisherSiteVerificationMethod::DnsTxt);
+    }
+
     public function testRejectsBlankVerificationSecret(): void
     {
         $site = new PublisherSite(12, 7, 'example.com', PublisherSiteStatus::Pending, ' ', null);
@@ -85,6 +124,8 @@ final class FakePublisherSiteRepository implements PublisherSiteRepositoryInterf
 {
     /** @var array<int, PublisherSite> */
     private array $sitesById = [];
+
+    public int $markVerifiedCalls = 0;
 
     /**
      * @param list<PublisherSite> $sites
@@ -103,6 +144,7 @@ final class FakePublisherSiteRepository implements PublisherSiteRepositoryInterf
 
     public function markVerified(PublisherSite $site, \DateTimeImmutable $verifiedAt): PublisherSite
     {
+        $this->markVerifiedCalls++;
         $verified = $site->withVerification(PublisherSiteStatus::Verified, $verifiedAt);
         $this->sitesById[$site->id] = $verified;
 

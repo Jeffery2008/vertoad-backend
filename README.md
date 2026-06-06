@@ -33,9 +33,12 @@ Phinx reads `phinx.php` and environment values from `.env` when present. Set `PH
 
 ```powershell
 composer test
+composer test:coverage
 ```
 
 The PHPUnit suite uses `phpunit.xml` and boots from `vendor/autoload.php`.
+
+`composer test:coverage` runs `scripts/coverage-gate.php`. When Xdebug, PCOV, or a working phpdbg coverage driver is available, it generates Clover coverage for `src/` and requires 100% line coverage. If no working coverage driver is available, the script prints the driver blocker and still runs the full PHPUnit suite so this environment remains test-gated. No `src/` files are excluded from the configured coverage source.
 
 ## OpenAPI
 

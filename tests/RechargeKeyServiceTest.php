@@ -94,6 +94,22 @@ final class RechargeKeyServiceTest extends TestCase
         );
     }
 
+    public function testIssueRejectsDuplicatePlaintextKey(): void
+    {
+        $service = new RechargeKeyService(
+            repository: new FakeRechargeKeyRepository(),
+            ledger: new PointsLedgerService(new FakeRechargeLedgerRepository()),
+            cipher: new FakeRechargeKeyCipher(),
+        );
+
+        $service->issue('rk_live_ABC123', 100, null, null, null, 7, null);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('Recharge key already exists.');
+
+        $service->issue(' rk_live_ABC123 ', 100, null, null, null, 7, null);
+    }
+
     public function testRedeemCreditsAdvertiserBalanceAndMarksKeyRedeemed(): void
     {
         $rechargeRepository = new FakeRechargeKeyRepository();
@@ -180,6 +196,49 @@ final class RechargeKeyServiceTest extends TestCase
         $this->expectExceptionMessage('Recharge key has already been redeemed.');
 
         $service->redeem('rk_live_ABC123', 43, 9, new DateTimeImmutable('2026-06-07 10:01:00'));
+    }
+
+    public function testRedeemRejectsNonPositiveOrganizationAndUserIds(): void
+    {
+        $service = new RechargeKeyService(
+            repository: new FakeRechargeKeyRepository(),
+            ledger: new PointsLedgerService(new FakeRechargeLedgerRepository()),
+            cipher: new FakeRechargeKeyCipher(),
+        );
+
+        try {
+            $service->redeem('rk_live_ABC123', 0, 9, new DateTimeImmutable('2026-06-07 10:00:00'));
+            self::fail('Expected non-positive organization ID to be rejected.');
+        } catch (InvalidArgumentException $exception) {
+            self::assertSame('Recharge redemption organization ID must be positive.', $exception->getMessage());
+        }
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Recharge redemption user ID must be positive.');
+
+        $service->redeem('rk_live_ABC123', 42, 0, new DateTimeImmutable('2026-06-07 10:00:00'));
+    }
+
+    public function testRedeemRejectsAlreadyExpiredStatusWithoutLedgerCredit(): void
+    {
+        $repository = new FakeRechargeKeyRepository();
+        $ledgerRepository = new FakeRechargeLedgerRepository();
+        $service = new RechargeKeyService(
+            repository: $repository,
+            ledger: new PointsLedgerService($ledgerRepository),
+            cipher: new FakeRechargeKeyCipher(),
+        );
+        $key = $service->issue('rk_live_EXPIRED_STATUS', 800, null, null, null, 7, null);
+        $repository->store($key->withStatus(RechargeKeyStatus::Expired));
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('Recharge key has expired.');
+
+        try {
+            $service->redeem('rk_live_EXPIRED_STATUS', 42, 9, new DateTimeImmutable('2026-06-07 10:00:00'));
+        } finally {
+            self::assertCount(0, $ledgerRepository->entries);
+        }
     }
 
     public function testRedeemRejectsRevokedKeyWithoutLedgerCredit(): void

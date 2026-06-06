@@ -29,6 +29,7 @@
   },
   "scripts": {
     "test": "phpunit",
+    "test:coverage": "php scripts/coverage-gate.php",
     "serve": "php -S 127.0.0.1:8080 -t public",
     "migrate": "phinx migrate",
     "migrate:rollback": "phinx rollback",

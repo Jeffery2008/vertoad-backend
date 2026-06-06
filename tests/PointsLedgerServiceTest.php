@@ -147,6 +147,18 @@ final class PointsLedgerServiceTest extends TestCase
         );
     }
 
+    public function testReverseRejectsBlankReason(): void
+    {
+        $repository = new FakePointsLedgerRepository();
+        $service = new PointsLedgerService($repository);
+        $original = $service->credit(10, 'advertiser_balance', null, 100, 'original');
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Ledger reversal reason is required.');
+
+        $service->reverse((int) $original->id, 'original:reverse', ' ');
+    }
+
     public function testAdjustmentRejectsBlankReason(): void
     {
         $service = new PointsLedgerService(new FakePointsLedgerRepository());
@@ -179,6 +191,22 @@ final class PointsLedgerServiceTest extends TestCase
             accountId: 20,
             pointsAmount: 0,
             idempotencyKey: 'bad',
+        );
+    }
+
+    public function testRejectsBlankIdempotencyKeyBeforeAppending(): void
+    {
+        $service = new PointsLedgerService(new FakePointsLedgerRepository());
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Ledger idempotency key is required.');
+
+        $service->debit(
+            organizationId: 10,
+            accountType: 'advertiser_balance',
+            accountId: null,
+            pointsAmount: 100,
+            idempotencyKey: ' ',
         );
     }
 
