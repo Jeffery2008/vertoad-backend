@@ -191,6 +191,8 @@ CREATE TABLE recharge_keys (
     encrypted_plaintext_key VARBINARY(1024) NOT NULL,
     points_amount BIGINT UNSIGNED NOT NULL,
     status VARCHAR(32) NOT NULL DEFAULT 'issued',
+    batch_code VARCHAR(120) NULL,
+    batch_metadata_json JSON NULL,
     issued_by_user_id BIGINT UNSIGNED NULL,
     redeemed_by_user_id BIGINT UNSIGNED NULL,
     redeemed_ledger_entry_id BIGINT UNSIGNED NULL,

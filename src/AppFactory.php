@@ -17,10 +17,15 @@ use VertoAD\Repository\AuditLogRepository;
 use VertoAD\Repository\AuditLogRepositoryInterface;
 use VertoAD\Repository\PointsLedgerRepository;
 use VertoAD\Repository\PointsLedgerRepositoryInterface;
+use VertoAD\Repository\RechargeKeyRepository;
+use VertoAD\Repository\RechargeKeyRepositoryInterface;
 use VertoAD\Repository\SystemConfigRepository;
 use VertoAD\Repository\SystemConfigRepositoryInterface;
 use VertoAD\Service\AuditLogService;
+use VertoAD\Service\PlaceholderRechargeKeyPlaintextCipher;
 use VertoAD\Service\PointsLedgerService;
+use VertoAD\Service\RechargeKeyPlaintextCipherInterface;
+use VertoAD\Service\RechargeKeyService;
 use VertoAD\Service\SystemConfigService;
 
 final class AppFactory
@@ -46,6 +51,15 @@ final class AppFactory
                     new PointsLedgerRepository($connection),
                 PointsLedgerService::class => static fn (PointsLedgerRepositoryInterface $repository): PointsLedgerService =>
                     new PointsLedgerService($repository),
+                RechargeKeyPlaintextCipherInterface::class => static fn (): RechargeKeyPlaintextCipherInterface =>
+                    new PlaceholderRechargeKeyPlaintextCipher(),
+                RechargeKeyRepositoryInterface::class => static fn (Connection $connection): RechargeKeyRepositoryInterface =>
+                    new RechargeKeyRepository($connection),
+                RechargeKeyService::class => static fn (
+                    RechargeKeyRepositoryInterface $repository,
+                    PointsLedgerService $ledger,
+                    RechargeKeyPlaintextCipherInterface $cipher,
+                ): RechargeKeyService => new RechargeKeyService($repository, $ledger, $cipher),
                 SystemConfigRepositoryInterface::class => static fn (Connection $connection): SystemConfigRepositoryInterface =>
                     new SystemConfigRepository($connection),
                 SystemConfigService::class => static fn (SystemConfigRepositoryInterface $repository): SystemConfigService =>
