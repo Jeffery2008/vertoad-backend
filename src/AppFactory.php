@@ -18,6 +18,8 @@ use VertoAD\Http\Middleware\ApiEnvelopeMiddleware;
 use VertoAD\Http\Middleware\RateLimitMiddleware;
 use VertoAD\Http\Middleware\TurnstileMiddleware;
 use VertoAD\Infrastructure\Database\ConnectionFactory;
+use VertoAD\Infrastructure\OAuth\LeagueOAuthRepository;
+use VertoAD\Infrastructure\OAuth\LeagueOAuthServerFactory;
 use VertoAD\Infrastructure\Security\InMemoryRateLimitStore;
 use VertoAD\Infrastructure\Security\RateLimiter;
 use VertoAD\Infrastructure\Security\RateLimitPolicy;
@@ -169,6 +171,14 @@ final class AppFactory
                 OAuthConsentRepositoryInterface::class => static fn (Connection $connection): OAuthConsentRepositoryInterface =>
                     new OAuthConsentRepository($connection),
                 OAuthClientSecretHasher::class => static fn (): OAuthClientSecretHasher => new OAuthClientSecretHasher(),
+                LeagueOAuthRepository::class => static fn (
+                    OAuthClientRepositoryInterface $clients,
+                    OAuthTokenRepositoryInterface $tokens,
+                    OAuthClientSecretHasher $secrets,
+                ): LeagueOAuthRepository => new LeagueOAuthRepository($clients, $tokens, $secrets),
+                LeagueOAuthServerFactory::class => static fn (
+                    LeagueOAuthRepository $repository,
+                ): LeagueOAuthServerFactory => new LeagueOAuthServerFactory($repository, $settings['oauth'] ?? []),
                 OAuthTokenService::class => static fn (
                     OAuthClientRepositoryInterface $clients,
                     OAuthTokenRepositoryInterface $tokens,

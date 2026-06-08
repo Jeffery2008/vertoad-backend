@@ -70,6 +70,30 @@ final readonly class OAuthTokenRepository implements OAuthTokenRepositoryInterfa
         return $this->hydrateGrantRow($row);
     }
 
+    public function revokeAuthorizationCode(string $codeHash, DateTimeImmutable $now): bool
+    {
+        $affected = $this->connection->executeStatement(
+            'UPDATE oauth_authorization_codes SET revoked_at = ? WHERE code_identifier = ? AND revoked_at IS NULL',
+            [$this->format($now), $codeHash],
+            [ParameterType::STRING, ParameterType::STRING],
+        );
+
+        return $affected > 0;
+    }
+
+    public function isAuthorizationCodeActive(string $codeHash, DateTimeImmutable $now): bool
+    {
+        return (bool) $this->connection->createQueryBuilder()
+            ->select('1')
+            ->from('oauth_authorization_codes')
+            ->where('code_identifier = :code_hash')
+            ->andWhere('revoked_at IS NULL')
+            ->andWhere('expires_at > :now')
+            ->setParameter('code_hash', $codeHash)
+            ->setParameter('now', $this->format($now))
+            ->fetchOne();
+    }
+
     public function createAccessToken(
         OAuthClient $client,
         ?int $userId,
@@ -176,6 +200,19 @@ final readonly class OAuthTokenRepository implements OAuthTokenRepositoryInterfa
         );
 
         return $affected > 0;
+    }
+
+    public function isAccessTokenActive(string $accessTokenHash, DateTimeImmutable $now): bool
+    {
+        return (bool) $this->connection->createQueryBuilder()
+            ->select('1')
+            ->from('oauth_access_tokens')
+            ->where('access_token_identifier = :token_hash')
+            ->andWhere('revoked_at IS NULL')
+            ->andWhere('expires_at > :now')
+            ->setParameter('token_hash', $accessTokenHash)
+            ->setParameter('now', $this->format($now))
+            ->fetchOne();
     }
 
     public function findActiveUserByAccessTokenHash(string $accessTokenHash, DateTimeImmutable $now): ?AuthenticatedUser

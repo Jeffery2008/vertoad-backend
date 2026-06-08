@@ -58,6 +58,9 @@ return [
         'encryption_key' => getenv('OAUTH_ENCRYPTION_KEY') ?: '',
         'authorization_url' => getenv('OAUTH_AUTHORIZATION_URL') ?: '',
         'token_url' => getenv('OAUTH_TOKEN_URL') ?: '',
+        'authorization_code_ttl_seconds' => (int) (getenv('OAUTH_AUTHORIZATION_CODE_TTL_SECONDS') ?: 300),
+        'access_token_ttl_seconds' => (int) (getenv('OAUTH_ACCESS_TOKEN_TTL_SECONDS') ?: 900),
+        'refresh_token_ttl_seconds' => (int) (getenv('OAUTH_REFRESH_TOKEN_TTL_SECONDS') ?: 2592000),
     ],
     'cron' => [
         'token' => getenv('CRON_API_TOKEN') ?: '',

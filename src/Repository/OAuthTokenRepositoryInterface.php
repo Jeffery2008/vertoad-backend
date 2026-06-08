@@ -26,6 +26,10 @@ interface OAuthTokenRepositoryInterface
     /** @return array<string, mixed>|null */
     public function consumeAuthorizationCode(string $codeHash, DateTimeImmutable $now): ?array;
 
+    public function revokeAuthorizationCode(string $codeHash, DateTimeImmutable $now): bool;
+
+    public function isAuthorizationCodeActive(string $codeHash, DateTimeImmutable $now): bool;
+
     /** @param list<string> $scopes */
     public function createAccessToken(
         OAuthClient $client,
@@ -56,6 +60,8 @@ interface OAuthTokenRepositoryInterface
     public function revokeAccessToken(string $accessTokenHash, DateTimeImmutable $now): bool;
 
     public function revokeRefreshToken(string $refreshTokenHash, DateTimeImmutable $now): bool;
+
+    public function isAccessTokenActive(string $accessTokenHash, DateTimeImmutable $now): bool;
 
     public function findActiveUserByAccessTokenHash(string $accessTokenHash, DateTimeImmutable $now): ?AuthenticatedUser;
 }
