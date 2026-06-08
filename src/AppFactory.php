@@ -92,7 +92,7 @@ use VertoAD\Repository\Support\InMemorySupportTicketRepository;
 use VertoAD\Repository\Support\SupportTicketRepositoryInterface;
 use VertoAD\Repository\UserIdentityRepository;
 use VertoAD\Repository\UserIdentityRepositoryInterface;
-use VertoAD\Repository\Webhooks\InMemoryWebhookDeliveryRepository;
+use VertoAD\Repository\Webhooks\DatabaseWebhookDeliveryRepository;
 use VertoAD\Repository\Webhooks\WebhookDeliveryRepositoryInterface;
 use VertoAD\Service\AdSlotSetupService;
 use VertoAD\Service\Assets\AssetUploadService;
@@ -327,8 +327,8 @@ final class AppFactory
                 WebhookSigner::class => static fn (): WebhookSigner => new WebhookSigner(
                     (string) ($settings['webhooks']['signing_secret'] ?? 'whsec_local_dev_secret'),
                 ),
-                WebhookDeliveryRepositoryInterface::class => static fn (): WebhookDeliveryRepositoryInterface =>
-                    new InMemoryWebhookDeliveryRepository(),
+                WebhookDeliveryRepositoryInterface::class => static fn (Connection $connection): WebhookDeliveryRepositoryInterface =>
+                    new DatabaseWebhookDeliveryRepository($connection),
                 WebhookDeliveryJob::class => static fn (
                     WebhookDeliveryRepositoryInterface $deliveries,
                     WebhookSigner $signer,

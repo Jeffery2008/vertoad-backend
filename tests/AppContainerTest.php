@@ -32,6 +32,8 @@ use VertoAD\Repository\Reporting\DatabaseReportAggregateRepository;
 use VertoAD\Repository\Reporting\ReportAggregateRepositoryInterface;
 use VertoAD\Repository\SystemConfigRepositoryInterface;
 use VertoAD\Repository\UserIdentityRepositoryInterface;
+use VertoAD\Repository\Webhooks\DatabaseWebhookDeliveryRepository;
+use VertoAD\Repository\Webhooks\WebhookDeliveryRepositoryInterface;
 use VertoAD\Service\AdSlotSetupService;
 use VertoAD\Service\Archive\ArchiveJob;
 use VertoAD\Service\Archive\ArchiveService;
@@ -136,6 +138,8 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(ColdQueryService::class, $container->get(ColdQueryService::class));
             self::assertInstanceOf(CronLockStoreInterface::class, $container->get(CronLockStoreInterface::class));
             self::assertInstanceOf(EventConsumptionJob::class, $container->get(EventConsumptionJob::class));
+            self::assertInstanceOf(WebhookDeliveryRepositoryInterface::class, $container->get(WebhookDeliveryRepositoryInterface::class));
+            self::assertInstanceOf(DatabaseWebhookDeliveryRepository::class, $container->get(WebhookDeliveryRepositoryInterface::class));
             self::assertInstanceOf(CronJobRegistry::class, $container->get(CronJobRegistry::class));
             self::assertInstanceOf(WebhookDeliveryJob::class, $container->get(CronJobRegistry::class)->get('webhook-retry'));
             self::assertInstanceOf(CronRunner::class, $container->get(CronRunner::class));
