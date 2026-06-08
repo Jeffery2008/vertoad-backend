@@ -6,6 +6,7 @@ namespace VertoAD\Tests;
 
 use PHPUnit\Framework\TestCase;
 use VertoAD\Domain\Auth\Permission;
+use VertoAD\Service\PermissionInventory;
 use VertoAD\Service\PermissionMatcher;
 
 final class PermissionInventoryTest extends TestCase
@@ -40,5 +41,16 @@ final class PermissionInventoryTest extends TestCase
         self::assertTrue($matcher->allows(['*'], Permission::AuditLogsRead));
         self::assertFalse($matcher->allows([Permission::PublisherSitesRead], Permission::PublisherSlotsManage));
         self::assertFalse($matcher->allows(['publisher.sites.*'], Permission::PublisherSlotsManage));
+    }
+
+    public function testOrganizationMemberPermissionsUseCurrentApiCodes(): void
+    {
+        $codes = array_column((new PermissionInventory())->all(), 'code');
+
+        self::assertContains(Permission::OrganizationMembersRead, $codes);
+        self::assertContains(Permission::OrganizationMembersManage, $codes);
+        self::assertNotContains('org.member.invite.own', $codes);
+        self::assertNotContains('org.member.remove.own', $codes);
+        self::assertNotContains('org.member.manage.platform', $codes);
     }
 }
