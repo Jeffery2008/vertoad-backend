@@ -46,6 +46,7 @@ final class SensitiveRoutePermissionContractTest extends TestCase
             ['POST', '/api/v1/billing/withdrawals/{withdrawal_id}/revoke', 'billing.withdrawal.revoke.own', 'permission'],
             ['POST', '/api/v1/billing/withdrawals/{withdrawal_id}/proofs', 'billing.withdrawal.proof.write.own', 'permission'],
             ['POST', '/api/v1/billing/withdrawals/{withdrawal_id}/proofs/confirm', 'billing.withdrawal.proof.write.own', 'permission'],
+            ['GET', '/api/v1/organizations/{organization_id}/members', 'organizations.members.read', 'permission'],
             ['GET', '/api/v1/campaigns', 'campaign.read.own', 'permission'],
             ['POST', '/api/v1/campaigns', 'campaign.write.own', 'permission'],
             ['GET', '/api/v1/campaigns/{campaign_id}', 'campaign.read.own', 'permission'],

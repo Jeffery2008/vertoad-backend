@@ -9,4 +9,19 @@ use VertoAD\Domain\Auth\OrganizationMembership;
 interface OrganizationMembershipRepositoryInterface
 {
     public function findActiveMembership(int $userId, int $organizationId): ?OrganizationMembership;
+
+    /**
+     * @return list<array{
+     *     member_id:int,
+     *     organization_id:int,
+     *     user_id:int,
+     *     email:string,
+     *     display_name:string,
+     *     status:string,
+     *     title:string|null,
+     *     roles:list<string>,
+     *     permissions:list<string>
+     * }>
+     */
+    public function listForOrganization(int $organizationId): array;
 }

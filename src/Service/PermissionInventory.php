@@ -19,6 +19,8 @@ final class PermissionInventory
                 ['org.write.own', 'Update own organization details.', false],
                 ['org.write.platform', 'Update organization details across the platform.', false],
                 ['org.status.update.platform', 'Suspend or restore organizations across the platform.', true],
+                ['organizations.members.read', 'Read own organization members and role assignments.', false],
+                ['organizations.members.manage', 'Manage own organization members and role assignments.', true],
                 ['org.member.invite.own', 'Invite members to own organization.', false],
                 ['org.member.remove.own', 'Remove members from own organization.', true],
                 ['org.member.manage.platform', 'Manage organization members across the platform.', true],

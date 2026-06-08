@@ -306,6 +306,11 @@ final class PermissionMiddlewareMembershipRepository implements \VertoAD\Reposit
     {
         return $this->memberships[$userId . ':' . $organizationId] ?? null;
     }
+
+    public function listForOrganization(int $organizationId): array
+    {
+        return [];
+    }
 }
 
 final readonly class PermissionOkHandler implements RequestHandlerInterface

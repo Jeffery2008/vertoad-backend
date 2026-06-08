@@ -9,6 +9,7 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\MiddlewareInterface;
 use Psr\Http\Server\RequestHandlerInterface;
+use Slim\Routing\RouteContext;
 use VertoAD\Http\Auth\PermissionRequirement;
 use VertoAD\Http\Auth\RequestUserContext;
 use VertoAD\Service\TenantAccessService;
@@ -92,6 +93,11 @@ final readonly class RequirePermissionMiddleware implements MiddlewareInterface
 
         if (is_string($routeValue) && ctype_digit($routeValue)) {
             return (int) $routeValue;
+        }
+
+        $routeArgument = RouteContext::fromRequest($request)->getRoute()?->getArgument($this->requirement->organizationIdAttribute);
+        if (is_string($routeArgument) && ctype_digit($routeArgument)) {
+            return (int) $routeArgument;
         }
 
         return $context->organizationId;

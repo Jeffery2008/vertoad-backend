@@ -30,6 +30,8 @@ tags:
     description: First-party authentication and password reset endpoints.
   - name: OAuth
     description: Organization-scoped OAuth client self-service for developer applications.
+  - name: Organizations
+    description: Organization member and RBAC management endpoints.
   - name: Health
     description: Runtime liveness and readiness checks.
   - name: Cron
@@ -228,6 +230,37 @@ paths:
               schema:
                 $ref: "#/components/schemas/MeData"
         "401":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/organizations/{organization_id}/members:
+    get:
+      tags:
+        - Organizations
+      operationId: listOrganizationMembers
+      summary: List organization members.
+      description: Returns organization members with their role slugs and effective permission codes.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Organization members.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationMemberListData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
@@ -3249,6 +3282,65 @@ components:
                 type: string
                 minLength: 1
           additionalProperties: false
+      additionalProperties: false
+    OrganizationMemberListData:
+      type: object
+      required:
+        - members
+      properties:
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrganizationMember"
+      additionalProperties: false
+    OrganizationMember:
+      type: object
+      required:
+        - member_id
+        - organization_id
+        - user_id
+        - email
+        - display_name
+        - status
+        - title
+        - roles
+        - permissions
+      properties:
+        member_id:
+          type: integer
+          minimum: 1
+        organization_id:
+          type: integer
+          minimum: 1
+        user_id:
+          type: integer
+          minimum: 1
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+          minLength: 1
+        status:
+          type: string
+          enum:
+            - active
+            - invited
+            - disabled
+        title:
+          type:
+            - string
+            - "null"
+        roles:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        permissions:
+          type: array
+          items:
+            type: string
+            minLength: 1
       additionalProperties: false
     HealthData:
       type: object

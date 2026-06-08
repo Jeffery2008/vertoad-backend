@@ -405,6 +405,11 @@ final class AuthActionTest extends TestCase
 
 final class FixedMembershipRepository implements OrganizationMembershipRepositoryInterface
 {
+    public function listForOrganization(int $organizationId): array
+    {
+        return [];
+    }
+
     public function findActiveMembership(int $userId, int $organizationId): ?OrganizationMembership
     {
         if ($userId !== 5 || $organizationId !== 77) {

@@ -15,6 +15,7 @@ use VertoAD\Http\Action\Operations\ListWebhookDeliveriesAction;
 use VertoAD\Http\Action\Operations\OperationsSummaryAction;
 use VertoAD\Http\Action\Operations\RetryWebhookDeliveryAction;
 use VertoAD\Http\Action\Operations\RollbackConfigVersionAction;
+use VertoAD\Http\Action\Organizations\ListOrganizationMembersAction;
 use VertoAD\Http\Action\OAuth\CreateOAuthClientAction;
 use VertoAD\Http\Action\OAuth\AuthorizeAction;
 use VertoAD\Http\Action\OAuth\ConsentAction;
@@ -117,6 +118,9 @@ return static function (App $app): void {
         ->add(TurnstileMiddleware::class)
         ->add(RateLimitMiddleware::class);
     $app->get('/api/v1/auth/me', MeAction::class)->add(AuthenticateRequestMiddleware::class);
+    $app->get('/api/v1/organizations/{organization_id}/members', ListOrganizationMembersAction::class)
+        ->add($permission('organizations.members.read'))
+        ->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/billing/balance', BillingBalanceAction::class)->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/billing/ledger', BillingLedgerListAction::class)->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/billing/recharge-keys/redeem', RechargeKeyRedeemAction::class)
