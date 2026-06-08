@@ -98,6 +98,117 @@ final class WebhookDeliveryServiceTest extends TestCase
         $job->deliver('missing', static fn (): int => 200);
     }
 
+    public function testWebhookRetryCronProcessesPendingDeliveriesAndLeavesDeliveredOnesAlone(): void
+    {
+        $repositoryClass = 'VertoAD\\Repository\\Webhooks\\InMemoryWebhookDeliveryRepository';
+        $jobClass = 'VertoAD\\Service\\Webhooks\\WebhookDeliveryJob';
+        $signerClass = 'VertoAD\\Service\\Webhooks\\WebhookSigner';
+        $repository = new $repositoryClass();
+        $queued = $repository->queue('https://example.test/queued', 'review.approved', ['asset_id' => 'ast_1']);
+        $failed = $repository->queue('https://example.test/failed', 'billing.points.changed', ['delta' => -120]);
+        $delivered = $repository->queue('https://example.test/delivered', 'campaign.status.changed', ['status' => 'active']);
+        $job = new $jobClass($repository, new $signerClass('whsec_test_secret'), static function ($delivery): int {
+            return str_contains($delivery->endpoint_url, 'failed') ? 503 : 200;
+        });
+        $job->deliver((string) $this->value($delivered, 'delivery_id'), static fn (): int => 200);
+
+        $result = $job->run();
+
+        self::assertSame('webhook-retry', $job->name());
+        self::assertSame('completed', $result->status);
+        self::assertSame(2, $result->metrics['processed'] ?? null);
+        self::assertSame(1, $result->metrics['delivered'] ?? null);
+        self::assertSame(1, $result->metrics['failed'] ?? null);
+        self::assertSame('delivered', $repository->find($queued->delivery_id)?->status);
+        self::assertSame('failed', $repository->find($failed->delivery_id)?->status);
+        self::assertSame('HTTP 503', $repository->find($failed->delivery_id)?->last_error);
+        self::assertSame(1, $repository->find($queued->delivery_id)?->retry_count);
+        self::assertSame(1, $repository->find($failed->delivery_id)?->retry_count);
+        self::assertSame(1, $repository->find($delivered->delivery_id)?->retry_count);
+    }
+
+    public function testWebhookRetryCronReportsEmptyPendingQueue(): void
+    {
+        $repositoryClass = 'VertoAD\\Repository\\Webhooks\\InMemoryWebhookDeliveryRepository';
+        $jobClass = 'VertoAD\\Service\\Webhooks\\WebhookDeliveryJob';
+        $signerClass = 'VertoAD\\Service\\Webhooks\\WebhookSigner';
+        $job = new $jobClass(new $repositoryClass(), new $signerClass('whsec_test_secret'));
+
+        $result = $job->run();
+
+        self::assertSame('webhook-retry', $result->jobName);
+        self::assertSame(0, $result->metrics['processed'] ?? null);
+        self::assertSame('No pending webhook deliveries.', $result->message);
+    }
+
+    public function testWebhookRetryCronHonorsBatchSizeAndRejectsInvalidConfiguration(): void
+    {
+        $repositoryClass = 'VertoAD\\Repository\\Webhooks\\InMemoryWebhookDeliveryRepository';
+        $jobClass = 'VertoAD\\Service\\Webhooks\\WebhookDeliveryJob';
+        $signerClass = 'VertoAD\\Service\\Webhooks\\WebhookSigner';
+        $repository = new $repositoryClass();
+        $first = $repository->queue('https://example.test/first', 'review.approved', ['asset_id' => 'ast_1']);
+        $second = $repository->queue('https://example.test/second', 'review.approved', ['asset_id' => 'ast_2']);
+        $job = new $jobClass($repository, new $signerClass('whsec_test_secret'), static fn (): int => 200, 1);
+
+        $result = $job->run();
+
+        self::assertSame(1, $result->metrics['processed'] ?? null);
+        self::assertSame('delivered', $repository->find($first->delivery_id)?->status);
+        self::assertSame('queued', $repository->find($second->delivery_id)?->status);
+        self::assertSame([], $repository->pendingRetry(0));
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Webhook retry batch size must be positive.');
+        new $jobClass($repository, new $signerClass('whsec_test_secret'), static fn (): int => 200, 0);
+    }
+
+    public function testWebhookHttpTransportRejectsInvalidTimeout(): void
+    {
+        $jobClass = 'VertoAD\\Service\\Webhooks\\WebhookDeliveryJob';
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Webhook HTTP timeout seconds must be positive.');
+
+        $jobClass::httpTransport(0);
+    }
+
+    public function testWebhookHttpTransportMapsStreamResultsToStatusCodes(): void
+    {
+        $deliveryClass = 'VertoAD\\Domain\\Webhooks\\WebhookDelivery';
+        $jobClass = 'VertoAD\\Service\\Webhooks\\WebhookDeliveryJob';
+        $transport = $jobClass::httpTransport(1);
+
+        $ok = new $deliveryClass(
+            delivery_id: 'whd_ok',
+            endpoint_url: 'data://text/plain,ok',
+            event_type: 'review.approved',
+            payload_json: '{}',
+            status: 'queued',
+            retry_count: 0,
+            last_error: null,
+            signature_header: null,
+            created_at: new \DateTimeImmutable(),
+            delivered_at: null,
+        );
+        $failed = new $deliveryClass(
+            delivery_id: 'whd_failed',
+            endpoint_url: 'file://',
+            event_type: 'review.approved',
+            payload_json: '{}',
+            status: 'queued',
+            retry_count: 0,
+            last_error: null,
+            signature_header: null,
+            created_at: new \DateTimeImmutable(),
+            delivered_at: null,
+        );
+
+        self::assertSame(200, $transport($ok, 't=1,v1=test'));
+        self::assertSame(0, $transport($failed, 't=1,v1=test'));
+        self::assertSame(202, $jobClass::statusCodeFromTransportResult('accepted', ['HTTP/1.1 202 Accepted']));
+    }
+
     private function value(mixed $record, string $key): mixed
     {
         if (is_array($record)) {

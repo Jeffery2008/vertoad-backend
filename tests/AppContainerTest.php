@@ -52,6 +52,7 @@ use VertoAD\Service\RechargeKeyPlaintextCipherInterface;
 use VertoAD\Service\RechargeKeyService;
 use VertoAD\Service\SystemConfigService;
 use VertoAD\Service\TenantAccessService;
+use VertoAD\Service\Webhooks\WebhookDeliveryJob;
 use VertoAD\Http\Auth\BearerTokenAuthenticator;
 use VertoAD\Http\Middleware\AuthenticateRequestMiddleware;
 use VertoAD\Http\Middleware\RateLimitMiddleware;
@@ -136,6 +137,7 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(CronLockStoreInterface::class, $container->get(CronLockStoreInterface::class));
             self::assertInstanceOf(EventConsumptionJob::class, $container->get(EventConsumptionJob::class));
             self::assertInstanceOf(CronJobRegistry::class, $container->get(CronJobRegistry::class));
+            self::assertInstanceOf(WebhookDeliveryJob::class, $container->get(CronJobRegistry::class)->get('webhook-retry'));
             self::assertInstanceOf(CronRunner::class, $container->get(CronRunner::class));
         } finally {
             if ($previousAppKey === false) {

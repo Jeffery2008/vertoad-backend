@@ -19,7 +19,7 @@ final readonly class RetryWebhookDeliveryAction
     public function __invoke(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         try {
-            $delivery = $this->deliveries->retry($args['delivery_id'] ?? '', static fn (): int => 200);
+            $delivery = $this->deliveries->retry($args['delivery_id'] ?? '');
         } catch (RuntimeException $exception) {
             return OperationsJson::write($response, ['code' => 'not_found', 'message' => $exception->getMessage()], 404);
         }

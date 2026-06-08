@@ -95,6 +95,11 @@ return [
             'webhook-retry',
         ],
     ],
+    'webhooks' => [
+        'signing_secret' => getenv('WEBHOOK_SIGNING_SECRET') ?: 'whsec_local_dev_secret',
+        'retry_batch_size' => (int) (getenv('WEBHOOK_RETRY_BATCH_SIZE') ?: 50),
+        'http_timeout_seconds' => (int) (getenv('WEBHOOK_HTTP_TIMEOUT_SECONDS') ?: 5),
+    ],
     'cloudflare' => [
         'real_ip_header' => getenv('CLOUDFLARE_REAL_IP_HEADER') ?: 'CF-Connecting-IP',
         'trusted_proxies' => array_values(array_filter(array_map(

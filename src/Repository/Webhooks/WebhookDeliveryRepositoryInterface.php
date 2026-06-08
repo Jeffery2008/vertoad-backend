@@ -21,4 +21,9 @@ interface WebhookDeliveryRepositoryInterface
      * @return list<WebhookDelivery>
      */
     public function all(): array;
+
+    /**
+     * @return list<WebhookDelivery>
+     */
+    public function pendingRetry(int $limit): array;
 }

@@ -46,4 +46,16 @@ final class InMemoryWebhookDeliveryRepository implements WebhookDeliveryReposito
     {
         return array_values($this->deliveries);
     }
+
+    public function pendingRetry(int $limit): array
+    {
+        if ($limit <= 0) {
+            return [];
+        }
+
+        return array_slice(array_values(array_filter(
+            $this->deliveries,
+            static fn (WebhookDelivery $delivery): bool => in_array($delivery->status, ['queued', 'failed'], true),
+        )), 0, $limit);
+    }
 }

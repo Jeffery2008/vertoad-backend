@@ -42,7 +42,7 @@ final class OperationsActionIntegrationTest extends TestCase
         $errors = new OperationErrorCaptureService($errorRepository, $audit);
         $configs = new ConfigVersionService($configRepository, $audit);
         $signer = new WebhookSigner('whsec_test_secret');
-        $deliveries = new WebhookDeliveryJob($deliveryRepository, $signer);
+        $deliveries = new WebhookDeliveryJob($deliveryRepository, $signer, static fn (): int => 200);
 
         $captured = $errors->captureApiError(
             requestId: 'req-route-1',

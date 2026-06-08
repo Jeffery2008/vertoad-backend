@@ -332,7 +332,12 @@ final class AppFactory
                 WebhookDeliveryJob::class => static fn (
                     WebhookDeliveryRepositoryInterface $deliveries,
                     WebhookSigner $signer,
-                ): WebhookDeliveryJob => new WebhookDeliveryJob($deliveries, $signer),
+                ): WebhookDeliveryJob => new WebhookDeliveryJob(
+                    $deliveries,
+                    $signer,
+                    WebhookDeliveryJob::httpTransport((int) ($settings['webhooks']['http_timeout_seconds'] ?? 5)),
+                    (int) ($settings['webhooks']['retry_batch_size'] ?? 50),
+                ),
                 SupportTicketRepositoryInterface::class => static fn (): SupportTicketRepositoryInterface =>
                     new InMemorySupportTicketRepository(),
                 SupportTicketService::class => static fn (
@@ -409,10 +414,17 @@ final class AppFactory
                     $billing,
                     (int) ($settings['cron']['event_consume_batch_size'] ?? 500),
                 ),
-                CronJobRegistry::class => static function (EventConsumptionJob $eventConsumption) use ($settings): CronJobRegistry {
-                    $jobs = [$eventConsumption];
+                CronJobRegistry::class => static function (
+                    EventConsumptionJob $eventConsumption,
+                    WebhookDeliveryJob $webhookDelivery,
+                ) use ($settings): CronJobRegistry {
+                    $jobs = [$eventConsumption, $webhookDelivery];
+                    $registeredNames = array_fill_keys(array_map(
+                        static fn (CronJobInterface $job): string => $job->name(),
+                        $jobs,
+                    ), true);
                     foreach (($settings['cron']['jobs'] ?? []) as $jobName) {
-                        if ($jobName === $eventConsumption->name()) {
+                        if (isset($registeredNames[(string) $jobName])) {
                             continue;
                         }
 
