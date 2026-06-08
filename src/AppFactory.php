@@ -61,6 +61,8 @@ use VertoAD\Repository\FirstPartySessionRepository;
 use VertoAD\Repository\FirstPartySessionRepositoryInterface;
 use VertoAD\Repository\OAuthClientRepository;
 use VertoAD\Repository\OAuthClientRepositoryInterface;
+use VertoAD\Repository\OAuthTokenRepository;
+use VertoAD\Repository\OAuthTokenRepositoryInterface;
 use VertoAD\Repository\Operations\ConfigVersionRepositoryInterface;
 use VertoAD\Repository\Operations\InMemoryConfigVersionRepository;
 use VertoAD\Repository\Operations\InMemoryOperationErrorLogRepository;
@@ -113,6 +115,7 @@ use VertoAD\Service\Cron\RedisCronLockStore;
 use VertoAD\Service\DefuseRechargeKeyPlaintextCipher;
 use VertoAD\Service\FeatureFlags\FeatureFlagService;
 use VertoAD\Service\OAuthClientSecretHasher;
+use VertoAD\Service\OAuthTokenService;
 use VertoAD\Service\Operations\ConfigVersionService;
 use VertoAD\Service\Operations\OperationErrorCaptureService;
 use VertoAD\Service\Operations\OperationsSummaryService;
@@ -159,7 +162,14 @@ final class AppFactory
                     new FirstPartySessionRepository($connection),
                 OAuthClientRepositoryInterface::class => static fn (Connection $connection): OAuthClientRepositoryInterface =>
                     new OAuthClientRepository($connection),
+                OAuthTokenRepositoryInterface::class => static fn (Connection $connection): OAuthTokenRepositoryInterface =>
+                    new OAuthTokenRepository($connection),
                 OAuthClientSecretHasher::class => static fn (): OAuthClientSecretHasher => new OAuthClientSecretHasher(),
+                OAuthTokenService::class => static fn (
+                    OAuthClientRepositoryInterface $clients,
+                    OAuthTokenRepositoryInterface $tokens,
+                    OAuthClientSecretHasher $secrets,
+                ): OAuthTokenService => new OAuthTokenService($clients, $tokens, $secrets),
                 AuthService::class => static fn (
                     Connection $connection,
                     PasswordHasher $passwordHasher,
@@ -168,7 +178,8 @@ final class AppFactory
                 ): AuthService => new AuthService($connection, $passwordHasher, $resetTokens, $sessions),
                 BearerTokenAuthenticator::class => static fn (
                     FirstPartySessionRepositoryInterface $sessions,
-                ): BearerTokenAuthenticator => new BearerTokenAuthenticator($sessions),
+                    OAuthTokenRepositoryInterface $oauthTokens,
+                ): BearerTokenAuthenticator => new BearerTokenAuthenticator($sessions, $oauthTokens),
                 AuthenticateRequestMiddleware::class => static fn (
                     BearerTokenAuthenticator $authenticator,
                 ): AuthenticateRequestMiddleware => new AuthenticateRequestMiddleware($authenticator),

@@ -16,8 +16,11 @@ use VertoAD\Http\Action\Operations\OperationsSummaryAction;
 use VertoAD\Http\Action\Operations\RetryWebhookDeliveryAction;
 use VertoAD\Http\Action\Operations\RollbackConfigVersionAction;
 use VertoAD\Http\Action\OAuth\CreateOAuthClientAction;
+use VertoAD\Http\Action\OAuth\AuthorizeAction;
 use VertoAD\Http\Action\OAuth\ListOAuthClientsAction;
+use VertoAD\Http\Action\OAuth\RevokeAction;
 use VertoAD\Http\Action\OAuth\RotateOAuthClientSecretAction;
+use VertoAD\Http\Action\OAuth\TokenAction;
 use VertoAD\Http\Action\Auth\LoginAction;
 use VertoAD\Http\Action\Auth\LogoutAction;
 use VertoAD\Http\Action\Auth\MeAction;
@@ -196,6 +199,14 @@ return static function (App $app): void {
     $app->post('/api/v1/oauth/clients/{client_id}/rotate-secret', RotateOAuthClientSecretAction::class)
         ->add($permission('sdk.oauth_client.rotate_secret.own'))
         ->add(AuthenticateRequestMiddleware::class);
+    $app->get('/api/v1/oauth/authorize', AuthorizeAction::class)
+        ->add(TurnstileMiddleware::class)
+        ->add(RateLimitMiddleware::class)
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->post('/api/v1/oauth/token', TokenAction::class)
+        ->add(RateLimitMiddleware::class);
+    $app->post('/api/v1/oauth/revoke', RevokeAction::class)
+        ->add(RateLimitMiddleware::class);
     $app->post('/api/v1/attribution/conversions', ServerConversionAction::class);
     $app->get('/api/v1/attribution/pixel', ConversionPixelAction::class);
     $app->post('/api/v1/archive/jobs', CreateArchiveJobAction::class)

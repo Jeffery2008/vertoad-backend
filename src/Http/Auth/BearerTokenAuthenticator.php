@@ -7,10 +7,14 @@ namespace VertoAD\Http\Auth;
 use DateTimeImmutable;
 use Psr\Http\Message\ServerRequestInterface;
 use VertoAD\Repository\FirstPartySessionRepositoryInterface;
+use VertoAD\Repository\OAuthTokenRepositoryInterface;
 
 final readonly class BearerTokenAuthenticator
 {
-    public function __construct(private FirstPartySessionRepositoryInterface $sessions)
+    public function __construct(
+        private FirstPartySessionRepositoryInterface $sessions,
+        private ?OAuthTokenRepositoryInterface $oauthTokens = null,
+    )
     {
     }
 
@@ -21,7 +25,10 @@ final readonly class BearerTokenAuthenticator
             return $request->withAttribute(RequestUserContext::ATTRIBUTE, new RequestUserContext());
         }
 
-        $user = $this->sessions->findActiveUserByTokenHash(hash('sha256', $token), $now ?? new DateTimeImmutable());
+        $tokenHash = hash('sha256', $token);
+        $now ??= new DateTimeImmutable();
+        $user = $this->sessions->findActiveUserByTokenHash($tokenHash, $now)
+            ?? $this->oauthTokens?->findActiveUserByAccessTokenHash($tokenHash, $now);
         if ($user === null) {
             return $request->withAttribute(RequestUserContext::ATTRIBUTE, new RequestUserContext());
         }
