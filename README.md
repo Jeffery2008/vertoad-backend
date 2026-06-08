@@ -74,17 +74,21 @@ pnpm test:coverage
 composer openapi:check
 ```
 
-The OpenAPI contract lives at `docs/openapi.yaml`. When the PHP yaml extension is installed, the check command parses the full YAML document. Without that extension, it uses a structural fallback that still verifies the OpenAPI version, envelope schemas, and implemented `/api/v1` route coverage.
+The OpenAPI contract lives at `docs/openapi.yaml`. When the PHP yaml extension is installed, the check command parses the full YAML document. Without that extension, it uses a structural fallback that still verifies the OpenAPI version, envelope schemas, implemented `/api/v1` route coverage, route security annotations, frontend-used query parameters, duplicate path keys, duplicate tags, and stale placeholder metadata.
 
 The current public contract intentionally documents only implemented endpoints. Its implemented groups are:
 
 - Auth: first-party registration, login, logout, password reset, and authenticated current-user context.
 - Health: runtime liveness metadata.
 - Permissions: public permission inventory metadata for frontend route gating and developer tooling.
-- Billing: authenticated advertiser points balance, ledger, and recharge-key redemption endpoints.
-- Cron: protected backend maintenance status endpoint.
+- Billing: authenticated advertiser points balance, ledger, recharge-key redemption, publisher withdrawals, and withdrawal proof upload confirmation endpoints.
+- Assets, Campaigns, and Review: authenticated creative upload validation, campaign lifecycle, and AI/human review endpoints.
+- Publisher: site verification, ad slot presets, and slot management endpoints.
+- Reports, Attribution, Archive, and Serving: dashboard reporting, conversion attribution, cold-data jobs, public serve/track/click delivery endpoints, and SDK-facing ad event contracts.
+- OAuth: client self-service, authorization consent, token exchange, and token revocation.
+- Operations, Webhooks, Support, FeatureFlags, and Cron: operational logs/config/webhook controls, support tickets, rollout evaluation, and protected maintenance job endpoints.
 
-Do not add public publisher, reporting, OAuth, admin, or additional advertiser and ledger endpoints to OpenAPI until the corresponding backend route, response shape, and tests exist.
+Do not add new public endpoints to OpenAPI until the corresponding backend route, response shape, security behavior, and tests exist. When a frontend client starts using a query parameter or request field, update both `docs/openapi.yaml` and `scripts/openapi-check.php` so the contract gate can prevent drift.
 
 ## Backend Boundaries
 

@@ -17,14 +17,15 @@ info:
     - `/api/v1/cron/status` is protected by the cron shared secret and optional
       IP allowlist.
     - OAuth client self-service endpoints are implemented for organization-scoped
-      developer applications; OAuth authorization and token exchange endpoints
-      remain outside this slice.
+      developer applications.
+    - OAuth authorization, consent, token exchange, and revocation endpoints are
+      implemented for first-party PKCE and service-to-service API integrations.
 jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
 servers:
   - url: http://127.0.0.1:8080
     description: Local PHP built-in server
   - url: https://api.example.com
-    description: Production placeholder
+    description: Production API origin, configured per deployed environment
 tags:
   - name: Auth
     description: First-party authentication and password reset endpoints.
@@ -46,8 +47,6 @@ tags:
     description: Creative asset upload intents, validation, and review preparation endpoints.
   - name: Serving
     description: Public ad serving, impression tracking, and click redirect endpoints.
-  - name: Assets
-    description: Authenticated creative asset upload intents, confirmation, and validation.
   - name: Campaigns
     description: Authenticated organization-scoped campaign planning and status management.
   - name: Reports
@@ -702,82 +701,6 @@ paths:
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
-  /api/v1/assets/upload-intents:
-    post:
-      tags:
-        - Assets
-      operationId: createAssetUploadIntent
-      summary: Create a creative asset upload intent.
-      description: Creates an organization-scoped object key and deterministic presigned PUT upload descriptor for an allowed creative asset type.
-      security:
-        - BearerAuth: []
-      parameters:
-        - name: organization_id
-          in: query
-          required: true
-          schema:
-            type: integer
-            minimum: 1
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AssetUploadIntentRequest"
-      responses:
-        "201":
-          description: Upload intent created.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AssetUploadIntentData"
-        "400":
-          $ref: "#/components/responses/Error"
-        "401":
-          $ref: "#/components/responses/Error"
-        "422":
-          $ref: "#/components/responses/Error"
-        default:
-          $ref: "#/components/responses/Error"
-  /api/v1/assets/confirm:
-    post:
-      tags:
-        - Assets
-      operationId: confirmAssetUpload
-      summary: Confirm an uploaded creative asset.
-      description: Validates uploaded object metadata, magic bytes, dimensions, and video bounds, then creates a pending-review asset and snapshot job marker.
-      security:
-        - BearerAuth: []
-      parameters:
-        - name: organization_id
-          in: query
-          required: true
-          schema:
-            type: integer
-            minimum: 1
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AssetConfirmRequest"
-      responses:
-        "201":
-          description: Asset accepted for review preparation.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/CreativeAssetData"
-        "400":
-          $ref: "#/components/responses/Error"
-        "401":
-          $ref: "#/components/responses/Error"
-        "404":
-          $ref: "#/components/responses/Error"
-        "422":
-          $ref: "#/components/responses/Error"
-        default:
-          $ref: "#/components/responses/Error"
   /api/v1/campaigns:
     get:
       tags:
@@ -888,94 +811,6 @@ paths:
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
-    patch:
-      tags:
-        - Campaigns
-      operationId: updateCampaign
-      summary: Update a campaign or transition status.
-      description: Updates campaign planning fields or transitions status between draft, active, paused, and archived.
-      security:
-        - BearerAuth: []
-      parameters:
-        - name: organization_id
-          in: query
-          required: true
-          schema:
-            type: integer
-            minimum: 1
-        - name: campaign_id
-          in: path
-          required: true
-          schema:
-            type: integer
-            minimum: 1
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CampaignUpsertRequest"
-      responses:
-        "200":
-          description: Campaign updated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/CampaignData"
-        "400":
-          $ref: "#/components/responses/Error"
-        "401":
-          $ref: "#/components/responses/Error"
-        "404":
-          $ref: "#/components/responses/Error"
-        "409":
-          $ref: "#/components/responses/Error"
-        "422":
-          $ref: "#/components/responses/Error"
-        default:
-          $ref: "#/components/responses/Error"
-  /api/v1/campaigns:
-    post:
-      tags:
-        - Campaigns
-      operationId: createCampaign
-      summary: Create a campaign.
-      description: Creates a draft or active campaign with schedule, targeting, bid, and budget caps.
-      security:
-        - BearerAuth: []
-      parameters:
-        - name: organization_id
-          in: query
-          required: true
-          schema:
-            type: integer
-            minimum: 1
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CampaignUpsertRequest"
-      responses:
-        "201":
-          description: Campaign created.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/CampaignData"
-        "400":
-          $ref: "#/components/responses/Error"
-        "401":
-          $ref: "#/components/responses/Error"
-        "404":
-          $ref: "#/components/responses/Error"
-        "409":
-          $ref: "#/components/responses/Error"
-        "422":
-          $ref: "#/components/responses/Error"
-        default:
-          $ref: "#/components/responses/Error"
-  /api/v1/campaigns/{campaign_id}:
     patch:
       tags:
         - Campaigns
@@ -2393,6 +2228,8 @@ paths:
                   minLength: 1
                 role:
                   type: string
+                internal:
+                  type: boolean
               additionalProperties: false
       responses:
         "200":
@@ -2460,7 +2297,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/FeatureFlag"
+              $ref: "#/components/schemas/FeatureFlagCreateRequest"
       responses:
         "201":
           description: Feature flag saved.
@@ -2479,6 +2316,13 @@ paths:
       summary: List feature flags.
       security:
         - BearerAuth: []
+      parameters:
+        - name: environment
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [local, staging, prod, production]
       responses:
         "200":
           description: Feature flags.
@@ -5226,6 +5070,68 @@ components:
         updated_at:
           type: string
           format: date-time
+      additionalProperties: false
+    FeatureFlagCreateRequest:
+      type: object
+      required:
+        - flag_key
+        - environment
+        - enabled
+        - targets
+        - percentage_rollout
+        - time_window
+      properties:
+        flag_key:
+          type: string
+          minLength: 1
+        environment:
+          type: string
+          enum: [local, staging, prod, production]
+        enabled:
+          type: boolean
+        targets:
+          type: object
+          properties:
+            organization_ids:
+              type: array
+              items:
+                type: integer
+            user_ids:
+              type: array
+              items:
+                type: integer
+            roles:
+              type: array
+              items:
+                type: string
+            site_ids:
+              type: array
+              items:
+                type: integer
+            slot_ids:
+              type: array
+              items:
+                type: integer
+          additionalProperties: false
+        percentage_rollout:
+          type: integer
+          minimum: 0
+          maximum: 100
+        time_window:
+          type:
+            - object
+            - "null"
+          required:
+            - starts_at
+            - ends_at
+          properties:
+            starts_at:
+              type: string
+              format: date-time
+            ends_at:
+              type: string
+              format: date-time
+          additionalProperties: false
       additionalProperties: false
     FeatureFlag:
       type: object

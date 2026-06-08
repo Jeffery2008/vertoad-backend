@@ -25,6 +25,7 @@ if (function_exists('yaml_parse_file')) {
 
     $documentedRoutes = documentedRoutesFromParsedOpenApi($parsed);
     $operationErrors = operationErrorsFromParsedOpenApi($parsed);
+    $metadataErrors = metadataErrorsFromParsedOpenApi($parsed, $contents);
 } else {
     $parser = 'structural-fallback';
     $requiredPatterns = [
@@ -42,8 +43,10 @@ if (function_exists('yaml_parse_file')) {
 
     $documentedRoutes = documentedRoutesFromYaml($contents);
     $operationErrors = operationErrorsFromYaml($contents);
+    $metadataErrors = metadataErrorsFromYaml($contents);
 }
 
+$operationErrors = array_merge($metadataErrors, $operationErrors);
 $implementedSecurity = implementedRouteSecurityFromRoutesFile($routesPath);
 if (function_exists('yaml_parse_file') && isset($parsed) && is_array($parsed)) {
     $operationErrors = array_merge(
@@ -147,6 +150,30 @@ function operationErrorsFromParsedOpenApi(array $parsed): array
 /**
  * @return list<string>
  */
+function metadataErrorsFromParsedOpenApi(array $parsed, string $contents): array
+{
+    $errors = metadataPlaceholderErrors($contents);
+    $tagNames = [];
+    foreach (($parsed['tags'] ?? []) as $tag) {
+        if (!is_array($tag) || !isset($tag['name'])) {
+            continue;
+        }
+
+        $name = (string) $tag['name'];
+        if (in_array($name, $tagNames, true)) {
+            $errors[] = "OpenAPI tags contain duplicate name: {$name}";
+            continue;
+        }
+
+        $tagNames[] = $name;
+    }
+
+    return $errors;
+}
+
+/**
+ * @return list<string>
+ */
 function documentedRoutesFromYaml(string $contents): array
 {
     $routes = [];
@@ -190,6 +217,58 @@ function operationErrorsFromYaml(string $contents): array
             if (!yamlResponseHasJsonContent($contents, $block, $statusCode)) {
                 $errors[] = "OpenAPI operation {$route} response {$statusCode} must declare application/json content.";
             }
+        }
+    }
+
+    return $errors;
+}
+
+/**
+ * @return list<string>
+ */
+function metadataErrorsFromYaml(string $contents): array
+{
+    $errors = metadataPlaceholderErrors($contents);
+    $tagNames = [];
+
+    if (preg_match_all('/^\s{2}-\s+name:\s*([^\r\n]+)\s*$/m', $contents, $matches) === false) {
+        return $errors;
+    }
+
+    foreach ($matches[1] as $rawName) {
+        $name = trim($rawName, " \t'\"");
+        if (in_array($name, $tagNames, true)) {
+            $errors[] = "OpenAPI tags contain duplicate name: {$name}";
+            continue;
+        }
+
+        $tagNames[] = $name;
+    }
+
+    return $errors;
+}
+
+/**
+ * @return list<string>
+ */
+function metadataPlaceholderErrors(string $contents): array
+{
+    $errors = [];
+    foreach (['Production placeholder', 'outside this slice'] as $phrase) {
+        if (stripos($contents, $phrase) !== false) {
+            $errors[] = "OpenAPI metadata contains forbidden placeholder phrase: {$phrase}";
+        }
+    }
+
+    $pathKeys = [];
+    if (preg_match_all('/^\s{2}(\/api\/v1\/[^:]+):\s*$/m', $contents, $matches) !== false) {
+        foreach ($matches[1] as $path) {
+            if (in_array($path, $pathKeys, true)) {
+                $errors[] = "OpenAPI paths contain duplicate key: {$path}";
+                continue;
+            }
+
+            $pathKeys[] = $path;
         }
     }
 
@@ -497,6 +576,7 @@ function frontendUsedQueryParameters(): array
         'GET /api/v1/billing/balance' => ['organization_id'],
         'GET /api/v1/billing/ledger' => ['organization_id', 'limit'],
         'POST /api/v1/billing/recharge-keys/redeem' => ['organization_id'],
+        'GET /api/v1/feature-flags' => ['environment'],
     ];
 }
 
