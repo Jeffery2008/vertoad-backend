@@ -1038,6 +1038,88 @@ paths:
         default:
           $ref: "#/components/responses/Error"
   /api/v1/ads/serve:
+    get:
+      tags:
+        - Serving
+      operationId: serveAdFrame
+      summary: Return sandboxed ad iframe HTML for SDK delivery.
+      description: Browser-facing endpoint used as the SDK iframe src. It accepts the same publisher slot identity as the JSON decision API and returns platform-controlled HTML for sandboxed rendering on the ads origin.
+      security: []
+      parameters:
+        - name: site_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: slot_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: viewer_id
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: width
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - name: height
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - name: debug
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+        - name: sdk
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - npm
+              - hosted
+        - name: lazy
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+        - name: refresh
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - name: t
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: Sandboxed ad frame HTML returned.
+          content:
+            text/html:
+              schema:
+                type: string
+                minLength: 1
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
     post:
       tags:
         - Serving

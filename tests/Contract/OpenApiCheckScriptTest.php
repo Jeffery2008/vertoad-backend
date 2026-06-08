@@ -199,6 +199,133 @@ PHP);
         );
     }
 
+    public function testCheckerAcceptsServeFrameHtmlSuccessResponse(): void
+    {
+        $workspace = sys_get_temp_dir() . '/vertoad-openapi-check-' . bin2hex(random_bytes(8));
+        self::assertTrue(mkdir($workspace));
+
+        $openApiPath = $workspace . '/openapi.yaml';
+        $routesPath = $workspace . '/routes.php';
+
+        file_put_contents($openApiPath, <<<'YAML'
+openapi: 3.1.0
+paths:
+  /api/v1/ads/serve:
+    get:
+      tags:
+        - Serving
+      operationId: serveAdFrame
+      responses:
+        "200":
+          description: iframe html
+          content:
+            text/html:
+              schema:
+                type: string
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  responses:
+    Error:
+      description: error
+      content:
+        application/json:
+          schema:
+            type: object
+  schemas:
+    SuccessEnvelope:
+      type: object
+    ErrorEnvelope:
+      type: object
+YAML);
+
+        file_put_contents($routesPath, <<<'PHP'
+<?php
+
+$app->get('/api/v1/ads/serve', ServeFrameAction::class);
+PHP);
+
+        exec(
+            sprintf(
+                '%s %s %s %s 2>&1',
+                escapeshellarg(PHP_BINARY),
+                escapeshellarg(dirname(__DIR__, 2) . '/scripts/openapi-check.php'),
+                escapeshellarg($openApiPath),
+                escapeshellarg($routesPath),
+            ),
+            $output,
+            $exitCode,
+        );
+
+        self::assertSame(0, $exitCode, implode(PHP_EOL, $output));
+        self::assertStringContainsString('OpenAPI contract check passed', implode(PHP_EOL, $output));
+    }
+
+    public function testCheckerRequiresServeFrameHtmlSuccessResponse(): void
+    {
+        $workspace = sys_get_temp_dir() . '/vertoad-openapi-check-' . bin2hex(random_bytes(8));
+        self::assertTrue(mkdir($workspace));
+
+        $openApiPath = $workspace . '/openapi.yaml';
+        $routesPath = $workspace . '/routes.php';
+
+        file_put_contents($openApiPath, <<<'YAML'
+openapi: 3.1.0
+paths:
+  /api/v1/ads/serve:
+    get:
+      tags:
+        - Serving
+      operationId: serveAdFrame
+      responses:
+        "200":
+          description: iframe html
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  responses:
+    Error:
+      description: error
+      content:
+        application/json:
+          schema:
+            type: object
+  schemas:
+    SuccessEnvelope:
+      type: object
+    ErrorEnvelope:
+      type: object
+YAML);
+
+        file_put_contents($routesPath, <<<'PHP'
+<?php
+
+$app->get('/api/v1/ads/serve', ServeFrameAction::class);
+PHP);
+
+        exec(
+            sprintf(
+                '%s %s %s %s 2>&1',
+                escapeshellarg(PHP_BINARY),
+                escapeshellarg(dirname(__DIR__, 2) . '/scripts/openapi-check.php'),
+                escapeshellarg($openApiPath),
+                escapeshellarg($routesPath),
+            ),
+            $output,
+            $exitCode,
+        );
+
+        self::assertSame(1, $exitCode, implode(PHP_EOL, $output));
+        self::assertStringContainsString(
+            'OpenAPI operation GET /api/v1/ads/serve response 200 must declare text/html content.',
+            implode(PHP_EOL, $output),
+        );
+    }
+
     public function testCheckerFailsWhenRouteMiddlewareSecurityIsNotDocumented(): void
     {
         $workspace = sys_get_temp_dir() . '/vertoad-openapi-check-' . bin2hex(random_bytes(8));

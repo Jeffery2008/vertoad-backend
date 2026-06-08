@@ -63,6 +63,7 @@ use VertoAD\Http\Action\Review\StartAiReviewAction;
 use VertoAD\Http\Action\Reporting\ReportDashboardAction;
 use VertoAD\Http\Action\Serving\ClickAction;
 use VertoAD\Http\Action\Serving\ServeAction;
+use VertoAD\Http\Action\Serving\ServeFrameAction;
 use VertoAD\Http\Action\Serving\TrackAction;
 use VertoAD\Http\Action\Support\AddSupportTicketNoteAction;
 use VertoAD\Http\Action\Support\CreateSupportTicketAction;
@@ -275,6 +276,7 @@ return static function (App $app): void {
     $app->post('/api/v1/feature-flags/{flag_key}/evaluate', EvaluateFeatureFlagAction::class)
         ->add($platformPermission('feature_flag.evaluate.platform'))
         ->add(AuthenticateRequestMiddleware::class);
+    $app->get('/api/v1/ads/serve', ServeFrameAction::class);
     $app->post('/api/v1/ads/serve', ServeAction::class);
     $app->post('/api/v1/ads/track', TrackAction::class);
     $app->get('/api/v1/ads/click', ClickAction::class);

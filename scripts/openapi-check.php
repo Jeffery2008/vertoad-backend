@@ -136,8 +136,16 @@ function operationErrorsFromParsedOpenApi(array $parsed): array
                 $errors[] = "OpenAPI operation {$route} is missing default error response.";
             }
 
-            foreach (requiredJsonResponseStatuses($responses) as $statusCode) {
-                if (!responseHasJsonContent($responses[$statusCode] ?? null, $parsed)) {
+            foreach (requiredDocumentedResponseStatuses($responses) as $statusCode) {
+                if (responseMustDeclareHtml($route, $statusCode)) {
+                    if (!responseHasContentType($responses[$statusCode] ?? null, $parsed, 'text/html')) {
+                        $errors[] = "OpenAPI operation {$route} response {$statusCode} must declare text/html content.";
+                    }
+
+                    continue;
+                }
+
+                if (!responseHasContentType($responses[$statusCode] ?? null, $parsed, 'application/json')) {
                     $errors[] = "OpenAPI operation {$route} response {$statusCode} must declare application/json content.";
                 }
             }
@@ -213,8 +221,16 @@ function operationErrorsFromYaml(string $contents): array
             $errors[] = "OpenAPI operation {$route} is missing default error response.";
         }
 
-        foreach (requiredJsonResponseStatusesFromYamlBlock($block) as $statusCode) {
-            if (!yamlResponseHasJsonContent($contents, $block, $statusCode)) {
+        foreach (requiredDocumentedResponseStatusesFromYamlBlock($block) as $statusCode) {
+            if (responseMustDeclareHtml($route, $statusCode)) {
+                if (!yamlResponseHasContentType($contents, $block, $statusCode, 'text/html')) {
+                    $errors[] = "OpenAPI operation {$route} response {$statusCode} must declare text/html content.";
+                }
+
+                continue;
+            }
+
+            if (!yamlResponseHasContentType($contents, $block, $statusCode, 'application/json')) {
                 $errors[] = "OpenAPI operation {$route} response {$statusCode} must declare application/json content.";
             }
         }
@@ -594,7 +610,7 @@ function hasSuccessResponse(array $responses): bool
 /**
  * @return list<string>
  */
-function requiredJsonResponseStatuses(array $responses): array
+function requiredDocumentedResponseStatuses(array $responses): array
 {
     $statuses = [];
     foreach (array_keys($responses) as $statusCode) {
@@ -607,13 +623,13 @@ function requiredJsonResponseStatuses(array $responses): array
     return $statuses;
 }
 
-function responseHasJsonContent(mixed $response, array $parsed): bool
+function responseHasContentType(mixed $response, array $parsed, string $contentType): bool
 {
     if (is_array($response) && isset($response['$ref']) && is_string($response['$ref'])) {
         $response = resolveLocalRef($parsed, $response['$ref']);
     }
 
-    return is_array($response) && isset($response['content']['application/json']);
+    return is_array($response) && isset($response['content'][$contentType]);
 }
 
 function resolveLocalRef(array $document, string $ref): mixed
@@ -638,7 +654,7 @@ function resolveLocalRef(array $document, string $ref): mixed
 /**
  * @return list<string>
  */
-function requiredJsonResponseStatusesFromYamlBlock(string $block): array
+function requiredDocumentedResponseStatusesFromYamlBlock(string $block): array
 {
     $statuses = [];
     if (preg_match_all('/^\s{8}("?2\d\d"?|default):\s*$/m', $block, $matches) === false) {
@@ -655,7 +671,12 @@ function requiredJsonResponseStatusesFromYamlBlock(string $block): array
     return $statuses;
 }
 
-function yamlResponseHasJsonContent(string $contents, string $operationBlock, string $statusCode): bool
+function responseMustDeclareHtml(string $route, string $statusCode): bool
+{
+    return $route === 'GET /api/v1/ads/serve' && $statusCode === '200';
+}
+
+function yamlResponseHasContentType(string $contents, string $operationBlock, string $statusCode, string $contentType): bool
 {
     $responseBlock = yamlNestedBlock($operationBlock, 8, $statusCode);
     if ($responseBlock === null) {
@@ -669,7 +690,7 @@ function yamlResponseHasJsonContent(string $contents, string $operationBlock, st
         }
     }
 
-    return preg_match('/^\s+application\/json:\s*$/m', $responseBlock) === 1;
+    return preg_match('/^\s+' . preg_quote($contentType, '/') . ':\s*$/m', $responseBlock) === 1;
 }
 
 function yamlNestedBlock(string $contents, int $indent, string $key): ?string

@@ -13,6 +13,7 @@ use Slim\Psr7\Factory\ServerRequestFactory;
 use VertoAD\Domain\Serving\AdCandidate;
 use VertoAD\Http\Action\Serving\ClickAction;
 use VertoAD\Http\Action\Serving\ServeAction;
+use VertoAD\Http\Action\Serving\ServeFrameAction;
 use VertoAD\Http\Action\Serving\TrackAction;
 use VertoAD\Http\Middleware\ApiEnvelopeMiddleware;
 use VertoAD\Repository\Serving\InMemoryAdDecisionRepository;
@@ -84,6 +85,54 @@ final class ServingRouteIntegrationTest extends TestCase
             'viewer_id' => 'viewer-1',
             'debug' => 'yes',
         ]);
+        self::assertSame('invalid_request', $invalidDebug['error']['code']);
+    }
+
+    public function testServeFrameReturnsSandboxedHtmlForSdkIframe(): void
+    {
+        $app = $this->createApp([$this->safeCandidate()]);
+
+        $response = $this->handleRaw(
+            $app,
+            'GET',
+            '/api/v1/ads/serve?site_id=10&slot_id=20&viewer_id=viewer-1&width=300&height=250&debug=1'
+        );
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertStringStartsWith('text/html', $response->getHeaderLine('Content-Type'));
+        $html = (string) $response->getBody();
+        self::assertStringContainsString('sandbox=', $html);
+        self::assertStringContainsString('VertoAD creative', $html);
+
+        $invalidResponse = $this->handleRaw($app, 'GET', '/api/v1/ads/serve?site_id=0&slot_id=20&viewer_id=viewer-1');
+        self::assertSame(422, $invalidResponse->getStatusCode());
+        $invalid = json_decode((string) $invalidResponse->getBody(), true, flags: JSON_THROW_ON_ERROR);
+        self::assertIsArray($invalid);
+        self::assertSame('invalid_request', $invalid['error']['code']);
+    }
+
+    public function testServeFrameHandlesNoSizeAndInvalidQueryValues(): void
+    {
+        $app = $this->createApp([$this->safeCandidate()]);
+
+        $noSize = $this->handleRaw($app, 'GET', '/api/v1/ads/serve?site_id=10&slot_id=20&viewer_id=viewer-1&debug=false');
+        self::assertSame(200, $noSize->getStatusCode());
+        self::assertStringContainsString('VertoAD creative', (string) $noSize->getBody());
+
+        $defaultDebug = $this->handleRaw($app, 'GET', '/api/v1/ads/serve?site_id=10&slot_id=20&viewer_id=viewer-1');
+        self::assertSame(200, $defaultDebug->getStatusCode());
+        self::assertStringContainsString('VertoAD creative', (string) $defaultDebug->getBody());
+
+        $invalidViewer = $this->handleJson($app, 'GET', '/api/v1/ads/serve?site_id=10&slot_id=20&viewer_id=');
+        self::assertSame('invalid_request', $invalidViewer['error']['code']);
+
+        $partialSize = $this->handleJson($app, 'GET', '/api/v1/ads/serve?site_id=10&slot_id=20&viewer_id=viewer-1&width=300');
+        self::assertSame('invalid_request', $partialSize['error']['code']);
+
+        $invalidSize = $this->handleJson($app, 'GET', '/api/v1/ads/serve?site_id=10&slot_id=20&viewer_id=viewer-1&width=300&height=0');
+        self::assertSame('invalid_request', $invalidSize['error']['code']);
+
+        $invalidDebug = $this->handleJson($app, 'GET', '/api/v1/ads/serve?site_id=10&slot_id=20&viewer_id=viewer-1&debug=yes');
         self::assertSame('invalid_request', $invalidDebug['error']['code']);
     }
 
@@ -234,6 +283,7 @@ final class ServingRouteIntegrationTest extends TestCase
         SlimAppFactory::setContainer($container);
         $app = SlimAppFactory::create();
         $app->addBodyParsingMiddleware();
+        $app->get('/api/v1/ads/serve', ServeFrameAction::class);
         $app->post('/api/v1/ads/serve', ServeAction::class);
         $app->post('/api/v1/ads/track', TrackAction::class);
         $app->get('/api/v1/ads/click', ClickAction::class);
