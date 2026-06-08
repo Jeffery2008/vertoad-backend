@@ -1766,6 +1766,41 @@ paths:
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/oauth/consent:
+    post:
+      tags:
+        - OAuth
+      operationId: grantOAuthConsent
+      summary: Grant user consent for an OAuth client.
+      description: Requires an authenticated first-party user, Turnstile verification, and client scopes constrained to the registered OAuth client. Authorization code requests require matching prior consent.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OAuthConsentRequest"
+      responses:
+        "200":
+          description: OAuth consent granted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthConsentData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/oauth/token:
     post:
       tags:
@@ -4399,6 +4434,49 @@ components:
         expires_in:
           type: integer
           minimum: 1
+      additionalProperties: false
+    OAuthConsentRequest:
+      type: object
+      required:
+        - client_id
+        - scope
+      properties:
+        client_id:
+          type: string
+          minLength: 1
+        scope:
+          type: string
+          minLength: 1
+          description: Space-delimited OAuth scopes to grant.
+      additionalProperties: false
+    OAuthConsentData:
+      type: object
+      required:
+        - client
+        - scopes
+        - granted_at
+      properties:
+        client:
+          type: object
+          required:
+            - client_id
+            - name
+          properties:
+            client_id:
+              type: string
+              minLength: 1
+            name:
+              type: string
+              minLength: 1
+          additionalProperties: false
+        scopes:
+          type: array
+          items:
+            type: string
+          minItems: 1
+        granted_at:
+          type: string
+          format: date-time
       additionalProperties: false
     OAuthTokenRequest:
       oneOf:

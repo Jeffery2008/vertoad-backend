@@ -15,6 +15,7 @@ use VertoAD\Http\Auth\RequestUserContext;
 use VertoAD\Repository\FirstPartySessionRepository;
 use VertoAD\Repository\OAuthClientRepository;
 use VertoAD\Repository\OAuthClientRepositoryInterface;
+use VertoAD\Repository\OAuthConsentRepository;
 use VertoAD\Repository\OAuthTokenRepository;
 use VertoAD\Service\OAuthClientSecretHasher;
 use VertoAD\Service\OAuthTokenService;
@@ -28,6 +29,7 @@ final class OAuthTokenServiceTest extends TestCase
         $client = $this->storeClient($connection, ['authorization_code', 'refresh_token']);
         $now = new DateTimeImmutable('2026-06-08 10:00:00');
         $verifier = 'pkce-verifier-123';
+        $this->grantAllConsent($connection, $client, $now);
 
         $authorization = $service->authorize(
             userId: 7,
@@ -66,6 +68,7 @@ final class OAuthTokenServiceTest extends TestCase
         $service = $this->createService($connection);
         $client = $this->storeClient($connection, ['authorization_code', 'refresh_token']);
         $now = new DateTimeImmutable('2026-06-08 10:00:00');
+        $this->grantAllConsent($connection, $client, $now);
         $authorization = $service->authorize(7, 99, $client->clientIdentifier, 'https://app.example.com/oauth/callback', [], $this->pkceChallenge('right-verifier'), 'S256', $now);
 
         $this->expectExceptionMessage('OAuth PKCE verifier does not match');
@@ -84,6 +87,7 @@ final class OAuthTokenServiceTest extends TestCase
         $service = $this->createService($connection);
         $client = $this->storeClient($connection, ['authorization_code']);
         $now = new DateTimeImmutable('2026-06-08 10:00:00');
+        $this->grantAllConsent($connection, $client, $now);
 
         try {
             $service->authorize(7, 99, $client->clientIdentifier, 'https://evil.example.com/callback', [], $this->pkceChallenge('verifier'), 'S256', $now);
@@ -96,12 +100,35 @@ final class OAuthTokenServiceTest extends TestCase
         $service->authorize(7, 99, $client->clientIdentifier, 'https://app.example.com/oauth/callback', [], '', 'plain', $now);
     }
 
+    public function testAuthorizeRequiresPriorConsentForRequestedScopes(): void
+    {
+        $connection = $this->createConnection();
+        $service = $this->createService($connection);
+        $client = $this->storeClient($connection, ['authorization_code']);
+        $now = new DateTimeImmutable('2026-06-08 10:00:00');
+
+        try {
+            $service->authorize(7, 99, $client->clientIdentifier, 'https://app.example.com/oauth/callback', ['report.read.own'], $this->pkceChallenge('verifier'), 'S256', $now);
+            self::fail('Expected authorization to require prior consent.');
+        } catch (\RuntimeException $exception) {
+            self::assertStringContainsString('requires user consent', $exception->getMessage());
+        }
+
+        $consent = $service->consent(7, 99, $client->clientIdentifier, ['report.read.own'], $now);
+        self::assertSame($client->clientIdentifier, $consent['client']['client_id']);
+        self::assertSame(['report.read.own'], $consent['scopes']);
+
+        $authorization = $service->authorize(7, 99, $client->clientIdentifier, 'https://app.example.com/oauth/callback', ['report.read.own'], $this->pkceChallenge('verifier'), 'S256', $now);
+        self::assertStringStartsWith('voac_', $authorization['code']);
+    }
+
     public function testAuthorizationCodeExchangeRejectsMissingInvalidAndMismatchedRedirectRequests(): void
     {
         $connection = $this->createConnection();
         $service = $this->createService($connection);
         $client = $this->storeClient($connection, ['authorization_code', 'refresh_token']);
         $now = new DateTimeImmutable('2026-06-08 10:00:00');
+        $this->grantAllConsent($connection, $client, $now);
 
         try {
             $service->token(['grant_type' => 'authorization_code'], $now);
@@ -166,6 +193,7 @@ final class OAuthTokenServiceTest extends TestCase
         $service = $this->createService($connection);
         $client = $this->storeClient($connection, ['authorization_code', 'refresh_token']);
         $now = new DateTimeImmutable('2026-06-08 10:00:00');
+        $this->grantAllConsent($connection, $client, $now);
         $authorization = $service->authorize(7, 99, $client->clientIdentifier, 'https://app.example.com/oauth/callback', [], $this->pkceChallenge('verifier'), 'S256', $now);
         $first = $service->token([
             'grant_type' => 'authorization_code',
@@ -204,6 +232,7 @@ final class OAuthTokenServiceTest extends TestCase
         $service = $this->createService($connection);
         $client = $this->storeClient($connection, ['authorization_code', 'refresh_token']);
         $now = new DateTimeImmutable('2026-06-08 10:00:00');
+        $this->grantAllConsent($connection, $client, $now);
         $authorization = $service->authorize(7, 99, $client->clientIdentifier, 'https://app.example.com/oauth/callback', [], $this->pkceChallenge('verifier'), 'S256', $now);
         $token = $service->token([
             'grant_type' => 'authorization_code',
@@ -286,6 +315,7 @@ final class OAuthTokenServiceTest extends TestCase
                 revokedAt: null,
             )),
             new OAuthTokenRepository($connection),
+            new OAuthConsentRepository($connection),
             new OAuthClientSecretHasher(),
         );
 
@@ -299,6 +329,7 @@ final class OAuthTokenServiceTest extends TestCase
         $service = $this->createService($connection);
         $client = $this->storeClient($connection, ['authorization_code', 'refresh_token']);
         $now = new DateTimeImmutable('2026-06-08 10:00:00');
+        $this->grantAllConsent($connection, $client, $now);
         $authorization = $service->authorize(7, 99, $client->clientIdentifier, 'https://app.example.com/oauth/callback', [], $this->pkceChallenge('verifier'), 'S256', $now);
         $token = $service->token([
             'grant_type' => 'authorization_code',
@@ -327,6 +358,7 @@ final class OAuthTokenServiceTest extends TestCase
         $randomService = new OAuthTokenService(
             new OAuthClientRepository($connection),
             new OAuthTokenRepository($connection),
+            new OAuthConsentRepository($connection),
             new OAuthClientSecretHasher(),
         );
         $client = $this->storeClient($connection, ['client_credentials']);
@@ -383,6 +415,28 @@ final class OAuthTokenServiceTest extends TestCase
         self::assertSame(['authorization_code'], $grant['client']->grantTypes);
     }
 
+    public function testConsentRepositoryUpdatesGlobalConsentAndRejectsMissingOrPartialScopes(): void
+    {
+        $connection = $this->createConnection();
+        $client = $this->storeClient($connection, ['authorization_code']);
+        $repository = new OAuthConsentRepository($connection);
+        $now = new DateTimeImmutable('2026-06-08 10:00:00');
+
+        self::assertFalse($repository->hasConsentFor($client, 7, null, ['report.read.own']));
+
+        $repository->grantConsent($client, 7, null, ['report.read.own'], $now);
+        self::assertTrue($repository->hasConsentFor($client, 7, null, ['report.read.own']));
+        self::assertFalse($repository->hasConsentFor($client, 7, null, ['report.read.own', 'campaign.read.own']));
+
+        $repository->grantConsent($client, 7, null, ['campaign.read.own'], $now->modify('+1 minute'));
+        self::assertSame(1, (int) $connection->fetchOne('SELECT COUNT(*) FROM oauth_user_consents WHERE client_id = ?', [$client->id]));
+        self::assertFalse($repository->hasConsentFor($client, 7, null, ['report.read.own']));
+        self::assertTrue($repository->hasConsentFor($client, 7, null, ['campaign.read.own']));
+
+        $connection->executeStatement('UPDATE oauth_user_consents SET scopes_json = ? WHERE client_id = ?', ['true', $client->id]);
+        self::assertFalse($repository->hasConsentFor($client, 7, null, ['campaign.read.own']));
+    }
+
     private function createService(Connection $connection): OAuthTokenService
     {
         $tokens = ['code', 'access', 'refresh', 'access-2', 'refresh-2', 'access-3'];
@@ -390,6 +444,7 @@ final class OAuthTokenServiceTest extends TestCase
         return new OAuthTokenService(
             new OAuthClientRepository($connection),
             new OAuthTokenRepository($connection),
+            new OAuthConsentRepository($connection),
             new OAuthClientSecretHasher(),
             static function () use (&$tokens): string {
                 return (string) array_shift($tokens);
@@ -426,6 +481,18 @@ final class OAuthTokenServiceTest extends TestCase
         };
     }
 
+    private function grantAllConsent(Connection $connection, OAuthClient $client, DateTimeImmutable $now): void
+    {
+        $connection->insert('oauth_user_consents', [
+            'client_id' => $client->id,
+            'user_id' => 7,
+            'organization_id' => 99,
+            'scopes_json' => json_encode($client->scopes, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            'granted_at' => $now->format('Y-m-d H:i:s'),
+            'revoked_at' => null,
+        ]);
+    }
+
     /** @param list<string> $grantTypes */
     private function storeClient(Connection $connection, array $grantTypes): OAuthClient
     {
@@ -455,6 +522,7 @@ final class OAuthTokenServiceTest extends TestCase
         $connection->executeStatement('CREATE TABLE oauth_authorization_codes (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, user_id INTEGER NOT NULL, organization_id INTEGER NULL, code_identifier TEXT NOT NULL UNIQUE, redirect_uri TEXT NOT NULL, scopes_json TEXT NULL, code_challenge TEXT NULL, code_challenge_method TEXT NULL, expires_at TEXT NOT NULL, revoked_at TEXT NULL)');
         $connection->executeStatement('CREATE TABLE oauth_access_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, user_id INTEGER NULL, organization_id INTEGER NULL, authorization_code_id INTEGER NULL, access_token_identifier TEXT NOT NULL UNIQUE, scopes_json TEXT NULL, expires_at TEXT NOT NULL, revoked_at TEXT NULL)');
         $connection->executeStatement('CREATE TABLE oauth_refresh_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, access_token_id INTEGER NOT NULL, client_id INTEGER NOT NULL, user_id INTEGER NULL, refresh_token_identifier TEXT NOT NULL UNIQUE, previous_refresh_token_id INTEGER NULL, rotated_to_refresh_token_id INTEGER NULL, expires_at TEXT NOT NULL, revoked_at TEXT NULL, rotated_at TEXT NULL, reuse_detected_at TEXT NULL)');
+        $connection->executeStatement('CREATE TABLE oauth_user_consents (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, user_id INTEGER NOT NULL, organization_id INTEGER NULL, scopes_json TEXT NOT NULL, granted_at TEXT NOT NULL, revoked_at TEXT NULL)');
         $connection->insert('users', ['id' => 7, 'email' => 'owner@example.com', 'password_hash' => 'unused', 'display_name' => 'Owner', 'status' => 'active']);
 
         return $connection;

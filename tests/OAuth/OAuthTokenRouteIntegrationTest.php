@@ -13,6 +13,7 @@ use Slim\Psr7\Factory\ServerRequestFactory;
 use VertoAD\Domain\Auth\OAuthClient;
 use VertoAD\Http\Action\Auth\MeAction;
 use VertoAD\Http\Action\OAuth\AuthorizeAction;
+use VertoAD\Http\Action\OAuth\ConsentAction;
 use VertoAD\Http\Action\OAuth\RevokeAction;
 use VertoAD\Http\Action\OAuth\TokenAction;
 use VertoAD\Http\Auth\BearerTokenAuthenticator;
@@ -22,6 +23,8 @@ use VertoAD\Repository\FirstPartySessionRepository;
 use VertoAD\Repository\FirstPartySessionRepositoryInterface;
 use VertoAD\Repository\OAuthClientRepository;
 use VertoAD\Repository\OAuthClientRepositoryInterface;
+use VertoAD\Repository\OAuthConsentRepository;
+use VertoAD\Repository\OAuthConsentRepositoryInterface;
 use VertoAD\Repository\OAuthTokenRepository;
 use VertoAD\Repository\OAuthTokenRepositoryInterface;
 use VertoAD\Repository\OrganizationMembershipRepository;
@@ -37,6 +40,13 @@ final class OAuthTokenRouteIntegrationTest extends TestCase
         $app = $this->createApp($connection);
         $client = $this->storeClient($connection, ['authorization_code', 'refresh_token']);
         $verifier = 'route-verifier';
+
+        $consent = $this->handleJson($app, 'POST', '/api/v1/oauth/consent?organization_id=99', [
+            'client_id' => $client->clientIdentifier,
+            'scope' => 'report.read.own',
+        ], 'fixed-session');
+        self::assertSame(200, $consent['status']);
+        self::assertSame(['report.read.own'], $consent['body']['data']['scopes']);
 
         $authorize = $this->handleJson(
             $app,
@@ -130,6 +140,31 @@ final class OAuthTokenRouteIntegrationTest extends TestCase
         self::assertSame('invalid_oauth_request', $invalid['body']['error']['code']);
     }
 
+    public function testConsentRouteRejectsUnauthenticatedAndInvalidBodies(): void
+    {
+        $connection = $this->createConnection();
+        $app = $this->createApp($connection);
+        $client = $this->storeClient($connection, ['authorization_code']);
+
+        $unauthenticated = $this->handleJson($app, 'POST', '/api/v1/oauth/consent?organization_id=99', [
+            'client_id' => $client->clientIdentifier,
+            'scope' => 'report.read.own',
+        ]);
+        self::assertSame(401, $unauthenticated['status']);
+        self::assertSame('authentication_required', $unauthenticated['body']['error']['code']);
+
+        $invalidBody = $this->handleJson($app, 'POST', '/api/v1/oauth/consent?organization_id=99', null, 'fixed-session');
+        self::assertSame(400, $invalidBody['status']);
+        self::assertSame('invalid_request', $invalidBody['body']['error']['code']);
+
+        $invalidClient = $this->handleJson($app, 'POST', '/api/v1/oauth/consent?organization_id=99', [
+            'client_id' => 'missing',
+            'scope' => 'report.read.own',
+        ], 'fixed-session');
+        self::assertSame(400, $invalidClient['status']);
+        self::assertSame('invalid_oauth_request', $invalidClient['body']['error']['code']);
+    }
+
     public function testTokenAndRevokeRoutesRejectInvalidRequestBodies(): void
     {
         $connection = $this->createConnection();
@@ -153,6 +188,8 @@ final class OAuthTokenRouteIntegrationTest extends TestCase
                 new FirstPartySessionRepository($connection),
             OAuthTokenRepositoryInterface::class => static fn (): OAuthTokenRepositoryInterface =>
                 new OAuthTokenRepository($connection),
+            OAuthConsentRepositoryInterface::class => static fn (): OAuthConsentRepositoryInterface =>
+                new OAuthConsentRepository($connection),
             BearerTokenAuthenticator::class => static fn (
                 FirstPartySessionRepositoryInterface $sessions,
                 OAuthTokenRepositoryInterface $oauthTokens,
@@ -168,10 +205,12 @@ final class OAuthTokenRouteIntegrationTest extends TestCase
             OAuthTokenService::class => static fn (
                 OAuthClientRepositoryInterface $clients,
                 OAuthTokenRepositoryInterface $tokenRepository,
+                OAuthConsentRepositoryInterface $consents,
                 OAuthClientSecretHasher $secrets,
             ): OAuthTokenService => new OAuthTokenService(
                 $clients,
                 $tokenRepository,
+                $consents,
                 $secrets,
                 static function () use (&$tokens): string {
                     return (string) array_shift($tokens);
@@ -183,6 +222,7 @@ final class OAuthTokenRouteIntegrationTest extends TestCase
         $app = SlimAppFactory::create();
         $app->addBodyParsingMiddleware();
         $app->get('/api/v1/oauth/authorize', AuthorizeAction::class)->add(AuthenticateRequestMiddleware::class);
+        $app->post('/api/v1/oauth/consent', ConsentAction::class)->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/oauth/token', TokenAction::class);
         $app->post('/api/v1/oauth/revoke', RevokeAction::class);
         $app->get('/api/v1/auth/me', MeAction::class)->add(AuthenticateRequestMiddleware::class);
@@ -244,6 +284,7 @@ final class OAuthTokenRouteIntegrationTest extends TestCase
         $connection->executeStatement('CREATE TABLE oauth_authorization_codes (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, user_id INTEGER NOT NULL, organization_id INTEGER NULL, code_identifier TEXT NOT NULL UNIQUE, redirect_uri TEXT NOT NULL, scopes_json TEXT NULL, code_challenge TEXT NULL, code_challenge_method TEXT NULL, expires_at TEXT NOT NULL, revoked_at TEXT NULL)');
         $connection->executeStatement('CREATE TABLE oauth_access_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, user_id INTEGER NULL, organization_id INTEGER NULL, authorization_code_id INTEGER NULL, access_token_identifier TEXT NOT NULL UNIQUE, scopes_json TEXT NULL, expires_at TEXT NOT NULL, revoked_at TEXT NULL)');
         $connection->executeStatement('CREATE TABLE oauth_refresh_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, access_token_id INTEGER NOT NULL, client_id INTEGER NOT NULL, user_id INTEGER NULL, refresh_token_identifier TEXT NOT NULL UNIQUE, previous_refresh_token_id INTEGER NULL, rotated_to_refresh_token_id INTEGER NULL, expires_at TEXT NOT NULL, revoked_at TEXT NULL, rotated_at TEXT NULL, reuse_detected_at TEXT NULL)');
+        $connection->executeStatement('CREATE TABLE oauth_user_consents (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, user_id INTEGER NOT NULL, organization_id INTEGER NULL, scopes_json TEXT NOT NULL, granted_at TEXT NOT NULL, revoked_at TEXT NULL)');
         $connection->insert('users', ['id' => 7, 'email' => 'owner@example.com', 'password_hash' => 'unused', 'display_name' => 'Owner', 'status' => 'active']);
         $connection->insert('first_party_sessions', ['user_id' => 7, 'session_token_hash' => hash('sha256', 'fixed-session'), 'expires_at' => '2099-01-01 00:00:00', 'revoked_at' => null, 'last_seen_at' => null]);
         $connection->insert('organization_members', ['id' => 1, 'organization_id' => 99, 'user_id' => 7, 'status' => 'active', 'title' => null]);

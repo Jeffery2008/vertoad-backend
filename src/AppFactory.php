@@ -61,6 +61,8 @@ use VertoAD\Repository\FirstPartySessionRepository;
 use VertoAD\Repository\FirstPartySessionRepositoryInterface;
 use VertoAD\Repository\OAuthClientRepository;
 use VertoAD\Repository\OAuthClientRepositoryInterface;
+use VertoAD\Repository\OAuthConsentRepository;
+use VertoAD\Repository\OAuthConsentRepositoryInterface;
 use VertoAD\Repository\OAuthTokenRepository;
 use VertoAD\Repository\OAuthTokenRepositoryInterface;
 use VertoAD\Repository\Operations\ConfigVersionRepositoryInterface;
@@ -164,12 +166,15 @@ final class AppFactory
                     new OAuthClientRepository($connection),
                 OAuthTokenRepositoryInterface::class => static fn (Connection $connection): OAuthTokenRepositoryInterface =>
                     new OAuthTokenRepository($connection),
+                OAuthConsentRepositoryInterface::class => static fn (Connection $connection): OAuthConsentRepositoryInterface =>
+                    new OAuthConsentRepository($connection),
                 OAuthClientSecretHasher::class => static fn (): OAuthClientSecretHasher => new OAuthClientSecretHasher(),
                 OAuthTokenService::class => static fn (
                     OAuthClientRepositoryInterface $clients,
                     OAuthTokenRepositoryInterface $tokens,
+                    OAuthConsentRepositoryInterface $consents,
                     OAuthClientSecretHasher $secrets,
-                ): OAuthTokenService => new OAuthTokenService($clients, $tokens, $secrets),
+                ): OAuthTokenService => new OAuthTokenService($clients, $tokens, $consents, $secrets),
                 AuthService::class => static fn (
                     Connection $connection,
                     PasswordHasher $passwordHasher,

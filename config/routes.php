@@ -17,6 +17,7 @@ use VertoAD\Http\Action\Operations\RetryWebhookDeliveryAction;
 use VertoAD\Http\Action\Operations\RollbackConfigVersionAction;
 use VertoAD\Http\Action\OAuth\CreateOAuthClientAction;
 use VertoAD\Http\Action\OAuth\AuthorizeAction;
+use VertoAD\Http\Action\OAuth\ConsentAction;
 use VertoAD\Http\Action\OAuth\ListOAuthClientsAction;
 use VertoAD\Http\Action\OAuth\RevokeAction;
 use VertoAD\Http\Action\OAuth\RotateOAuthClientSecretAction;
@@ -200,6 +201,10 @@ return static function (App $app): void {
         ->add($permission('sdk.oauth_client.rotate_secret.own'))
         ->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/oauth/authorize', AuthorizeAction::class)
+        ->add(TurnstileMiddleware::class)
+        ->add(RateLimitMiddleware::class)
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->post('/api/v1/oauth/consent', ConsentAction::class)
         ->add(TurnstileMiddleware::class)
         ->add(RateLimitMiddleware::class)
         ->add(AuthenticateRequestMiddleware::class);

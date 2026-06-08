@@ -10,6 +10,7 @@ use InvalidArgumentException;
 use RuntimeException;
 use VertoAD\Domain\Auth\OAuthClient;
 use VertoAD\Repository\OAuthClientRepositoryInterface;
+use VertoAD\Repository\OAuthConsentRepositoryInterface;
 use VertoAD\Repository\OAuthTokenRepositoryInterface;
 
 final readonly class OAuthTokenService
@@ -18,6 +19,7 @@ final readonly class OAuthTokenService
     public function __construct(
         private OAuthClientRepositoryInterface $clients,
         private OAuthTokenRepositoryInterface $tokens,
+        private OAuthConsentRepositoryInterface $consents,
         private OAuthClientSecretHasher $secrets,
         private mixed $tokenFactory = null,
         private int $authorizationCodeTtlSeconds = 300,
@@ -49,6 +51,10 @@ final readonly class OAuthTokenService
         }
 
         $scopes = $this->constrainScopes($client, $scopes);
+        if (!$this->consents->hasConsentFor($client, $userId, $organizationId, $scopes)) {
+            throw new RuntimeException('OAuth authorization requires user consent for the requested scopes.');
+        }
+
         $plainCode = $this->plainToken('voac_');
         $codeId = $this->tokens->createAuthorizationCode(
             $client,
@@ -63,6 +69,23 @@ final readonly class OAuthTokenService
         );
 
         return ['code' => $plainCode, 'code_id' => $codeId, 'expires_in' => $this->authorizationCodeTtlSeconds];
+    }
+
+    /** @param list<string> $scopes */
+    public function consent(int $userId, ?int $organizationId, string $clientId, array $scopes, DateTimeImmutable $now): array
+    {
+        $client = $this->requireClient($clientId, 'authorization_code');
+        $scopes = $this->constrainScopes($client, $scopes);
+        $this->consents->grantConsent($client, $userId, $organizationId, $scopes, $now);
+
+        return [
+            'client' => [
+                'client_id' => $client->clientIdentifier,
+                'name' => $client->name,
+            ],
+            'scopes' => $scopes,
+            'granted_at' => $now->format(DATE_ATOM),
+        ];
     }
 
     /** @param array<string, mixed> $input */
