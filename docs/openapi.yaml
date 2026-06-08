@@ -4974,6 +4974,7 @@ components:
         - dangerous_commands_disabled
         - key_prefix
         - prefix_collision_risk
+        - auth_failure_alerting_configured
       properties:
         password_configured:
           type: boolean
@@ -4990,6 +4991,8 @@ components:
             - medium
             - high
             - unknown
+        auth_failure_alerting_configured:
+          type: boolean
       additionalProperties: false
     OperationErrorLog:
       type: object

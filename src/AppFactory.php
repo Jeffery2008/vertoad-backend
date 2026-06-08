@@ -316,12 +316,13 @@ final class AppFactory
                         'evidence_url' => null,
                         'verified_by' => null,
                     ],
-                    redisHardeningInventory: $settings['operations']['redis_hardening_inventory'] ?? [
+                    redisHardeningInventory: array_merge([
                         'password_configured' => (string) ($settings['redis']['password'] ?? '') !== '',
                         'dangerous_commands_disabled' => [],
                         'key_prefix' => (string) ($settings['redis']['prefix'] ?? 'vertoad:'),
                         'prefix_collision_risk' => 'unknown',
-                    ],
+                        'auth_failure_alerting_configured' => false,
+                    ], $settings['operations']['redis_hardening_inventory'] ?? []),
                 ),
                 WebhookSigner::class => static fn (): WebhookSigner => new WebhookSigner(
                     (string) ($settings['webhooks']['signing_secret'] ?? 'whsec_local_dev_secret'),

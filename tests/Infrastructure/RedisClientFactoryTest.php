@@ -62,6 +62,22 @@ final class RedisClientFactoryTest extends TestCase
         self::assertInstanceOf(\VertoAD\Infrastructure\Redis\PredisRedisClient::class, $client);
     }
 
+    public function testFactoryUsesSocketDriverSettings(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Unable to connect to Redis');
+
+        RedisClientFactory::fromSettings([
+            'driver' => 'socket',
+            'host' => '127.0.0.1',
+            'port' => 1,
+            'password' => 'secret',
+            'database' => 2,
+            'timeout_seconds' => 0.01,
+            'read_timeout_seconds' => 0.01,
+        ]);
+    }
+
     public function testFactoryReportsMissingPhpRedisExtensionWhenExplicitlyRequested(): void
     {
         if (class_exists(\Redis::class)) {

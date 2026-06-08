@@ -30,6 +30,18 @@ return [
         'serving_event_visibility_timeout_seconds' => (int) (getenv('REDIS_SERVING_EVENT_VISIBILITY_TIMEOUT_SECONDS') ?: 300),
         'serving_event_retention_seconds' => (int) (getenv('REDIS_SERVING_EVENT_RETENTION_SECONDS') ?: 604800),
     ],
+    'operations' => [
+        'redis_hardening_inventory' => [
+            'dangerous_commands_disabled' => array_values(array_filter(array_map(
+                static fn (string $command): string => strtoupper(trim($command)),
+                explode(',', getenv('REDIS_DANGEROUS_COMMANDS_DISABLED') ?: '')
+            ))),
+            'auth_failure_alerting_configured' => filter_var(
+                getenv('REDIS_AUTH_FAILURE_ALERTING_CONFIGURED') ?: false,
+                FILTER_VALIDATE_BOOL
+            ),
+        ],
+    ],
     'storage' => [
         's3' => [
             'endpoint' => getenv('S3_ENDPOINT') ?: '',

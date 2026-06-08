@@ -102,6 +102,8 @@ Redis serving event settings:
 - `REDIS_PREFIX`: use an environment-specific prefix such as `vertoad:prod:` or `vertoad:staging:` to avoid shared Redis collisions.
 - `REDIS_SERVING_EVENT_VISIBILITY_TIMEOUT_SECONDS`: time before a leased but unacknowledged event becomes eligible for redelivery.
 - `REDIS_SERVING_EVENT_RETENTION_SECONDS`: payload and dedupe retention window.
+- `REDIS_DANGEROUS_COMMANDS_DISABLED`: comma-separated dangerous Redis commands disabled by the managed service, for example `FLUSHALL,FLUSHDB,CONFIG`.
+- `REDIS_AUTH_FAILURE_ALERTING_CONFIGURED`: set to `true` only after failed-auth/connectivity alerting is configured for the managed Redis service.
 - `CRON_EVENT_CONSUME_BATCH_SIZE`: max events consumed per Cron run.
 - `CRON_LOCK_TTL_SECONDS`: Redis lock TTL used to prevent concurrent Cron runs.
 
