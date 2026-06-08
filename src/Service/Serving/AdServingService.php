@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VertoAD\Service\Serving;
 
 use DateTimeImmutable;
+use VertoAD\Domain\Budget\SpendFailureReason;
 use VertoAD\Domain\Serving\AdCandidate;
 use VertoAD\Domain\Serving\AdDecision;
 use VertoAD\Domain\Serving\AdEventResult;
@@ -24,8 +25,12 @@ final readonly class AdServingService
         private AdCandidateRepositoryInterface $candidates,
         private AdDecisionRepositoryInterface $decisions,
         private AdEventRepositoryInterface $events,
+        ?CampaignSpendEligibilityInterface $spendEligibility = null,
     ) {
+        $this->spendEligibility = $spendEligibility ?? new AllowAllCampaignSpendEligibility();
     }
+
+    private CampaignSpendEligibilityInterface $spendEligibility;
 
     /**
      * @param array{width:int,height:int}|null $size
@@ -50,12 +55,22 @@ final readonly class AdServingService
             return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'no_eligible_ad', $now));
         }
 
+        $budgetRejection = null;
         foreach ($candidates as $candidate) {
             if (!$this->isSafeLandingUrl($candidate->landingUrl)) {
                 continue;
             }
 
+            $budgetRejection = $this->budgetRejection($candidate, $now);
+            if ($budgetRejection !== null) {
+                continue;
+            }
+
             return $this->save($this->filled($siteId, $slotId, $viewerId, $candidate, $now));
+        }
+
+        if ($budgetRejection !== null) {
+            return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'budget_' . $budgetRejection->value, $now));
         }
 
         return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'unsafe_landing_url', $now));
@@ -188,6 +203,16 @@ final readonly class AdServingService
             clickCostPoints: $candidate->clickCostPoints,
             landingUrl: $candidate->landingUrl,
             decidedAt: $now,
+        );
+    }
+
+    private function budgetRejection(AdCandidate $candidate, DateTimeImmutable $now): ?SpendFailureReason
+    {
+        return $this->spendEligibility->rejectionReason(
+            $candidate->advertiserOrganizationId,
+            $candidate->campaignId,
+            max($candidate->impressionCostPoints, $candidate->clickCostPoints),
+            $now,
         );
     }
 

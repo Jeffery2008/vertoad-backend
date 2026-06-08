@@ -124,6 +124,7 @@ use VertoAD\Service\Operations\ConfigVersionService;
 use VertoAD\Service\Operations\OperationErrorCaptureService;
 use VertoAD\Service\Operations\OperationsSummaryService;
 use VertoAD\Service\Serving\AdServingService;
+use VertoAD\Service\Serving\CampaignSpendEligibilityInterface;
 use VertoAD\Service\PasswordHasher;
 use VertoAD\Service\PermissionMatcher;
 use VertoAD\Service\PointsLedgerService;
@@ -242,6 +243,8 @@ final class AppFactory
                     PointsLedgerService $ledger,
                     PointsLedgerRepositoryInterface $ledgerRepository,
                 ): CampaignBudgetService => new CampaignBudgetService($budgets, $ledger, $ledgerRepository),
+                CampaignSpendEligibilityInterface::class => static fn (CampaignBudgetService $budgets): CampaignSpendEligibilityInterface =>
+                    $budgets,
                 CampaignService::class => static fn (
                     CampaignRepositoryInterface $campaigns,
                     ReviewRepositoryInterface $reviews,
@@ -355,7 +358,8 @@ final class AppFactory
                     AdCandidateRepositoryInterface $candidates,
                     AdDecisionRepositoryInterface $decisions,
                     AdEventRepositoryInterface $events,
-                ): AdServingService => new AdServingService($inventory, $candidates, $decisions, $events),
+                    CampaignSpendEligibilityInterface $spendEligibility,
+                ): AdServingService => new AdServingService($inventory, $candidates, $decisions, $events, $spendEligibility),
                 AuditLogRepositoryInterface::class => static fn (Connection $connection): AuditLogRepositoryInterface =>
                     new AuditLogRepository($connection),
                 AuditLogService::class => static fn (AuditLogRepositoryInterface $repository): AuditLogService =>

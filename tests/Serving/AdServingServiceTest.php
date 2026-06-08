@@ -6,11 +6,13 @@ namespace VertoAD\Tests\Serving;
 
 use DateTimeImmutable;
 use PHPUnit\Framework\TestCase;
+use VertoAD\Domain\Budget\SpendFailureReason;
 use VertoAD\Domain\Serving\AdCandidate;
 use VertoAD\Repository\Serving\InMemoryAdDecisionRepository;
 use VertoAD\Repository\Serving\InMemoryAdEventRepository;
 use VertoAD\Repository\Serving\StaticAdCandidateRepository;
 use VertoAD\Repository\Serving\StaticServingInventoryRepository;
+use VertoAD\Service\Serving\CampaignSpendEligibilityInterface;
 use VertoAD\Service\Serving\AdServingService;
 
 final class AdServingServiceTest extends TestCase
@@ -288,18 +290,85 @@ final class AdServingServiceTest extends TestCase
         }
     }
 
+    public function testServeSkipsBudgetRejectedCandidateAndUsesNextFundedSafeCandidate(): void
+    {
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([
+                $this->candidate('ad-expensive', 30, 40, 'https://advertiser.example/expensive', 100, 250),
+                $this->candidate('ad-funded', 31, 41, 'https://advertiser.example/funded', 10, 20),
+            ]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+            new FixedCampaignSpendEligibility([
+                30 => SpendFailureReason::InsufficientBalance,
+                31 => null,
+            ]),
+        );
+
+        $decision = $service->serve(10, 20, 'viewer-budget', null, false, new DateTimeImmutable('2026-06-08 10:00:00'));
+
+        self::assertTrue($decision->filled);
+        self::assertSame('ad-funded', $decision->adId);
+        self::assertSame(31, $decision->campaignId);
+        self::assertSame(41, $decision->advertiserOrganizationId);
+    }
+
+    public function testServeNoFillsWhenEverySafeCandidateIsBudgetRejected(): void
+    {
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([$this->candidate('ad-expensive', 30, 40, 'https://advertiser.example/expensive', 100, 250)]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+            new FixedCampaignSpendEligibility([30 => SpendFailureReason::DailyCap]),
+        );
+
+        $decision = $service->serve(10, 20, 'viewer-budget', null, false, new DateTimeImmutable('2026-06-08 10:00:00'));
+
+        self::assertFalse($decision->filled);
+        self::assertSame('budget_daily_cap', $decision->reason);
+    }
+
     private function safeCandidate(): AdCandidate
     {
+        return $this->candidate('ad-1', 30, 40, 'https://advertiser.example/landing', 10, 20);
+    }
+
+    private function candidate(
+        string $adId,
+        int $campaignId,
+        int $advertiserOrganizationId,
+        string $landingUrl,
+        int $impressionCostPoints,
+        int $clickCostPoints,
+    ): AdCandidate
+    {
         return new AdCandidate(
-            adId: 'ad-1',
-            campaignId: 30,
-            advertiserOrganizationId: 40,
+            adId: $adId,
+            campaignId: $campaignId,
+            advertiserOrganizationId: $advertiserOrganizationId,
             creativeHtml: '<strong>VertoAD creative</strong>',
-            landingUrl: 'https://advertiser.example/landing',
+            landingUrl: $landingUrl,
             width: 300,
             height: 250,
-            impressionCostPoints: 10,
-            clickCostPoints: 20,
+            impressionCostPoints: $impressionCostPoints,
+            clickCostPoints: $clickCostPoints,
         );
+    }
+}
+
+final readonly class FixedCampaignSpendEligibility implements CampaignSpendEligibilityInterface
+{
+    /**
+     * @param array<int, SpendFailureReason|null> $results
+     */
+    public function __construct(private array $results)
+    {
+    }
+
+    public function rejectionReason(int $organizationId, int $campaignId, int $pointsAmount, DateTimeImmutable $at): ?SpendFailureReason
+    {
+        return $this->results[$campaignId] ?? null;
     }
 }

@@ -83,6 +83,10 @@ final class BudgetCapTest extends TestCase
         $hourly = $service->reserve(10, 20, 'cap:r2', 60, new DateTimeImmutable('2026-06-07 10:30:00'), 300);
         self::assertFalse($hourly->accepted);
         self::assertSame(SpendFailureReason::HourlyCap, $hourly->failureReason);
+        self::assertSame(
+            SpendFailureReason::HourlyCap,
+            $service->rejectionReason(10, 20, 60, new DateTimeImmutable('2026-06-07 10:30:00')),
+        );
 
         $daily = $service->reserve(10, 20, 'cap:r3', 160, new DateTimeImmutable('2026-06-07 11:00:00'), 300);
         self::assertFalse($daily->accepted);
@@ -100,6 +104,27 @@ final class BudgetCapTest extends TestCase
         $total = $service->reserve(10, 20, 'cap:r6', 151, new DateTimeImmutable('2026-06-09 09:00:00'), 300);
         self::assertFalse($total->accepted);
         self::assertSame(SpendFailureReason::TotalCap, $total->failureReason);
+        self::assertNull($service->rejectionReason(10, 20, 50, new DateTimeImmutable('2026-06-09 09:00:00')));
+    }
+
+    public function testDryRunSpendEligibilityChecksOpenReservationsAndAdvertiserBalance(): void
+    {
+        $connection = $this->createConnection();
+        $budgetRepository = new CampaignBudgetRepository($connection);
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        $ledger = new PointsLedgerService($ledgerRepository);
+        $service = new CampaignBudgetService($budgetRepository, $ledger, $ledgerRepository);
+
+        $ledger->credit(10, 'advertiser_balance', null, 300, 'recharge:budget-dry-run');
+        $budgetRepository->saveCaps(new CampaignBudgetCaps(20, 10, null, null, null));
+
+        self::assertNull($service->rejectionReason(10, 99, 25, new DateTimeImmutable('2026-06-07 10:14:00')));
+        self::assertNull($service->rejectionReason(10, 20, 250, new DateTimeImmutable('2026-06-07 10:15:00')));
+        self::assertTrue($service->reserve(10, 20, 'dry-run:r1', 250, new DateTimeImmutable('2026-06-07 10:15:00'), 300)->accepted);
+        self::assertSame(
+            SpendFailureReason::InsufficientBalance,
+            $service->rejectionReason(10, 20, 51, new DateTimeImmutable('2026-06-07 10:16:00')),
+        );
     }
 
     private function createConnection(): Connection

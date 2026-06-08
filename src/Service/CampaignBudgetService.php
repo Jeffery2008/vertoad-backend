@@ -13,8 +13,9 @@ use VertoAD\Domain\Budget\SpendReservationResult;
 use VertoAD\Domain\Budget\SpendReservationStatus;
 use VertoAD\Repository\CampaignBudgetRepositoryInterface;
 use VertoAD\Repository\PointsLedgerRepositoryInterface;
+use VertoAD\Service\Serving\CampaignSpendEligibilityInterface;
 
-final class CampaignBudgetService
+final class CampaignBudgetService implements CampaignSpendEligibilityInterface
 {
     public function __construct(
         private readonly CampaignBudgetRepositoryInterface $budgets,
@@ -77,6 +78,21 @@ final class CampaignBudgetService
             expiredAt: null,
             ledgerEntryId: null,
         )));
+    }
+
+    public function rejectionReason(int $organizationId, int $campaignId, int $pointsAmount, DateTimeImmutable $at): ?SpendFailureReason
+    {
+        $caps = $this->budgets->findCaps($organizationId, $campaignId)
+            ?? new CampaignBudgetCaps($campaignId, $organizationId, null, null, null);
+        $rejection = $this->capRejection($caps, $pointsAmount, $at);
+        if ($rejection !== null) {
+            return $rejection;
+        }
+
+        $availableBalance = $this->ledgerRepository->balanceForOrganization($organizationId)
+            - $this->budgets->activeReservedSpendForOrganization($organizationId, $at);
+
+        return $availableBalance < $pointsAmount ? SpendFailureReason::InsufficientBalance : null;
     }
 
     public function commit(string $reservationId, DateTimeImmutable $committedAt): SpendReservationResult
