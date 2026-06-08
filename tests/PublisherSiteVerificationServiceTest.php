@@ -69,6 +69,16 @@ final class PublisherSiteVerificationServiceTest extends TestCase
         $service->verify(12, PublisherSiteVerificationMethod::VerificationFile, 'wrong-token', new \DateTimeImmutable());
     }
 
+    public function testRejectsMissingSite(): void
+    {
+        $service = new PublisherSiteVerificationService(new FakePublisherSiteRepository());
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('Publisher site was not found.');
+
+        $service->expectedChallenge(12, PublisherSiteVerificationMethod::HtmlMeta);
+    }
+
     public function testValidationReturnsAlreadyVerifiedSiteWithoutRecheckingEvidence(): void
     {
         $verifiedAt = new \DateTimeImmutable('2026-06-07 08:00:00+00:00');
@@ -140,6 +150,22 @@ final class FakePublisherSiteRepository implements PublisherSiteRepositoryInterf
     public function findById(int $id): ?PublisherSite
     {
         return $this->sitesById[$id] ?? null;
+    }
+
+    public function create(int $organizationId, string $name, string $domain, string $verificationToken): PublisherSite
+    {
+        $site = new PublisherSite(count($this->sitesById) + 1, $organizationId, $domain, PublisherSiteStatus::Pending, $verificationToken, null, $name);
+        $this->sitesById[$site->id] = $site;
+
+        return $site;
+    }
+
+    public function listForOrganization(int $organizationId): array
+    {
+        return array_values(array_filter(
+            $this->sitesById,
+            static fn (PublisherSite $site): bool => $site->organizationId === $organizationId,
+        ));
     }
 
     public function markVerified(PublisherSite $site, \DateTimeImmutable $verifiedAt): PublisherSite

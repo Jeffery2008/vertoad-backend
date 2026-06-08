@@ -33,6 +33,33 @@ final readonly class RequirePermissionMiddleware implements MiddlewareInterface
             );
         }
 
+        if ($this->requirement->platform) {
+            if ($context->user->isSuperAdmin) {
+                return $handler->handle($request);
+            }
+
+            if ($context->organizationId === null) {
+                return $this->errorResponse(
+                    400,
+                    'organization_scope_required',
+                    'An organization scope is required for this endpoint.',
+                    ['required_permission' => $this->requirement->permission],
+                );
+            }
+
+            $decision = $this->tenantAccess->decide($context->user, $context->organizationId, $this->requirement->permission);
+            if ($decision->allowed) {
+                return $handler->handle($request);
+            }
+
+            return $this->errorResponse(
+                403,
+                $decision->reason,
+                'The authenticated user is not allowed to access this platform endpoint.',
+                ['required_permission' => $this->requirement->permission],
+            );
+        }
+
         $organizationId = $this->resolveOrganizationId($request, $context);
         if ($organizationId === null) {
             return $this->errorResponse(

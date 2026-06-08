@@ -54,6 +54,28 @@ final class ApiEnvelopeMiddlewareTest extends TestCase
         self::assertSame('', $response->getHeaderLine('Content-Length'));
     }
 
+    public function testWrapsEmptyJsonSuccessBodyAsNullDataEnvelope(): void
+    {
+        $middleware = new ApiEnvelopeMiddleware(new ResponseFactory());
+        $request = (new ServerRequestFactory())
+            ->createServerRequest('GET', '/empty-json')
+            ->withHeader('X-Request-Id', 'empty-json-request');
+
+        $response = $middleware->process($request, new FixedResponseHandler(
+            statusCode: 200,
+            body: '',
+            headers: ['Content-Type' => 'application/json', 'Content-Length' => '0'],
+        ));
+        $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertNull($payload['data']);
+        self::assertNull($payload['error']);
+        self::assertSame(['api_version' => 'v1'], $payload['meta']);
+        self::assertSame('empty-json-request', $payload['request_id']);
+        self::assertSame('', $response->getHeaderLine('Content-Length'));
+    }
+
     public function testKeepsExistingEnvelopeAndRequestId(): void
     {
         $middleware = new ApiEnvelopeMiddleware(new ResponseFactory());

@@ -127,6 +127,61 @@ final class PointsLedgerRepository implements PointsLedgerRepositoryInterface
     }
 
     /**
+     * @return list<PointsLedgerEntry>
+     */
+    public function listForOrganization(int $organizationId, int $limit = 50): array
+    {
+        if ($organizationId <= 0) {
+            return [];
+        }
+
+        $limit = max(1, min(200, $limit));
+        $rows = $this->connection->createQueryBuilder()
+            ->select(
+                'id',
+                'organization_id',
+                'account_type',
+                'account_id',
+                'points_amount',
+                'direction',
+                'balance_after_points',
+                'reference_type',
+                'reference_id',
+                'idempotency_key',
+                'memo',
+                'metadata_json',
+            )
+            ->from('ledger_entries')
+            ->where('organization_id = :organization_id')
+            ->orderBy('id', 'DESC')
+            ->setMaxResults($limit)
+            ->setParameter('organization_id', $organizationId)
+            ->fetchAllAssociative();
+
+        return array_map(fn (array $row): PointsLedgerEntry => $this->hydrate($row), $rows);
+    }
+
+    public function balanceForOrganization(int $organizationId, string $accountType = 'advertiser_balance'): int
+    {
+        if ($organizationId <= 0 || trim($accountType) === '') {
+            return 0;
+        }
+
+        $balance = $this->connection->createQueryBuilder()
+            ->select(
+                "COALESCE(SUM(CASE WHEN direction = 'credit' THEN points_amount ELSE -points_amount END), 0)",
+            )
+            ->from('ledger_entries')
+            ->where('organization_id = :organization_id')
+            ->andWhere('account_type = :account_type')
+            ->setParameter('organization_id', $organizationId)
+            ->setParameter('account_type', trim($accountType))
+            ->fetchOne();
+
+        return (int) $balance;
+    }
+
+    /**
      * @param array<string, mixed> $row
      */
     private function hydrate(array $row): PointsLedgerEntry

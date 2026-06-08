@@ -164,6 +164,12 @@ final class PointsLedgerService
             return $existing;
         }
 
+        $previousBalance = $this->repository->balanceForOrganization($organizationId, trim($accountType));
+        $balanceAfterPoints = match ($direction) {
+            LedgerDirection::Credit => $previousBalance + $pointsAmount,
+            LedgerDirection::Debit => $previousBalance - $pointsAmount,
+        };
+
         return $this->repository->append(new PointsLedgerEntry(
             id: null,
             organizationId: $organizationId,
@@ -171,7 +177,7 @@ final class PointsLedgerService
             accountId: $accountId,
             pointsAmount: $pointsAmount,
             direction: $direction,
-            balanceAfterPoints: null,
+            balanceAfterPoints: $balanceAfterPoints,
             referenceType: $this->normalizeNullableText($referenceType),
             referenceId: $referenceId,
             idempotencyKey: $idempotencyKey,

@@ -1,0 +1,59 @@
+<?php
+
+declare(strict_types=1);
+
+namespace VertoAD\Tests\Campaigns;
+
+use Doctrine\DBAL\Connection;
+use VertoAD\Tests\Review\ReviewSchema;
+
+final class CampaignSchema
+{
+    public static function create(Connection $connection): void
+    {
+        ReviewSchema::create($connection);
+        $connection->executeStatement(
+            'CREATE TABLE campaigns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT "draft",
+                pricing_model TEXT NOT NULL,
+                bid_points INTEGER NOT NULL,
+                landing_url TEXT NOT NULL,
+                creative_asset_id INTEGER NOT NULL,
+                starts_at TEXT NULL,
+                ends_at TEXT NULL,
+                targeting_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )',
+        );
+        $connection->executeStatement(
+            'CREATE TABLE campaign_budget_caps (
+                campaign_id INTEGER PRIMARY KEY,
+                organization_id INTEGER NOT NULL,
+                total_cap_points INTEGER NULL,
+                daily_cap_points INTEGER NULL,
+                hourly_cap_points INTEGER NULL,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )',
+        );
+        $connection->executeStatement(
+            'CREATE TABLE spend_reservations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                reservation_id VARCHAR(160) NOT NULL UNIQUE,
+                organization_id INTEGER NOT NULL,
+                campaign_id INTEGER NOT NULL,
+                points_amount INTEGER NOT NULL,
+                status VARCHAR(32) NOT NULL,
+                reserved_at DATETIME NOT NULL,
+                expires_at DATETIME NOT NULL,
+                committed_at DATETIME NULL,
+                released_at DATETIME NULL,
+                expired_at DATETIME NULL,
+                ledger_entry_id INTEGER NULL
+            )',
+        );
+    }
+}

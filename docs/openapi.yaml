@@ -9,12 +9,16 @@ info:
 
     Current surface:
     - Base path: `/api/v1`.
-    - Responses are JSON unless otherwise documented.
+    - JSON responses are wrapped by the standard response envelope middleware
+      unless otherwise documented.
     - `/api/v1/health` is public.
+    - `/api/v1/permissions` is public bootstrap metadata for frontend route
+      gating and developer tooling.
     - `/api/v1/cron/status` is protected by the cron shared secret and optional
       IP allowlist.
-    - OAuth2 and the standard response envelope are roadmap items and are not
-      documented as active endpoint behavior until implemented.
+    - OAuth client self-service endpoints are implemented for organization-scoped
+      developer applications; OAuth authorization and token exchange endpoints
+      remain outside this slice.
 jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
 servers:
   - url: http://127.0.0.1:8080
@@ -22,11 +26,211 @@ servers:
   - url: https://api.example.com
     description: Production placeholder
 tags:
+  - name: Auth
+    description: First-party authentication and password reset endpoints.
+  - name: OAuth
+    description: Organization-scoped OAuth client self-service for developer applications.
   - name: Health
     description: Runtime liveness and readiness checks.
   - name: Cron
     description: Protected backend maintenance task endpoints.
+  - name: Permissions
+    description: Public permission metadata used for route gating and developer tooling.
+  - name: Billing
+    description: Advertiser points balance, ledger, and recharge-key redemption endpoints.
+  - name: Publisher
+    description: Publisher site verification, ad slot presets, and slot management endpoints.
+  - name: Assets
+    description: Creative asset upload intents, validation, and review preparation endpoints.
+  - name: Serving
+    description: Public ad serving, impression tracking, and click redirect endpoints.
+  - name: Assets
+    description: Authenticated creative asset upload intents, confirmation, and validation.
+  - name: Campaigns
+    description: Authenticated organization-scoped campaign planning and status management.
+  - name: Reports
+    description: Aggregate dashboard reporting for admin, advertiser, and publisher consoles.
+  - name: Attribution
+    description: Browser pixel and server API conversion attribution endpoints.
+  - name: Archive
+    description: Parquet archive manifests and asynchronous DuckDB cold-query jobs.
+  - name: Operations
+    description: Operational error logs, config versions, backup status, and Redis hardening.
+  - name: Webhooks
+    description: Webhook delivery status, retry, and signing metadata.
+  - name: Support
+    description: Support ticket queues, linked context, internal notes, and status updates.
+  - name: FeatureFlags
+    description: Feature flag rollout configuration and evaluation.
 paths:
+  /api/v1/auth/register:
+    post:
+      tags:
+        - Auth
+      operationId: registerUser
+      summary: Register a first-party user.
+      description: Creates an active first-party user account and returns non-sensitive user metadata.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: User registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthUser"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/auth/login:
+    post:
+      tags:
+        - Auth
+      operationId: loginUser
+      summary: Authenticate a first-party user.
+      description: Verifies credentials for an active user and returns bearer token metadata for the first-party session bridge.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginData"
+        "401":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/auth/logout:
+    post:
+      tags:
+        - Auth
+      operationId: logoutUser
+      summary: Revoke the current first-party session bridge token.
+      description: Requires an authenticated request context; token persistence and revocation are implemented by the auth layer.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Logout accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - revoked
+                properties:
+                  revoked:
+                    type: boolean
+                additionalProperties: false
+        "401":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/auth/password-reset/request:
+    post:
+      tags:
+        - Auth
+      operationId: requestPasswordReset
+      summary: Request a password reset.
+      description: Always returns an accepted response for syntactically valid email input so account existence is not leaked.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordResetRequest"
+      responses:
+        "202":
+          description: Password reset request accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasswordResetRequestData"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/auth/password-reset/confirm:
+    post:
+      tags:
+        - Auth
+      operationId: confirmPasswordReset
+      summary: Confirm a password reset.
+      description: Consumes a single-use reset token and updates the user's password hash.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordResetConfirmRequest"
+      responses:
+        "200":
+          description: Password reset completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasswordResetConfirmData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/auth/me:
+    get:
+      tags:
+        - Auth
+      operationId: getCurrentUser
+      summary: Return the authenticated user context.
+      description: Returns user metadata plus the active organization membership and permission codes when an organization scope is present.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: portal
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - admin
+              - advertiser
+              - publisher
+        - name: organization_id
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Current user context.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeData"
+        "401":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/health:
     get:
       tags:
@@ -50,6 +254,2099 @@ paths:
                     service: vertoad-api
                     environment: local
                     timestamp: "2026-06-06T14:00:00+00:00"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/permissions:
+    get:
+      tags:
+        - Permissions
+      operationId: getPermissionInventory
+      summary: List platform permission metadata.
+      description: |
+        Returns stable permission-code metadata used by frontend navigation,
+        developer tooling, and endpoint documentation. This endpoint is public
+        bootstrap metadata; it does not grant authorization and backend
+        permission checks remain mandatory on protected resources.
+      security: []
+      responses:
+        "200":
+          description: Permission metadata inventory.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/PermissionMetadata"
+              examples:
+                inventory:
+                  summary: Permission metadata response
+                  value:
+                    data:
+                      - code: billing.recharge_key.view_plaintext.platform
+                        domain: billing
+                        scope: platform
+                        description: View recharge key plaintext.
+                        sensitive: true
+                        audit_required: true
+                    error: null
+                    meta:
+                      api_version: v1
+                    request_id: req_0123456789abcdef
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/billing/balance:
+    get:
+      tags:
+        - Billing
+      operationId: getBillingBalance
+      summary: Return the advertiser points balance for an organization.
+      description: Requires a bearer token and a positive `organization_id` query parameter.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Current advertiser balance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillingBalanceData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/billing/ledger:
+    get:
+      tags:
+        - Billing
+      operationId: listBillingLedger
+      summary: List recent points ledger entries for an organization.
+      description: Returns newest entries first. Requires a bearer token and organization scope.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: Recent ledger entries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillingLedgerListData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/billing/recharge-keys/redeem:
+    post:
+      tags:
+        - Billing
+      operationId: redeemRechargeKey
+      summary: Redeem a recharge key into advertiser points.
+      description: Credits advertiser balance through the append-only points ledger. Requires a bearer token and organization scope.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RechargeKeyRedeemRequest"
+      responses:
+        "200":
+          description: Recharge key redeemed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RechargeKeyRedemptionData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/billing/withdrawals:
+    post:
+      tags:
+        - Billing
+      operationId: requestPublisherWithdrawal
+      summary: Request a publisher earnings withdrawal.
+      description: Places a ledger hold by debiting the `publisher_earnings` account and creates an auditable withdrawal request.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WithdrawalRequestCreate"
+      responses:
+        "201":
+          description: Withdrawal request created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WithdrawalRequestData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/billing/withdrawals/{withdrawal_id}/paid:
+    post:
+      tags:
+        - Billing
+      operationId: markPublisherWithdrawalPaid
+      summary: Mark a withdrawal as manually paid.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/WithdrawalId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WithdrawalTransitionRequest"
+      responses:
+        "200":
+          description: Withdrawal marked paid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WithdrawalRequestData"
+        "401":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/billing/withdrawals/{withdrawal_id}/reject:
+    post:
+      tags:
+        - Billing
+      operationId: rejectPublisherWithdrawal
+      summary: Reject a withdrawal and restore held publisher earnings.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/WithdrawalId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WithdrawalTransitionRequest"
+      responses:
+        "200":
+          description: Withdrawal rejected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WithdrawalRequestData"
+        "401":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/billing/withdrawals/{withdrawal_id}/revoke:
+    post:
+      tags:
+        - Billing
+      operationId: revokePublisherWithdrawal
+      summary: Revoke a requested withdrawal and restore held publisher earnings.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/WithdrawalId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WithdrawalTransitionRequest"
+      responses:
+        "200":
+          description: Withdrawal revoked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WithdrawalRequestData"
+        "401":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/billing/withdrawals/{withdrawal_id}/proofs:
+    post:
+      tags:
+        - Billing
+      operationId: createWithdrawalProofUploadIntent
+      summary: Create proof upload metadata and a presigned upload URL.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/WithdrawalId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WithdrawalProofCreateRequest"
+      responses:
+        "201":
+          description: Proof upload intent created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WithdrawalProofIntentData"
+        "401":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/billing/withdrawals/{withdrawal_id}/proofs/confirm:
+    post:
+      tags:
+        - Billing
+      operationId: confirmWithdrawalProofUpload
+      summary: Confirm a withdrawal proof object after upload.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/WithdrawalId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WithdrawalProofConfirmRequest"
+      responses:
+        "200":
+          description: Proof upload confirmed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WithdrawalProofData"
+        "401":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/assets/upload-intents:
+    post:
+      tags:
+        - Assets
+      operationId: createAssetUploadIntent
+      summary: Create a presigned creative asset upload intent.
+      description: Creates a scoped object-storage upload intent for safe image, video, Fabric snapshot, or text creative assets.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssetUploadIntentRequest"
+      responses:
+        "201":
+          description: Upload intent created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssetUploadIntentData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/assets/confirm:
+    post:
+      tags:
+        - Assets
+      operationId: confirmAssetUpload
+      summary: Confirm and validate an uploaded creative asset.
+      description: Validates upload metadata, magic bytes, dimensions, and video duration before creating a pending-review asset and snapshot job marker.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssetConfirmRequest"
+      responses:
+        "201":
+          description: Uploaded asset accepted for review.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreativeAssetData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/assets/upload-intents:
+    post:
+      tags:
+        - Assets
+      operationId: createAssetUploadIntent
+      summary: Create a creative asset upload intent.
+      description: Creates an organization-scoped object key and deterministic presigned PUT upload descriptor for an allowed creative asset type.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssetUploadIntentRequest"
+      responses:
+        "201":
+          description: Upload intent created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssetUploadIntentData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/assets/confirm:
+    post:
+      tags:
+        - Assets
+      operationId: confirmAssetUpload
+      summary: Confirm an uploaded creative asset.
+      description: Validates uploaded object metadata, magic bytes, dimensions, and video bounds, then creates a pending-review asset and snapshot job marker.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssetConfirmRequest"
+      responses:
+        "201":
+          description: Asset accepted for review preparation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreativeAssetData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/campaigns:
+    get:
+      tags:
+        - Campaigns
+      operationId: listCampaigns
+      summary: List organization campaigns.
+      description: Returns campaigns scoped to the authenticated organization.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Campaign list returned.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CampaignData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags:
+        - Campaigns
+      operationId: createCampaign
+      summary: Create a campaign.
+      description: Creates a draft or active campaign with schedule, targeting, bid, and budget caps.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CampaignUpsertRequest"
+      responses:
+        "201":
+          description: Campaign created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CampaignData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/campaigns/{campaign_id}:
+    get:
+      tags:
+        - Campaigns
+      operationId: getCampaign
+      summary: Get a campaign.
+      description: Returns one organization-scoped campaign by ID.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: campaign_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Campaign returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CampaignData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+    patch:
+      tags:
+        - Campaigns
+      operationId: updateCampaign
+      summary: Update a campaign or transition status.
+      description: Updates campaign planning fields or transitions status between draft, active, paused, and archived.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: campaign_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CampaignUpsertRequest"
+      responses:
+        "200":
+          description: Campaign updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CampaignData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/campaigns:
+    post:
+      tags:
+        - Campaigns
+      operationId: createCampaign
+      summary: Create a campaign.
+      description: Creates a draft or active campaign with schedule, targeting, bid, and budget caps.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CampaignUpsertRequest"
+      responses:
+        "201":
+          description: Campaign created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CampaignData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/campaigns/{campaign_id}:
+    patch:
+      tags:
+        - Campaigns
+      operationId: updateCampaign
+      summary: Update a campaign or transition status.
+      description: Updates campaign planning fields or transitions status between draft, active, paused, and archived.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: campaign_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CampaignUpsertRequest"
+      responses:
+        "200":
+          description: Campaign updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CampaignData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/reviews/assets/{asset_id}/ai-review:
+    post:
+      tags:
+        - Review
+      operationId: startCreativeAiReview
+      summary: Start deterministic AI pre-review for a creative asset.
+      description: Creates a review record for a pending-review asset, records deterministic AI risk metadata, and leaves the review awaiting human decision.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: asset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreativeReviewStartRequest"
+      responses:
+        "201":
+          description: Review created and AI pre-review recorded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreativeReviewData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/reviews/{review_id}:
+    get:
+      tags:
+        - Review
+      operationId: getCreativeReviewStatus
+      summary: Return creative review status.
+      description: Returns AI risk metadata and final human decision metadata for an organization-scoped review.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: review_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Review status returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreativeReviewData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/reviews/{review_id}/approve:
+    post:
+      tags:
+        - Review
+      operationId: approveCreativeReview
+      summary: Human approve a creative review.
+      description: Records an auditable human approval and emits an eligibility event for future serving integration.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: review_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreativeReviewDecisionRequest"
+      responses:
+        "200":
+          description: Review approved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreativeReviewData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/reviews/{review_id}/reject:
+    post:
+      tags:
+        - Review
+      operationId: rejectCreativeReview
+      summary: Human reject a creative review.
+      description: Records an auditable human rejection and emits an ineligibility event for future serving integration.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: review_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreativeReviewDecisionRequest"
+      responses:
+        "200":
+          description: Review rejected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreativeReviewData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/ads/serve:
+    post:
+      tags:
+        - Serving
+      operationId: serveAdDecision
+      summary: Return an ad decision for a verified publisher slot.
+      description: Returns a sandboxed iframe payload when an eligible safe candidate exists; otherwise returns deterministic no-fill.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdServeRequest"
+      responses:
+        "200":
+          description: Ad decision returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdDecisionData"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/publisher/sites:
+    get:
+      tags:
+        - Publisher
+      operationId: listPublisherSites
+      summary: List publisher sites for an organization.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+      responses:
+        "200":
+          description: Publisher sites returned.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/PublisherSite"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags:
+        - Publisher
+      operationId: createPublisherSite
+      summary: Create a publisher site pending verification.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PublisherSiteCreateRequest"
+      responses:
+        "201":
+          description: Publisher site created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PublisherSite"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/publisher/sites/{site_id}/verification-challenge:
+    get:
+      tags:
+        - Publisher
+      operationId: getPublisherSiteVerificationChallenge
+      summary: Return expected site verification evidence.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - name: site_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: method
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - html_meta
+              - dns_txt
+              - verification_file
+            default: html_meta
+      responses:
+        "200":
+          description: Verification challenge returned.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PublisherSiteVerificationChallenge"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/publisher/sites/{site_id}/verify:
+    post:
+      tags:
+        - Publisher
+      operationId: verifyPublisherSite
+      summary: Verify a publisher site from observed evidence.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - name: site_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PublisherSiteVerifyRequest"
+      responses:
+        "200":
+          description: Publisher site verified.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PublisherSite"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/publisher/ad-slot-presets:
+    get:
+      tags:
+        - Publisher
+      operationId: listPublisherAdSlotPresets
+      summary: List supported ad slot size presets.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+      responses:
+        "200":
+          description: Preset map returned.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PublisherAdSlotPresetMap"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/publisher/sites/{site_id}/slots:
+    get:
+      tags:
+        - Publisher
+      operationId: listPublisherAdSlots
+      summary: List ad slots for a verified publisher site.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - name: site_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Ad slots returned.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/PublisherAdSlot"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags:
+        - Publisher
+      operationId: createPublisherAdSlot
+      summary: Create an ad slot for a verified publisher site.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - name: site_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PublisherAdSlotCreateRequest"
+      responses:
+        "201":
+          description: Ad slot created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PublisherAdSlot"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/ads/track:
+    post:
+      tags:
+        - Serving
+      operationId: trackAdImpression
+      summary: Record a valid viewable impression event.
+      description: Accepts only impression events that meet the configured visible ratio and dwell-time threshold, with event-id idempotency.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdTrackRequest"
+      responses:
+        "200":
+          description: Impression accepted or already recorded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdEventAcceptedData"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/ads/click:
+    get:
+      tags:
+        - Serving
+      operationId: redirectAdClick
+      summary: Record click intent and redirect to the validated landing URL.
+      description: Valid click decisions return a 302 Location header pointing only to a validated http or https landing URL.
+      security: []
+      parameters:
+        - name: decision_id
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: viewer_id
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: event_id
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: JSON click acceptance response reserved for non-redirect clients.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdClickAcceptedData"
+        "302":
+          description: Redirect to validated advertiser landing URL.
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/reports/dashboard:
+    get:
+      tags:
+        - Reports
+      operationId: getReportDashboard
+      summary: Return aggregate dashboard metrics.
+      description: |
+        Returns impressions, clicks, CTR, spend, and revenue grouped by day and
+        inventory/campaign dimensions. The current backend slice aggregates
+        from Task 25 serving event snapshots; the repository interface is the
+        replacement point for permanent MySQL report aggregate tables.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - name: campaign_id
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - name: site_id
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - name: slot_id
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: granularity
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - hour
+              - day
+      responses:
+        "200":
+          description: Aggregate dashboard metrics.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReportDashboardData"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/oauth/clients:
+    get:
+      tags:
+        - OAuth
+      operationId: listOAuthClients
+      summary: List active OAuth clients for an organization.
+      description: Returns client metadata only; client secrets and secret hashes are never returned.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Active OAuth clients.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthClientListData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags:
+        - OAuth
+      operationId: createOAuthClient
+      summary: Create an OAuth client for an organization.
+      description: Creates a developer OAuth client and returns the plaintext client secret exactly once.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OAuthClientCreateRequest"
+      responses:
+        "201":
+          description: OAuth client created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthClientSecretData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/oauth/clients/{client_id}/rotate-secret:
+    post:
+      tags:
+        - OAuth
+      operationId: rotateOAuthClientSecret
+      summary: Rotate an OAuth client secret.
+      description: Replaces the stored secret hash and returns the new plaintext client secret exactly once.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: client_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: OAuth client secret rotated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthClientSecretData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/attribution/conversions:
+    post:
+      tags:
+        - Attribution
+      operationId: createServerApiConversion
+      summary: Record a server API conversion.
+      description: Records an idempotent conversion event and applies last_click attribution within the configured window.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConversionRequest"
+      responses:
+        "201":
+          description: Conversion accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversionData"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/attribution/pixel:
+    get:
+      tags:
+        - Attribution
+      operationId: recordBrowserPixelConversion
+      summary: Record a browser pixel conversion.
+      description: Accepts conversion fields as query parameters and returns the same JSON envelope as the server_api flow.
+      security: []
+      parameters:
+        - name: event_id
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: viewer_id
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: conversion_name
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: value_points
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: occurred_at
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: window_seconds
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        "201":
+          description: Pixel conversion accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversionData"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/archive/jobs:
+    post:
+      tags:
+        - Archive
+      operationId: createArchiveJob
+      summary: Run a Parquet archive job.
+      description: Creates a completed archive manifest partitioned by event_type/date/hour.
+      security:
+        - BearerAuth: []
+      responses:
+        "202":
+          description: Archive job accepted and manifest created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArchiveManifest"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/archive/manifests/{manifest_id}:
+    get:
+      tags:
+        - Archive
+      operationId: getArchiveManifest
+      summary: Fetch an archive manifest.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: manifest_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: Archive manifest metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArchiveManifest"
+        "404":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/archive/cold-queries:
+    post:
+      tags:
+        - Archive
+      operationId: createColdQuery
+      summary: Submit an asynchronous DuckDB cold query.
+      description: Queues a cold data query against archived Parquet partitions without executing synchronously.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateColdQueryRequest"
+      responses:
+        "202":
+          description: Cold query queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ColdQueryJob"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/archive/cold-queries/{job_id}:
+    get:
+      tags:
+        - Archive
+      operationId: getColdQuery
+      summary: Fetch cold query job metadata.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: Cold query metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ColdQueryJob"
+        "404":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/operations/summary:
+    get:
+      tags:
+        - Operations
+      operationId: getOperationsSummary
+      summary: Return operations readiness and hardening summary.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Operations summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperationsSummary"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/operations/errors:
+    get:
+      tags:
+        - Operations
+      operationId: listOperationErrors
+      summary: List operational error logs without raw context.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Operation error logs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - errors
+                properties:
+                  errors:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OperationErrorLog"
+                additionalProperties: false
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/operations/errors/{error_id}/raw-context:
+    get:
+      tags:
+        - Operations
+      operationId: getOperationErrorRawContext
+      summary: View raw operational error context with audit-on-view.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: error_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: Raw context for a single operation error.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - raw_context
+                  - audit_on_view
+                properties:
+                  raw_context:
+                    type: object
+                    additionalProperties: true
+                  audit_on_view:
+                    type: boolean
+                    const: true
+                additionalProperties: false
+        "403":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/operations/config/versions:
+    get:
+      tags:
+        - Operations
+      operationId: listConfigVersions
+      summary: List config versions for a key.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: config_key
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: Config versions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - versions
+                properties:
+                  versions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ConfigVersion"
+                additionalProperties: false
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags:
+        - Operations
+      operationId: createConfigVersion
+      summary: Create a new config version.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - config_key
+                - value
+              properties:
+                config_key:
+                  type: string
+                  minLength: 1
+                value:
+                  type: object
+                  additionalProperties: true
+              additionalProperties: false
+      responses:
+        "201":
+          description: Config version created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigVersion"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/operations/config/versions/{version_id}/rollback:
+    post:
+      tags:
+        - Operations
+      operationId: rollbackConfigVersion
+      summary: Roll back to an earlier config version.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: version_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: Rollback created a new config version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigVersion"
+        "404":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/operations/webhooks/deliveries:
+    get:
+      tags:
+        - Webhooks
+      operationId: listWebhookDeliveries
+      summary: List webhook delivery attempts.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Webhook deliveries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - deliveries
+                properties:
+                  deliveries:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WebhookDelivery"
+                additionalProperties: false
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/operations/webhooks/deliveries/{delivery_id}/retry:
+    post:
+      tags:
+        - Webhooks
+      operationId: retryWebhookDelivery
+      summary: Retry a failed webhook delivery.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: delivery_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: Webhook delivery retry metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookDelivery"
+        "404":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/support/tickets:
+    post:
+      tags:
+        - Support
+      operationId: createSupportTicket
+      summary: Create an organization support ticket.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - organization_id
+                - created_by_user_id
+                - subject
+                - description
+                - linked_entity
+              properties:
+                organization_id:
+                  type: integer
+                  minimum: 1
+                created_by_user_id:
+                  type: integer
+                  minimum: 1
+                subject:
+                  type: string
+                  minLength: 1
+                description:
+                  type: string
+                  minLength: 1
+                priority:
+                  type: string
+                  enum: [low, normal, high, urgent]
+                linked_entity:
+                  $ref: "#/components/schemas/SupportLinkedEntity"
+                attachments:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/SupportTicketAttachment"
+              additionalProperties: false
+      responses:
+        "201":
+          description: Support ticket created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicket"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+    get:
+      tags:
+        - Support
+      operationId: listSupportTickets
+      summary: List support tickets visible to the caller.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Visible support tickets.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - tickets
+                properties:
+                  tickets:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SupportTicket"
+                additionalProperties: false
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/support/tickets/{ticket_id}/notes:
+    post:
+      tags:
+        - Support
+      operationId: addSupportTicketInternalNote
+      summary: Add an audit-sensitive internal note to a support ticket.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: ticket_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - body
+              properties:
+                body:
+                  type: string
+                  minLength: 1
+                role:
+                  type: string
+              additionalProperties: false
+      responses:
+        "200":
+          description: Support ticket with note.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicket"
+        "403":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/support/tickets/{ticket_id}/status:
+    post:
+      tags:
+        - Support
+      operationId: updateSupportTicketStatus
+      summary: Transition support ticket status.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: ticket_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - status
+              properties:
+                status:
+                  type: string
+                  enum: [open, in_progress, resolved, closed]
+              additionalProperties: false
+      responses:
+        "200":
+          description: Updated support ticket.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicket"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/feature-flags:
+    post:
+      tags:
+        - FeatureFlags
+      operationId: createFeatureFlag
+      summary: Create or update a feature flag.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FeatureFlag"
+      responses:
+        "201":
+          description: Feature flag saved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeatureFlag"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+    get:
+      tags:
+        - FeatureFlags
+      operationId: listFeatureFlags
+      summary: List feature flags.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Feature flags.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - feature_flags
+                properties:
+                  feature_flags:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/FeatureFlag"
+                additionalProperties: false
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/feature-flags/{flag_key}/evaluate:
+    post:
+      tags:
+        - FeatureFlags
+      operationId: evaluateFeatureFlag
+      summary: Evaluate a feature flag for a rollout context.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: flag_key
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Feature flag evaluation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeatureFlagEvaluation"
         default:
           $ref: "#/components/responses/Error"
   /api/v1/cron/status:
@@ -105,8 +2402,69 @@ paths:
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/cron/jobs/{job_name}/run:
+    get:
+      tags:
+        - Cron
+      operationId: runCronJob
+      summary: Run a protected cron job.
+      description: Runs one registered background job behind its distributed lock window.
+      security:
+        - CronTokenHeader: []
+        - CronTokenQuery: []
+      parameters:
+        - name: job_name
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: X-Cron-Token
+          in: header
+          required: false
+          description: Shared secret configured for the protected Cron API. Prefer this header over the query parameter.
+          schema:
+            type: string
+        - name: token
+          in: query
+          required: false
+          description: Query-string fallback for the cron shared secret.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Cron job executed or was skipped because its lock is held.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CronJobRunData"
+              examples:
+                eventConsumption:
+                  value:
+                    job: redis-events-consume
+                    status: completed
+                    acquired_lock: true
+                    metrics:
+                      consumed: 250
+                      billed: 240
+                      skipped: 10
+                      duplicates: 0
+                    message: null
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
 components:
   securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: First-party bearer token or OAuth2 access token.
     CronTokenHeader:
       type: apiKey
       in: header
@@ -130,6 +2488,21 @@ components:
               value:
                 code: unauthorized
                 message: Cron token is missing or invalid.
+  parameters:
+    OrganizationId:
+      name: organization_id
+      in: query
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    WithdrawalId:
+      name: withdrawal_id
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
   schemas:
     EnvelopeBase:
       type: object
@@ -187,6 +2560,552 @@ components:
           minLength: 1
           description: Human-readable error message safe to return to API clients.
       additionalProperties: false
+    PublisherSiteCreateRequest:
+      type: object
+      required:
+        - name
+        - domain
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 160
+        domain:
+          type: string
+          minLength: 1
+          description: Hostname or URL that will be normalized to the registered publisher domain.
+      additionalProperties: false
+    PublisherSiteVerifyRequest:
+      type: object
+      required:
+        - method
+        - observed_value
+      properties:
+        method:
+          type: string
+          enum:
+            - html_meta
+            - dns_txt
+            - verification_file
+        observed_value:
+          type: string
+          minLength: 1
+          description: Verification value observed from DNS, HTML meta, or the verification file.
+      additionalProperties: false
+    PublisherSite:
+      type: object
+      required:
+        - id
+        - organization_id
+        - name
+        - domain
+        - status
+        - verification_token
+        - verified_at
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        organization_id:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+        domain:
+          type: string
+        status:
+          type: string
+          enum:
+            - pending
+            - verified
+            - suspended
+        verification_token:
+          type: string
+          description: Opaque server-generated secret used to derive public verification challenges.
+        verified_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+      additionalProperties: false
+    PublisherSiteVerificationChallenge:
+      type: object
+      required:
+        - organization_id
+        - site_id
+        - method
+        - verification_token
+        - token
+        - placement
+        - name
+        - expected_value
+        - observed_value
+      properties:
+        organization_id:
+          type: integer
+          minimum: 1
+        site_id:
+          type: integer
+          minimum: 1
+        method:
+          type: string
+          enum:
+            - html_meta
+            - dns_txt
+            - verification_file
+        verification_token:
+          type: string
+          minLength: 1
+          description: Opaque server-generated token expected in publisher-controlled verification evidence.
+        token:
+          type: string
+        placement:
+          type: string
+          enum:
+            - meta
+            - dns_txt
+            - file
+        name:
+          type: string
+        expected_value:
+          type: string
+        observed_value:
+          type:
+            - string
+            - "null"
+          minLength: 1
+      additionalProperties: false
+    PublisherAdSlotResponsiveRule:
+      type: object
+      required:
+        - min_width
+        - width
+        - height
+      properties:
+        min_width:
+          type: integer
+          minimum: 0
+          maximum: 4096
+        width:
+          type: integer
+          minimum: 1
+          maximum: 4096
+        height:
+          type: integer
+          minimum: 1
+          maximum: 4096
+      additionalProperties: false
+    PublisherAdSlotCreateRequest:
+      type: object
+      required:
+        - name
+        - slot_key
+        - size_preset
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 160
+        slot_key:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9_-]{0,119}$"
+        size_preset:
+          type: string
+          enum:
+            - leaderboard
+            - medium_rectangle
+            - mobile_banner
+            - wide_skyscraper
+            - half_page
+            - billboard
+        width:
+          type: integer
+          minimum: 1
+          maximum: 4096
+        height:
+          type: integer
+          minimum: 1
+          maximum: 4096
+        responsive:
+          type: boolean
+          default: false
+        responsive_rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/PublisherAdSlotResponsiveRule"
+      additionalProperties: false
+    PublisherAdSlot:
+      type: object
+      required:
+        - id
+        - site_id
+        - organization_id
+        - name
+        - slot_key
+        - width
+        - height
+        - size_preset
+        - responsive
+        - responsive_rules
+        - status
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        site_id:
+          type: integer
+          minimum: 1
+        organization_id:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+        slot_key:
+          type: string
+        width:
+          type: integer
+          minimum: 1
+          maximum: 4096
+        height:
+          type: integer
+          minimum: 1
+          maximum: 4096
+        size_preset:
+          type:
+            - string
+            - "null"
+        responsive:
+          type: boolean
+        responsive_rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/PublisherAdSlotResponsiveRule"
+        status:
+          type: string
+      additionalProperties: false
+    PublisherAdSlotPreset:
+      type: object
+      required:
+        - width
+        - height
+      properties:
+        width:
+          type: integer
+          minimum: 1
+        height:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    PublisherAdSlotPresetMap:
+      type: object
+      additionalProperties:
+        $ref: "#/components/schemas/PublisherAdSlotPreset"
+    CampaignTargeting:
+      type: object
+      properties:
+        devices:
+          type: array
+          items:
+            type: string
+        geos:
+          type: array
+          items:
+            type: string
+        site_ids:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+        slot_ids:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+        time_windows:
+          type: array
+          items:
+            type: object
+            required:
+              - day_of_week
+              - start
+              - end
+            properties:
+              day_of_week:
+                type: integer
+                minimum: 0
+                maximum: 6
+              start:
+                type: string
+                pattern: "^[0-2][0-9]:[0-5][0-9]$"
+              end:
+                type: string
+                pattern: "^[0-2][0-9]:[0-5][0-9]$"
+            additionalProperties: false
+      additionalProperties: false
+    CampaignBudget:
+      type: object
+      properties:
+        total_cap_points:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        daily_cap_points:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        hourly_cap_points:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+      additionalProperties: false
+    CampaignSchedule:
+      type: object
+      properties:
+        starts_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        ends_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+      additionalProperties: false
+    CampaignUpsertRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+        status:
+          type: string
+          enum:
+            - draft
+            - active
+            - paused
+            - archived
+        pricing_model:
+          type: string
+          enum:
+            - cpm
+            - cpc
+        bid_points:
+          type: integer
+          minimum: 1
+        landing_url:
+          type: string
+          format: uri
+        creative_asset_id:
+          type: integer
+          minimum: 1
+        schedule:
+          $ref: "#/components/schemas/CampaignSchedule"
+        targeting:
+          $ref: "#/components/schemas/CampaignTargeting"
+        budget:
+          $ref: "#/components/schemas/CampaignBudget"
+      additionalProperties: false
+    CampaignData:
+      allOf:
+        - $ref: "#/components/schemas/CampaignUpsertRequest"
+        - type: object
+          required:
+            - id
+            - organization_id
+            - name
+            - status
+            - pricing_model
+            - bid_points
+            - landing_url
+            - creative_asset_id
+            - asset_id
+            - schedule
+            - targeting
+            - budget
+          properties:
+            id:
+              type: integer
+              minimum: 1
+            organization_id:
+              type: integer
+              minimum: 1
+            asset_id:
+              type: integer
+              minimum: 1
+    RegisterRequest:
+      type: object
+      required:
+        - email
+        - password
+        - display_name
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 1
+        display_name:
+          type: string
+          minLength: 1
+      additionalProperties: false
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 1
+      additionalProperties: false
+    AuthUser:
+      type: object
+      required:
+        - id
+        - email
+        - display_name
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+          minLength: 1
+      additionalProperties: false
+    LoginData:
+      type: object
+      required:
+        - user
+        - token
+      properties:
+        user:
+          $ref: "#/components/schemas/AuthUser"
+        token:
+          type: object
+          required:
+            - access_token
+            - token_type
+            - expires_in
+          properties:
+            access_token:
+              type: string
+              minLength: 1
+            token_type:
+              type: string
+              enum:
+                - Bearer
+            expires_in:
+              type: integer
+              minimum: 1
+          additionalProperties: false
+      additionalProperties: false
+    PasswordResetRequest:
+      type: object
+      required:
+        - email
+      properties:
+        email:
+          type: string
+          format: email
+      additionalProperties: false
+    PasswordResetRequestData:
+      type: object
+      required:
+        - accepted
+        - reset_token
+      properties:
+        accepted:
+          type: boolean
+        reset_token:
+          type:
+            - string
+            - "null"
+          minLength: 1
+      additionalProperties: false
+    PasswordResetConfirmRequest:
+      type: object
+      required:
+        - token
+        - password
+      properties:
+        token:
+          type: string
+          minLength: 1
+        password:
+          type: string
+          minLength: 1
+      additionalProperties: false
+    PasswordResetConfirmData:
+      type: object
+      required:
+        - password_reset
+        - user_id
+      properties:
+        password_reset:
+          type: boolean
+        user_id:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    MeData:
+      type: object
+      required:
+        - user
+        - organization_id
+        - membership
+      properties:
+        user:
+          type: object
+          required:
+            - id
+            - email
+            - is_super_admin
+          properties:
+            id:
+              type: integer
+              minimum: 1
+            email:
+              type: string
+              format: email
+            is_super_admin:
+              type: boolean
+          additionalProperties: false
+        organization_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        membership:
+          type:
+            - object
+            - "null"
+          required:
+            - roles
+            - permissions
+          properties:
+            roles:
+              type: array
+              items:
+                type: string
+                minLength: 1
+            permissions:
+              type: array
+              items:
+                type: string
+                minLength: 1
+          additionalProperties: false
+      additionalProperties: false
     HealthData:
       type: object
       required:
@@ -221,6 +3140,1930 @@ components:
           examples:
             - "0.1.0"
       additionalProperties: true
+    BillingBalanceData:
+      type: object
+      required:
+        - organization_id
+        - account_type
+        - balance_points
+        - balance_cny
+      properties:
+        organization_id:
+          type: integer
+          minimum: 1
+        account_type:
+          type: string
+          enum:
+            - advertiser_balance
+        balance_points:
+          type: integer
+          description: Integer points balance where 100 points equals 1 CNY.
+        balance_cny:
+          type: string
+          pattern: "^-?[0-9]+\\.[0-9]{2}$"
+      additionalProperties: false
+    BillingLedgerListData:
+      type: object
+      required:
+        - organization_id
+        - entries
+        - limit
+      properties:
+        organization_id:
+          type: integer
+          minimum: 1
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/PointsLedgerEntry"
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 200
+      additionalProperties: false
+    PointsLedgerEntry:
+      type: object
+      required:
+        - id
+        - organization_id
+        - account_type
+        - account_id
+        - points_amount
+        - direction
+        - balance_after_points
+        - reference_type
+        - reference_id
+        - memo
+        - metadata
+      properties:
+        id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        organization_id:
+          type: integer
+          minimum: 1
+        account_type:
+          type: string
+          minLength: 1
+        account_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        points_amount:
+          type: integer
+          minimum: 1
+        direction:
+          type: string
+          enum:
+            - credit
+            - debit
+        balance_after_points:
+          type:
+            - integer
+            - "null"
+        reference_type:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        reference_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        memo:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        metadata:
+          type:
+            - object
+            - "null"
+          additionalProperties: true
+      additionalProperties: false
+    RechargeKeyRedeemRequest:
+      type: object
+      required:
+        - key
+      properties:
+        key:
+          type: string
+          minLength: 1
+      additionalProperties: false
+    RechargeKeyRedemptionData:
+      type: object
+      required:
+        - id
+        - organization_id
+        - points_amount
+        - status
+        - ledger_entry
+      properties:
+        id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        organization_id:
+          type: integer
+          minimum: 1
+        points_amount:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum:
+            - redeemed
+        ledger_entry:
+          $ref: "#/components/schemas/PointsLedgerEntry"
+      additionalProperties: false
+    WithdrawalRequestCreate:
+      type: object
+      required:
+        - points_amount
+        - payout_method
+        - payout_account
+      properties:
+        points_amount:
+          type: integer
+          minimum: 1
+        payout_method:
+          type: string
+          minLength: 1
+        payout_account:
+          type: object
+          additionalProperties: true
+        notes:
+          type:
+            - string
+            - "null"
+      additionalProperties: false
+    WithdrawalTransitionRequest:
+      type: object
+      properties:
+        notes:
+          type:
+            - string
+            - "null"
+      additionalProperties: false
+    WithdrawalRequestData:
+      type: object
+      required:
+        - id
+        - organization_id
+        - requested_by_user_id
+        - points_amount
+        - status
+        - payout_method
+        - payout_account
+        - applicant_notes
+        - reviewer_user_id
+        - reviewer_notes
+        - ledger_entry_id
+      properties:
+        id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        organization_id:
+          type: integer
+          minimum: 1
+        requested_by_user_id:
+          type: integer
+          minimum: 1
+        points_amount:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum:
+            - requested
+            - paid
+            - rejected
+            - revoked
+        payout_method:
+          type: string
+        payout_account:
+          type: object
+          additionalProperties: true
+        applicant_notes:
+          type:
+            - string
+            - "null"
+        reviewer_user_id:
+          type:
+            - integer
+            - "null"
+        reviewer_notes:
+          type:
+            - string
+            - "null"
+        ledger_entry_id:
+          type:
+            - integer
+            - "null"
+      additionalProperties: false
+    WithdrawalProofCreateRequest:
+      type: object
+      required:
+        - filename
+        - content_type
+        - byte_size
+      properties:
+        filename:
+          type: string
+          minLength: 1
+        content_type:
+          type: string
+          minLength: 1
+        byte_size:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    WithdrawalProofConfirmRequest:
+      type: object
+      required:
+        - proof_id
+        - object_key
+        - content_type
+        - byte_size
+        - checksum
+      properties:
+        proof_id:
+          type: integer
+          minimum: 1
+        object_key:
+          type: string
+          minLength: 1
+        content_type:
+          type: string
+          minLength: 1
+        byte_size:
+          type: integer
+          minimum: 1
+        checksum:
+          type: string
+          minLength: 1
+      additionalProperties: false
+    WithdrawalProofData:
+      type: object
+      required:
+        - id
+        - withdrawal_request_id
+        - organization_id
+        - uploaded_by_user_id
+        - object_key
+        - content_type
+        - byte_size
+        - checksum
+        - status
+      properties:
+        id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        withdrawal_request_id:
+          type: integer
+          minimum: 1
+        organization_id:
+          type: integer
+          minimum: 1
+        uploaded_by_user_id:
+          type: integer
+          minimum: 1
+        object_key:
+          type: string
+        content_type:
+          type: string
+        byte_size:
+          type: integer
+          minimum: 1
+        checksum:
+          type:
+            - string
+            - "null"
+        status:
+          type: string
+          enum:
+            - pending_upload
+            - confirmed
+      additionalProperties: false
+    WithdrawalProofIntentData:
+      type: object
+      required:
+        - proof
+        - upload
+      properties:
+        proof:
+          $ref: "#/components/schemas/WithdrawalProofData"
+        upload:
+          $ref: "#/components/schemas/PresignedUploadData"
+      additionalProperties: false
+    AssetType:
+      type: string
+      enum:
+        - image
+        - video
+        - fabric_snapshot
+        - text
+    AssetUploadIntentRequest:
+      type: object
+      required:
+        - type
+        - filename
+        - content_type
+        - byte_size
+      properties:
+        type:
+          $ref: "#/components/schemas/AssetType"
+        filename:
+          type: string
+          minLength: 1
+        content_type:
+          type: string
+          minLength: 1
+          enum:
+            - image/png
+            - image/jpeg
+            - image/gif
+            - image/webp
+            - video/mp4
+            - video/webm
+            - application/json
+            - text/plain
+        byte_size:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    AssetUploadIntentData:
+      type: object
+      required:
+        - id
+        - organization_id
+        - uploader_user_id
+        - type
+        - object_key
+        - content_type
+        - byte_size
+        - status
+        - expires_at
+        - upload
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        organization_id:
+          type: integer
+          minimum: 1
+        uploader_user_id:
+          type: integer
+          minimum: 1
+        type:
+          $ref: "#/components/schemas/AssetType"
+        object_key:
+          type: string
+          minLength: 1
+        content_type:
+          type: string
+          minLength: 1
+        byte_size:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum:
+            - pending_upload
+        expires_at:
+          type: string
+          format: date-time
+        upload:
+          type: object
+          required:
+            - url
+            - method
+            - status_code
+            - headers
+          properties:
+            url:
+              type: string
+              format: uri
+            method:
+              type: string
+              enum:
+                - PUT
+            status_code:
+              type: integer
+              enum:
+                - 201
+            headers:
+              type: object
+              additionalProperties:
+                type: string
+          additionalProperties: false
+      additionalProperties: false
+    AssetConfirmRequest:
+      type: object
+      required:
+        - upload_intent_id
+        - object_key
+        - content_type
+        - byte_size
+        - width
+        - height
+        - magic_base64
+      properties:
+        upload_intent_id:
+          type: integer
+          minimum: 1
+        object_key:
+          type: string
+          minLength: 1
+        content_type:
+          type: string
+          minLength: 1
+        byte_size:
+          type: integer
+          minimum: 1
+        width:
+          type: integer
+          minimum: 1
+        height:
+          type: integer
+          minimum: 1
+        duration_seconds:
+          type:
+            - number
+            - "null"
+          minimum: 0
+        checksum:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        magic_base64:
+          type: string
+          minLength: 1
+      additionalProperties: false
+    CreativeAssetData:
+      type: object
+      required:
+        - id
+        - upload_intent_id
+        - organization_id
+        - uploader_user_id
+        - type
+        - object_key
+        - content_type
+        - byte_size
+        - width
+        - height
+        - duration_seconds
+        - checksum
+        - status
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        upload_intent_id:
+          type: integer
+          minimum: 1
+        organization_id:
+          type: integer
+          minimum: 1
+        uploader_user_id:
+          type: integer
+          minimum: 1
+        type:
+          $ref: "#/components/schemas/AssetType"
+        object_key:
+          type: string
+          minLength: 1
+        content_type:
+          type: string
+          minLength: 1
+        byte_size:
+          type: integer
+          minimum: 1
+        width:
+          type: integer
+          minimum: 1
+        height:
+          type: integer
+          minimum: 1
+        duration_seconds:
+          type:
+            - number
+            - "null"
+        checksum:
+          type:
+            - string
+            - "null"
+        status:
+          type: string
+          enum:
+            - pending_review
+      additionalProperties: false
+    AssetUploadIntentRequest:
+      type: object
+      required:
+        - type
+        - filename
+        - content_type
+        - byte_size
+      properties:
+        type:
+          type: string
+          enum:
+            - image
+            - video
+            - fabric_snapshot
+            - text
+        filename:
+          type: string
+          minLength: 1
+        content_type:
+          type: string
+          minLength: 1
+        byte_size:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    AssetUploadIntentData:
+      type: object
+      required:
+        - id
+        - organization_id
+        - uploader_user_id
+        - type
+        - object_key
+        - content_type
+        - byte_size
+        - status
+        - expires_at
+        - upload
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        organization_id:
+          type: integer
+          minimum: 1
+        uploader_user_id:
+          type: integer
+          minimum: 1
+        type:
+          type: string
+          enum:
+            - image
+            - video
+            - fabric_snapshot
+            - text
+        object_key:
+          type: string
+          minLength: 1
+        content_type:
+          type: string
+          minLength: 1
+        byte_size:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum:
+            - pending_upload
+        expires_at:
+          type: string
+          format: date-time
+        upload:
+          $ref: "#/components/schemas/PresignedUploadData"
+      additionalProperties: false
+    PresignedUploadData:
+      type: object
+      required:
+        - url
+        - method
+        - status_code
+        - headers
+      properties:
+        url:
+          type: string
+          format: uri
+        method:
+          type: string
+          enum:
+            - PUT
+        status_code:
+          type: integer
+          enum:
+            - 201
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+      additionalProperties: false
+    CreativeReviewStartRequest:
+      type: object
+      properties:
+        landing_url:
+          type:
+            - string
+            - "null"
+          format: uri
+        copy:
+          type:
+            - string
+            - "null"
+          minLength: 1
+      additionalProperties: false
+    CreativeReviewDecisionRequest:
+      type: object
+      properties:
+        reason:
+          type:
+            - string
+            - "null"
+          minLength: 1
+      additionalProperties: false
+    CreativeReviewData:
+      type: object
+      required:
+        - id
+        - asset_id
+        - organization_id
+        - status
+        - ai
+        - requested_by_user_id
+        - final_decision
+        - final_decision_reason
+        - final_decided_by_user_id
+        - final_decided_at
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        asset_id:
+          type: integer
+          minimum: 1
+        organization_id:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum:
+            - draft
+            - pending_ai
+            - ai_reviewing
+            - needs_human
+            - approved
+            - rejected
+        ai:
+          $ref: "#/components/schemas/CreativeReviewAiData"
+        requested_by_user_id:
+          type: integer
+          minimum: 1
+        final_decision:
+          type:
+            - string
+            - "null"
+          enum:
+            - approved
+            - rejected
+            - null
+        final_decision_reason:
+          type:
+            - string
+            - "null"
+        final_decided_by_user_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        final_decided_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+      additionalProperties: false
+    CreativeReviewAiData:
+      type: object
+      required:
+        - provider
+        - model
+        - risk_score
+        - risk_labels
+        - reasons
+        - raw_result
+      properties:
+        provider:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        model:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        risk_score:
+          type:
+            - number
+            - "null"
+          minimum: 0
+          maximum: 1
+        risk_labels:
+          type: array
+          items:
+            type: string
+        reasons:
+          type: array
+          items:
+            type: string
+        raw_result:
+          type:
+            - object
+            - "null"
+          additionalProperties: true
+      additionalProperties: false
+    AssetConfirmRequest:
+      type: object
+      required:
+        - upload_intent_id
+        - object_key
+        - content_type
+        - byte_size
+        - width
+        - height
+        - magic_base64
+      properties:
+        upload_intent_id:
+          type: integer
+          minimum: 1
+        object_key:
+          type: string
+          minLength: 1
+        content_type:
+          type: string
+          minLength: 1
+        byte_size:
+          type: integer
+          minimum: 1
+        width:
+          type: integer
+          minimum: 1
+        height:
+          type: integer
+          minimum: 1
+        duration_seconds:
+          type:
+            - number
+            - "null"
+          exclusiveMinimum: 0
+        checksum:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        magic_base64:
+          type: string
+          minLength: 1
+      additionalProperties: false
+    CreativeAssetData:
+      type: object
+      required:
+        - id
+        - upload_intent_id
+        - organization_id
+        - uploader_user_id
+        - type
+        - object_key
+        - content_type
+        - byte_size
+        - width
+        - height
+        - duration_seconds
+        - checksum
+        - status
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        upload_intent_id:
+          type: integer
+          minimum: 1
+        organization_id:
+          type: integer
+          minimum: 1
+        uploader_user_id:
+          type: integer
+          minimum: 1
+        type:
+          type: string
+          enum:
+            - image
+            - video
+            - fabric_snapshot
+            - text
+        object_key:
+          type: string
+          minLength: 1
+        content_type:
+          type: string
+          minLength: 1
+        byte_size:
+          type: integer
+          minimum: 1
+        width:
+          type: integer
+          minimum: 1
+        height:
+          type: integer
+          minimum: 1
+        duration_seconds:
+          type:
+            - number
+            - "null"
+          exclusiveMinimum: 0
+        checksum:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        status:
+          type: string
+          enum:
+            - pending_review
+      additionalProperties: false
+    AdServeRequest:
+      type: object
+      required:
+        - site_id
+        - slot_id
+        - viewer_id
+      properties:
+        site_id:
+          type: integer
+          minimum: 1
+        slot_id:
+          type: integer
+          minimum: 1
+        viewer_id:
+          type: string
+          minLength: 1
+        size:
+          type:
+            - object
+            - "null"
+          required:
+            - width
+            - height
+          properties:
+            width:
+              type: integer
+              minimum: 1
+            height:
+              type: integer
+              minimum: 1
+          additionalProperties: false
+        debug:
+          type: boolean
+          default: false
+      additionalProperties: false
+    AdDecisionData:
+      type: object
+      required:
+        - decision_id
+        - filled
+        - reason
+        - iframe
+        - ad
+      properties:
+        decision_id:
+          type: string
+          minLength: 1
+        filled:
+          type: boolean
+        reason:
+          type:
+            - string
+            - "null"
+          enum:
+            - no_eligible_ad
+            - unverified_inventory
+            - unsafe_landing_url
+            - null
+        iframe:
+          type: object
+          required:
+            - html
+            - width
+            - height
+          properties:
+            html:
+              type: string
+              minLength: 1
+            width:
+              type: integer
+              minimum: 1
+            height:
+              type: integer
+              minimum: 1
+          additionalProperties: false
+        ad:
+          type:
+            - object
+            - "null"
+          required:
+            - id
+            - campaign_id
+            - landing_url
+          properties:
+            id:
+              type: string
+              minLength: 1
+            campaign_id:
+              type: integer
+              minimum: 1
+            landing_url:
+              type: string
+              format: uri
+          additionalProperties: false
+        debug:
+          type: object
+          required:
+            - eligibility_reason
+          properties:
+            eligibility_reason:
+              type:
+                - string
+                - "null"
+          additionalProperties: false
+      additionalProperties: false
+    AdTrackRequest:
+      type: object
+      required:
+        - decision_id
+        - viewer_id
+        - event_id
+        - visible_ratio
+        - visible_ms
+      properties:
+        decision_id:
+          type: string
+          minLength: 1
+        viewer_id:
+          type: string
+          minLength: 1
+        event_id:
+          type: string
+          minLength: 1
+        visible_ratio:
+          type: number
+          minimum: 0
+          maximum: 1
+        visible_ms:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+    AdEventAcceptedData:
+      type: object
+      required:
+        - accepted
+        - duplicate
+      properties:
+        accepted:
+          type: boolean
+          const: true
+        duplicate:
+          type: boolean
+      additionalProperties: false
+    AdClickAcceptedData:
+      type: object
+      required:
+        - accepted
+        - duplicate
+        - redirect_url
+      properties:
+        accepted:
+          type: boolean
+          const: true
+        duplicate:
+          type: boolean
+        redirect_url:
+            type: string
+            format: uri
+      additionalProperties: false
+    OAuthClientCreateRequest:
+      type: object
+      required:
+        - name
+        - redirect_uris
+        - grant_types
+      properties:
+        name:
+          type: string
+          minLength: 1
+        redirect_uris:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            format: uri
+        grant_types:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum:
+              - authorization_code
+              - client_credentials
+              - refresh_token
+        scopes:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        is_confidential:
+          type: boolean
+          default: true
+      additionalProperties: false
+    OAuthClient:
+      type: object
+      required:
+        - id
+        - organization_id
+        - owner_user_id
+        - client_id
+        - name
+        - redirect_uris
+        - grant_types
+        - scopes
+        - is_confidential
+        - revoked
+      properties:
+        id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        organization_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        owner_user_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        client_id:
+          type: string
+          minLength: 1
+        name:
+          type: string
+          minLength: 1
+        redirect_uris:
+          type: array
+          items:
+            type: string
+            format: uri
+        grant_types:
+          type: array
+          items:
+            type: string
+            enum:
+              - authorization_code
+              - client_credentials
+              - refresh_token
+        scopes:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        is_confidential:
+          type: boolean
+        revoked:
+          type: boolean
+      additionalProperties: false
+    OAuthClientListData:
+      type: object
+      required:
+        - clients
+      properties:
+        clients:
+          type: array
+          items:
+            $ref: "#/components/schemas/OAuthClient"
+      additionalProperties: false
+    OAuthClientSecretData:
+      type: object
+      required:
+        - client
+        - client_secret
+      properties:
+        client:
+          $ref: "#/components/schemas/OAuthClient"
+        client_secret:
+          type: string
+          minLength: 1
+          description: Plaintext client secret returned only on create or rotate.
+      additionalProperties: false
+    ConversionRequest:
+      type: object
+      required:
+        - event_id
+        - viewer_id
+        - conversion_name
+      properties:
+        event_id:
+          type: string
+          minLength: 1
+        viewer_id:
+          type: string
+          minLength: 1
+        conversion_name:
+          type: string
+          minLength: 1
+        value_points:
+          type: integer
+          minimum: 0
+          default: 0
+        occurred_at:
+          type: string
+          format: date-time
+        window_seconds:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+    ConversionData:
+      type: object
+      required:
+        - conversion_id
+        - source
+        - conversion_name
+        - value_points
+        - attribution
+      properties:
+        conversion_id:
+          type: string
+          minLength: 1
+        source:
+          type: string
+          enum:
+            - browser_pixel
+            - server_api
+        conversion_name:
+          type: string
+          minLength: 1
+        value_points:
+          type: integer
+          minimum: 0
+        attribution:
+          $ref: "#/components/schemas/AttributionData"
+      additionalProperties: false
+    AttributionData:
+      type: object
+      required:
+        - model
+        - attributed
+        - duplicate
+        - click_event_id
+        - decision_id
+        - campaign_id
+        - window_seconds
+      properties:
+        model:
+          type: string
+          enum:
+            - last_click
+        attributed:
+          type: boolean
+        duplicate:
+          type: boolean
+        click_event_id:
+          type:
+            - string
+            - "null"
+        decision_id:
+          type:
+            - string
+            - "null"
+        campaign_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        window_seconds:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+    ArchiveManifest:
+      type: object
+      required:
+        - manifest_id
+        - status
+        - format
+        - event_count
+        - partitions
+        - created_at
+      properties:
+        manifest_id:
+          type: string
+          minLength: 1
+        status:
+          type: string
+          enum:
+            - completed
+        format:
+          type: string
+          enum:
+            - parquet
+        event_count:
+          type: integer
+          minimum: 0
+        partitions:
+          type: array
+          description: Archive partitions use event_type/date/hour layout.
+          items:
+            $ref: "#/components/schemas/ArchivePartition"
+        created_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    ArchivePartition:
+      type: object
+      required:
+        - partition
+        - object_key
+        - event_count
+      properties:
+        partition:
+          type: string
+          description: Partition path such as event_type/date/hour.
+          minLength: 1
+        object_key:
+          type: string
+          minLength: 1
+        event_count:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+    CreateColdQueryRequest:
+      type: object
+      required:
+        - sql
+        - requested_by
+      properties:
+        sql:
+          type: string
+          minLength: 1
+        parameters:
+          type: array
+          items: {}
+          default: []
+        requested_by:
+          type: string
+          minLength: 1
+      additionalProperties: false
+    ColdQueryJob:
+      type: object
+      required:
+        - job_id
+        - status
+        - sql
+        - parameters
+        - requested_by
+        - result_format
+        - row_count
+        - result_object_key
+        - scanned_object_keys
+        - created_at
+        - completed_at
+      properties:
+        job_id:
+          type: string
+          minLength: 1
+        status:
+          type: string
+          enum:
+            - queued
+            - completed
+        sql:
+          type: string
+          minLength: 1
+        parameters:
+          type: array
+          items: {}
+        requested_by:
+          type: string
+          minLength: 1
+        result_format:
+          type: string
+          enum:
+            - json
+        row_count:
+          type: integer
+          minimum: 0
+        result_object_key:
+          type:
+            - string
+            - "null"
+        scanned_object_keys:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+      additionalProperties: false
+    OperationsSummary:
+      type: object
+      required:
+        - backup_status
+        - restore_drill_evidence
+        - redis_hardening_inventory
+        - audit_on_view
+      properties:
+        backup_status:
+          $ref: "#/components/schemas/BackupStatus"
+        restore_drill_evidence:
+          type: object
+          required:
+            - last_drill_at
+            - evidence_url
+            - verified_by
+          properties:
+            last_drill_at:
+              type:
+                - string
+                - "null"
+            evidence_url:
+              type:
+                - string
+                - "null"
+            verified_by:
+              type:
+                - string
+                - "null"
+          additionalProperties: false
+        redis_hardening_inventory:
+          $ref: "#/components/schemas/RedisHardeningInventory"
+        audit_on_view:
+          type: object
+          required:
+            - raw_context
+            - config_rollback
+          properties:
+            raw_context:
+              type: boolean
+            config_rollback:
+              type: boolean
+          additionalProperties: false
+      additionalProperties: false
+    BackupStatus:
+      type: object
+      required:
+        - status
+        - last_backup_at
+        - last_successful_backup_id
+      properties:
+        status:
+          type: string
+          enum:
+            - healthy
+            - degraded
+            - unknown
+        last_backup_at:
+          type:
+            - string
+            - "null"
+        last_successful_backup_id:
+          type:
+            - string
+            - "null"
+      additionalProperties: false
+    RedisHardeningInventory:
+      type: object
+      required:
+        - password_configured
+        - dangerous_commands_disabled
+        - key_prefix
+        - prefix_collision_risk
+      properties:
+        password_configured:
+          type: boolean
+        dangerous_commands_disabled:
+          type: array
+          items:
+            type: string
+        key_prefix:
+          type: string
+        prefix_collision_risk:
+          type: string
+          enum:
+            - low
+            - medium
+            - high
+            - unknown
+      additionalProperties: false
+    OperationErrorLog:
+      type: object
+      required:
+        - error_id
+        - request_id
+        - severity
+        - message
+        - redacted_context
+        - raw_context
+        - source
+        - occurred_at
+      properties:
+        error_id:
+          type: string
+          minLength: 1
+        request_id:
+          type: string
+          minLength: 1
+        severity:
+          type: string
+          enum:
+            - warning
+            - error
+            - critical
+        message:
+          type: string
+          minLength: 1
+        redacted_context:
+          type: object
+          additionalProperties: true
+        raw_context:
+          type:
+            - object
+            - "null"
+          additionalProperties: true
+        source:
+          type: string
+          enum:
+            - api
+            - php
+        occurred_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    ConfigVersion:
+      type: object
+      required:
+        - version_id
+        - config_key
+        - version_number
+        - value
+        - created_by_user_id
+        - created_at
+      properties:
+        version_id:
+          type: string
+          minLength: 1
+        config_key:
+          type: string
+          minLength: 1
+        version_number:
+          type: integer
+          minimum: 1
+        value:
+          type: object
+          additionalProperties: true
+        created_by_user_id:
+          type: integer
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    WebhookDelivery:
+      type: object
+      required:
+        - delivery_id
+        - endpoint_url
+        - event_type
+        - payload_json
+        - status
+        - retry_count
+        - last_error
+        - signature_header
+        - created_at
+        - delivered_at
+      properties:
+        delivery_id:
+          type: string
+          minLength: 1
+        endpoint_url:
+          type: string
+          format: uri
+        event_type:
+          type: string
+          minLength: 1
+        payload_json:
+          type: string
+          minLength: 1
+        status:
+          type: string
+          enum:
+            - queued
+            - delivered
+            - failed
+        retry_count:
+          type: integer
+          minimum: 0
+        last_error:
+          type:
+            - string
+            - "null"
+        signature_header:
+          type:
+            - string
+            - "null"
+        created_at:
+          type: string
+          format: date-time
+        delivered_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+      additionalProperties: false
+    SupportLinkedEntity:
+      type: object
+      required:
+        - type
+        - id
+      properties:
+        type:
+          type: string
+          minLength: 1
+        id:
+          oneOf:
+            - type: integer
+            - type: string
+      additionalProperties: false
+    SupportTicketAttachment:
+      type: object
+      required:
+        - filename
+        - object_key
+      properties:
+        filename:
+          type: string
+          minLength: 1
+        object_key:
+          type: string
+          minLength: 1
+      additionalProperties: true
+    SupportTicketNote:
+      type: object
+      required:
+        - note_id
+        - actor_user_id
+        - body
+        - created_at
+      properties:
+        note_id:
+          type: string
+          minLength: 1
+        actor_user_id:
+          type: integer
+          minimum: 1
+        body:
+          type: string
+          minLength: 1
+        created_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    SupportTicket:
+      type: object
+      required:
+        - ticket_id
+        - organization_id
+        - created_by_user_id
+        - subject
+        - description
+        - priority
+        - status
+        - linked_entity
+        - assignee_user_id
+        - internal_notes
+        - attachments
+        - created_at
+        - updated_at
+      properties:
+        ticket_id:
+          type: string
+          minLength: 1
+        organization_id:
+          type: integer
+          minimum: 1
+        created_by_user_id:
+          type: integer
+          minimum: 1
+        subject:
+          type: string
+          minLength: 1
+        description:
+          type: string
+          minLength: 1
+        priority:
+          type: string
+          enum: [low, normal, high, urgent]
+        status:
+          type: string
+          enum: [open, in_progress, resolved, closed]
+        linked_entity:
+          $ref: "#/components/schemas/SupportLinkedEntity"
+        assignee_user_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        internal_notes:
+          type: array
+          items:
+            $ref: "#/components/schemas/SupportTicketNote"
+        attachments:
+          type: array
+          items:
+            $ref: "#/components/schemas/SupportTicketAttachment"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    FeatureFlag:
+      type: object
+      required:
+        - flag_key
+        - environment
+        - enabled
+        - targets
+        - percentage_rollout
+        - time_window
+        - created_at
+        - updated_at
+      properties:
+        flag_key:
+          type: string
+          minLength: 1
+        environment:
+          type: string
+          enum: [local, staging, prod]
+        enabled:
+          type: boolean
+        targets:
+          type: object
+          properties:
+            organization_ids:
+              type: array
+              items:
+                type: integer
+            user_ids:
+              type: array
+              items:
+                type: integer
+            roles:
+              type: array
+              items:
+                type: string
+            site_ids:
+              type: array
+              items:
+                type: integer
+            slot_ids:
+              type: array
+              items:
+                type: integer
+          additionalProperties: false
+        percentage_rollout:
+          type: integer
+          minimum: 0
+          maximum: 100
+        time_window:
+          type:
+            - object
+            - "null"
+          required:
+            - starts_at
+            - ends_at
+          properties:
+            starts_at:
+              type: string
+              format: date-time
+            ends_at:
+              type: string
+              format: date-time
+          additionalProperties: false
+        published:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    FeatureFlagEvaluation:
+      type: object
+      required:
+        - flag_key
+        - enabled
+        - reason
+      properties:
+        flag_key:
+          type: string
+          minLength: 1
+        enabled:
+          type: boolean
+        reason:
+          type: string
+          enum:
+            - flag_disabled
+            - environment_mismatch
+            - outside_time_window
+            - target_miss
+            - rollout_miss
+            - target_match
+      additionalProperties: false
+    ReportDashboardData:
+      type: object
+      required:
+        - portal
+        - organization_id
+        - range
+        - totals
+        - series
+        - dimensions
+      properties:
+        portal:
+          type: string
+          enum:
+            - admin
+            - advertiser
+            - publisher
+        organization_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        range:
+          $ref: "#/components/schemas/ReportRange"
+        totals:
+          $ref: "#/components/schemas/ReportTotals"
+        series:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReportSeriesPoint"
+        dimensions:
+          $ref: "#/components/schemas/ReportDimensions"
+      additionalProperties: false
+    ReportRange:
+      type: object
+      required:
+        - from
+        - to
+        - granularity
+      properties:
+        from:
+          type: string
+        to:
+          type: string
+        granularity:
+          type: string
+          enum:
+            - hour
+            - day
+      additionalProperties: false
+    ReportTotals:
+      type: object
+      required:
+        - impressions
+        - clicks
+        - ctr
+        - spend_points
+        - revenue_points
+        - spend_cny
+        - revenue_cny
+      properties:
+        impressions:
+          type: integer
+          minimum: 0
+        clicks:
+          type: integer
+          minimum: 0
+        ctr:
+          type: number
+          minimum: 0
+        spend_points:
+          type: integer
+          minimum: 0
+        revenue_points:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+    ReportSeriesPoint:
+      type: object
+      required:
+        - date
+        - impressions
+        - clicks
+        - ctr
+        - spend_points
+        - revenue_points
+      properties:
+        date:
+          type: string
+        impressions:
+          type: integer
+          minimum: 0
+        clicks:
+          type: integer
+          minimum: 0
+        ctr:
+          type: number
+          minimum: 0
+        spend_points:
+          type: integer
+          minimum: 0
+        revenue_points:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+    ReportDimensions:
+      type: object
+      required:
+        - geo
+        - device
+        - browser
+        - resolution
+        - risk
+      properties:
+        geo:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReportDimensionBucket"
+        device:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReportDimensionBucket"
+        browser:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReportDimensionBucket"
+        resolution:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReportDimensionBucket"
+        risk:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReportDimensionBucket"
+      additionalProperties: false
+    ReportDimensionBucket:
+      type: object
+      required:
+        - key
+        - label
+        - impressions
+        - clicks
+        - ctr
+        - risk_score
+      properties:
+        key:
+          type: string
+        label:
+          type: string
+        impressions:
+          type: integer
+          minimum: 0
+        clicks:
+          type: integer
+          minimum: 0
+        ctr:
+          type: number
+          minimum: 0
+        risk_score:
+          type: integer
+          minimum: 0
+      additionalProperties: false
     CronStatusData:
       type: object
       required:
@@ -241,4 +5084,71 @@ components:
           type: string
           enum:
             - redis
+      additionalProperties: false
+    CronJobRunData:
+      type: object
+      required:
+        - job
+        - status
+        - acquired_lock
+        - metrics
+        - message
+      properties:
+        job:
+          type: string
+          minLength: 1
+        status:
+          type: string
+          enum:
+            - completed
+            - locked
+        acquired_lock:
+          type: boolean
+        metrics:
+          type: object
+          additionalProperties:
+            oneOf:
+              - type: integer
+              - type: string
+              - type: boolean
+              - type: "null"
+        message:
+          type:
+            - string
+            - "null"
+      additionalProperties: false
+    PermissionMetadata:
+      type: object
+      required:
+        - code
+        - domain
+        - scope
+        - description
+        - sensitive
+        - audit_required
+      properties:
+        code:
+          type: string
+          minLength: 1
+          examples:
+            - billing.recharge_key.view_plaintext.platform
+        domain:
+          type: string
+          minLength: 1
+          examples:
+            - billing
+        scope:
+          type: string
+          minLength: 1
+          examples:
+            - platform
+        description:
+          type: string
+          minLength: 1
+        sensitive:
+          type: boolean
+          description: Whether the permission gates a sensitive operation.
+        audit_required:
+          type: boolean
+          description: Whether successful or denied use should produce an audit event.
       additionalProperties: false

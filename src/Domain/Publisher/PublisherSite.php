@@ -15,6 +15,7 @@ final readonly class PublisherSite
         public PublisherSiteStatus $status,
         public string $verificationToken,
         public ?DateTimeImmutable $verifiedAt,
+        public string $name = '',
     ) {
     }
 
@@ -27,6 +28,7 @@ final readonly class PublisherSite
             status: $status,
             verificationToken: $this->verificationToken,
             verifiedAt: $verifiedAt,
+            name: $this->name,
         );
     }
 }

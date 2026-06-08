@@ -12,6 +12,12 @@ Copy-Item .env.example .env
 
 Update `.env` with local database, Redis, OAuth, object storage, Turnstile, cron, Cloudflare, and AI review settings before running the API.
 
+Generate `APP_KEY` as a Defuse ASCII-safe key before using recharge key encryption:
+
+```powershell
+php -r "require 'vendor/autoload.php'; echo Defuse\Crypto\Key::createNewRandomKey()->saveToAsciiSafeString(), PHP_EOL;"
+```
+
 ## Development Server
 
 ```powershell
@@ -38,7 +44,29 @@ composer test:coverage
 
 The PHPUnit suite uses `phpunit.xml` and boots from `vendor/autoload.php`.
 
-`composer test:coverage` runs `scripts/coverage-gate.php`. When Xdebug, PCOV, or a working phpdbg coverage driver is available, it generates Clover coverage for `src/` and requires 100% line coverage. If no working coverage driver is available, the script prints the driver blocker and still runs the full PHPUnit suite so this environment remains test-gated. No `src/` files are excluded from the configured coverage source.
+`composer test:coverage` runs `scripts/coverage-gate.php`. When Xdebug, PCOV, or a working phpdbg coverage driver is available, it generates Clover coverage for `src/` and requires 100% line coverage. If no working coverage driver is available, the script prints an explicit blocker with the detected SAPI, coverage extensions, and phpdbg status, then still runs the full PHPUnit suite so this environment remains test-gated. Install or enable Xdebug with `XDEBUG_MODE=coverage`, PCOV, or phpdbg to make the coverage gate enforce line coverage locally. No `src/` files are excluded from the configured coverage source.
+
+Redis serving event buffering has an optional real Redis integration harness. It is skipped by default so local and CI runs without Redis remain green. To exercise the production Redis path, run Redis 8.8 with a strong password, then opt in:
+
+```powershell
+$redisPassword = "replace-with-32-plus-character-random-password"
+docker run --rm --name vertoad-redis-88 -p 6379:6379 index.docker.io/library/redis:8.8.0 redis-server --requirepass $redisPassword --rename-command FLUSHALL "" --rename-command FLUSHDB "" --rename-command CONFIG ""
+
+$env:VERTOAD_REDIS_INTEGRATION = "1"
+$env:REDIS_HOST = "127.0.0.1"
+$env:REDIS_PORT = "6379"
+$env:REDIS_PASSWORD = $redisPassword
+vendor\bin\phpunit tests\Serving\RedisAdEventRepositoryRealRedisTest.php --group redis-integration
+```
+
+For a local Redis 8.8 container, use a throwaway password and disable dangerous commands in the config used by the container. Production Redis is password-only in the current deployment assumption, so the password must be long random material, dangerous commands must remain disabled where the managed service allows it, the Redis key prefix must be environment-specific, and failed auth/connectivity alerts must be monitored.
+
+The frontend coverage gate is run from the frontend workspace:
+
+```powershell
+cd ../frontend
+pnpm test:coverage
+```
 
 ## OpenAPI
 
@@ -46,26 +74,51 @@ The PHPUnit suite uses `phpunit.xml` and boots from `vendor/autoload.php`.
 composer openapi:check
 ```
 
-The OpenAPI contract lives at `docs/openapi.yaml`. The check command requires the PHP yaml extension because it uses `yaml_parse_file`.
+The OpenAPI contract lives at `docs/openapi.yaml`. When the PHP yaml extension is installed, the check command parses the full YAML document. Without that extension, it uses a structural fallback that still verifies the OpenAPI version, envelope schemas, and implemented `/api/v1` route coverage.
 
-The current public contract intentionally documents only implemented endpoints:
+The current public contract intentionally documents only implemented endpoints. Its implemented groups are:
 
-- `GET /api/v1/health`
-- `GET /api/v1/cron/status`
+- Auth: first-party registration, login, logout, password reset, and authenticated current-user context.
+- Health: runtime liveness metadata.
+- Permissions: public permission inventory metadata for frontend route gating and developer tooling.
+- Billing: authenticated advertiser points balance, ledger, and recharge-key redemption endpoints.
+- Cron: protected backend maintenance status endpoint.
 
-Do not add public advertiser, publisher, ledger, reporting, OAuth, or admin endpoints to OpenAPI until the corresponding backend route and response shape exist.
+Do not add public publisher, reporting, OAuth, admin, or additional advertiser and ledger endpoints to OpenAPI until the corresponding backend route, response shape, and tests exist.
 
 ## Backend Boundaries
 
-The current backend slice establishes the Slim application shell, environment-backed settings, health checks, and the protected Cron API surface.
+The current backend slice establishes the Slim application shell, environment-backed settings, health checks, protected Cron API surface, first-party auth/session bridge endpoints, permission metadata, and the implemented authenticated billing endpoints documented in OpenAPI.
 
 System configuration is currently loaded from `.env` into PHP settings for infrastructure integrations such as MySQL, Redis, S3-compatible storage, OAuth key paths, cron protection, Cloudflare real IP handling, Turnstile, and AI review. The product roadmap calls for business configuration to move into versioned, auditable admin-managed records; until that storage and API surface exists, docs should treat `.env` settings as runtime infrastructure config only.
 
+Serving events are Redis-first outside local/test environments. `serve`, `track`, and `click` event writes go to Redis, and the protected Cron job `redis-events-consume` leases events, persists them to MySQL, bills valid events, and only acknowledges the Redis lease after persistence and billing processing complete. A MySQL persistence failure must leave the event unacknowledged so the Redis visibility timeout can redeliver it.
+
+Production must not fall back to DB-first serving event buffering. In `prod`/`staging`, missing Redis extension or missing `REDIS_PASSWORD` is a startup/configuration failure for the serving event buffer. Local and test environments may use in-memory fallback to keep unit tests independent from Redis.
+
+Redis serving event settings:
+
+- `REDIS_PASSWORD`: required for production serving event buffering; use 32+ random characters at minimum.
+- `REDIS_PREFIX`: use an environment-specific prefix such as `vertoad:prod:` or `vertoad:staging:` to avoid shared Redis collisions.
+- `REDIS_SERVING_EVENT_VISIBILITY_TIMEOUT_SECONDS`: time before a leased but unacknowledged event becomes eligible for redelivery.
+- `REDIS_SERVING_EVENT_RETENTION_SECONDS`: payload and dedupe retention window.
+- `CRON_EVENT_CONSUME_BATCH_SIZE`: max events consumed per Cron run.
+- `CRON_LOCK_TTL_SECONDS`: Redis lock TTL used to prevent concurrent Cron runs.
+
+Recommended targeted checks before deploying Redis/Cron changes:
+
+```powershell
+vendor\bin\phpunit tests\Serving
+vendor\bin\phpunit tests\Cron
+composer test:coverage
+composer openapi:check
+```
+
 Audit logging is a required platform boundary for sensitive operations, configuration changes, ledger adjustments, cron operations, and support/admin actions. It is not currently exposed as a public API in this slice, so contracts should describe audit behavior only when the backing implementation is present.
 
-The points ledger is a core planned boundary for advertiser balances, publisher earnings, adjustments, reversals, recharge keys, and withdrawals. Public ledger APIs are not part of the current implemented HTTP surface and should remain out of OpenAPI until routes, persistence, and tests are implemented.
+The points ledger is a core platform boundary. The current implemented HTTP surface includes authenticated advertiser balance, ledger listing, and recharge-key redemption. Broader ledger operations for publisher earnings, adjustments, reversals, recharge-key management, and withdrawals should remain out of OpenAPI until routes, persistence, and tests are implemented.
 
-Near-term backend contract work should keep OpenAPI aligned with implemented routes, then add authenticated envelopes, OAuth2-protected resources, audit records, and ledger operations as those slices land.
+Near-term backend contract work should keep OpenAPI aligned with implemented routes, then add OAuth2-protected resources, audit records, and broader ledger operations as those slices land.
 
 ## Healthcheck
 

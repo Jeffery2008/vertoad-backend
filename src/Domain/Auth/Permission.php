@@ -25,6 +25,7 @@ final class Permission
     public const string CronStatusRead = 'cron.status.read';
     public const string OrganizationMembersRead = 'organizations.members.read';
     public const string OrganizationMembersManage = 'organizations.members.manage';
+    public const string FeatureFlagPublishPlatform = 'feature_flag.publish.platform';
 
     /**
      * @return list<string>
@@ -51,6 +52,7 @@ final class Permission
             self::CronStatusRead,
             self::OrganizationMembersRead,
             self::OrganizationMembersManage,
+            self::FeatureFlagPublishPlatform,
         ];
     }
 }

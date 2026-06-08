@@ -4,76 +4,156 @@ declare(strict_types=1);
 
 const REQUIRED_LINE_RATE = 1.0;
 
-$root = dirname(__DIR__);
-$phpunit = $root . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'phpunit' . DIRECTORY_SEPARATOR
-    . 'phpunit' . DIRECTORY_SEPARATOR . 'phpunit';
-$coverageDir = $root . DIRECTORY_SEPARATOR . 'build' . DIRECTORY_SEPARATOR . 'coverage';
-$clover = $coverageDir . DIRECTORY_SEPARATOR . 'clover.xml';
-
-if (!is_file($phpunit)) {
-    fwrite(STDERR, "PHPUnit executable was not found. Run composer install first.\n");
-    exit(1);
+if (!defined('VERTOAD_COVERAGE_GATE_TESTING')) {
+    exit(coverageGateMain());
 }
 
-if (!is_dir($coverageDir) && !mkdir($coverageDir, 0777, true) && !is_dir($coverageDir)) {
-    fwrite(STDERR, "Unable to create coverage output directory: {$coverageDir}\n");
-    exit(1);
-}
+function coverageGateMain(): int
+{
+    $root = dirname(__DIR__);
+    $phpunit = $root . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'phpunit' . DIRECTORY_SEPARATOR
+        . 'phpunit' . DIRECTORY_SEPARATOR . 'phpunit';
+    $coverageDir = $root . DIRECTORY_SEPARATOR . 'build' . DIRECTORY_SEPARATOR . 'coverage';
+    $clover = $coverageDir . DIRECTORY_SEPARATOR . 'clover.xml';
 
-@unlink($clover);
+    if (!is_file($phpunit)) {
+        fwrite(STDERR, "PHPUnit executable was not found. Run composer install first.\n");
+        return 1;
+    }
 
-$coverageRunner = coverageRunner($phpunit, $clover);
-if ($coverageRunner !== null) {
-    $coverage = runCommand($coverageRunner);
-    echo $coverage['output'];
+    if (!is_dir($coverageDir) && !mkdir($coverageDir, 0777, true) && !is_dir($coverageDir)) {
+        fwrite(STDERR, "Unable to create coverage output directory: {$coverageDir}\n");
+        return 1;
+    }
 
-    if ($coverage['exitCode'] === 0 && is_file($clover)) {
-        $lineRate = cloverLineRate($clover);
-        $percent = $lineRate * 100;
-        printf("Coverage line-rate: %.2f%%; required: 100.00%%\n", $percent);
+    @unlink($clover);
 
-        if ($lineRate >= REQUIRED_LINE_RATE) {
-            exit(0);
+    $diagnostics = currentCoverageDriverDiagnostics();
+    $coverageRunner = coverageRunner($phpunit, $clover, $diagnostics);
+    if ($coverageRunner !== null) {
+        $coverage = runCommand($coverageRunner);
+        echo $coverage['output'];
+
+        if ($coverage['exitCode'] === 0 && is_file($clover)) {
+            $lineRate = cloverLineRate($clover);
+            $percent = $lineRate * 100;
+            printf("Coverage line-rate: %.2f%%; required: 100.00%%\n", $percent);
+
+            if ($lineRate >= REQUIRED_LINE_RATE) {
+                return 0;
+            }
+
+            fwrite(STDERR, sprintf("Coverage gate failed: %.2f%% line coverage is below 100.00%%.\n", $percent));
+            return 1;
         }
 
-        fwrite(STDERR, sprintf("Coverage gate failed: %.2f%% line coverage is below 100.00%%.\n", $percent));
-        exit(1);
+        if (!coverageDriverBlocked($coverage['output']) && $coverage['exitCode'] !== 0) {
+            return $coverage['exitCode'];
+        }
     }
 
-    if (!coverageDriverBlocked($coverage['output']) && $coverage['exitCode'] !== 0) {
-        exit($coverage['exitCode']);
-    }
+    fwrite(STDERR, coverageFallbackBlockerMessage($diagnostics));
+    $tests = runCommand([PHP_BINARY, $phpunit]);
+    echo $tests['output'];
+
+    return $tests['exitCode'];
 }
-
-fwrite(STDERR, coverageBlockerMessage());
-$tests = runCommand([PHP_BINARY, $phpunit]);
-echo $tests['output'];
-
-exit($tests['exitCode']);
 
 /**
  * @return list<string>|null
  */
-function coverageRunner(string $phpunit, string $clover): ?array
+function coverageRunner(string $phpunit, string $clover, ?array $diagnostics = null): ?array
 {
     $args = [$phpunit, '--coverage-clover', $clover, '--coverage-text'];
+    $diagnostics ??= currentCoverageDriverDiagnostics();
 
-    if (extension_loaded('xdebug') || extension_loaded('pcov') || PHP_SAPI === 'phpdbg') {
-        return [PHP_BINARY, ...$args];
+    if (!$diagnostics['available']) {
+        return null;
     }
 
-    $phpdbg = findExecutable('phpdbg');
-    if ($phpdbg !== null) {
-        return [$phpdbg, '-qrr', ...$args];
-    }
-
-    return null;
+    return [...$diagnostics['runnerPrefix'], ...$args];
 }
 
-function coverageBlockerMessage(): string
+/**
+ * @return array{available:bool, runnerPrefix:list<string>|null, message:string, sapi:string, coverageExtensions:list<string>, phpdbgPath:string|null}
+ */
+function currentCoverageDriverDiagnostics(): array
 {
+    return coverageDriverDiagnostics(
+        loadedExtensions: get_loaded_extensions(),
+        sapi: PHP_SAPI,
+        phpdbgPath: findExecutable('phpdbg'),
+    );
+}
+
+/**
+ * @param list<string> $loadedExtensions
+ * @return array{available:bool, runnerPrefix:list<string>|null, message:string, sapi:string, coverageExtensions:list<string>, phpdbgPath:string|null}
+ */
+function coverageDriverDiagnostics(array $loadedExtensions, string $sapi, ?string $phpdbgPath): array
+{
+    $extensions = array_map('strtolower', $loadedExtensions);
+    $coverageExtensions = array_values(array_intersect($extensions, ['xdebug', 'pcov']));
+
+    if ($coverageExtensions !== [] || $sapi === 'phpdbg') {
+        return [
+            'available' => true,
+            'runnerPrefix' => [PHP_BINARY],
+            'message' => '',
+            'sapi' => $sapi,
+            'coverageExtensions' => $coverageExtensions,
+            'phpdbgPath' => $phpdbgPath,
+        ];
+    }
+
+    if ($phpdbgPath !== null) {
+        return [
+            'available' => true,
+            'runnerPrefix' => [$phpdbgPath, '-qrr'],
+            'message' => '',
+            'sapi' => $sapi,
+            'coverageExtensions' => $coverageExtensions,
+            'phpdbgPath' => $phpdbgPath,
+        ];
+    }
+
+    $message = coverageBlockerMessage($sapi, $coverageExtensions, $phpdbgPath);
+
+    return [
+        'available' => false,
+        'runnerPrefix' => null,
+        'message' => $message,
+        'sapi' => $sapi,
+        'coverageExtensions' => $coverageExtensions,
+        'phpdbgPath' => $phpdbgPath,
+    ];
+}
+
+/**
+ * @param array{sapi:string, coverageExtensions:list<string>, phpdbgPath:string|null} $diagnostics
+ */
+function coverageFallbackBlockerMessage(array $diagnostics): string
+{
+    return coverageBlockerMessage(
+        $diagnostics['sapi'],
+        $diagnostics['coverageExtensions'],
+        $diagnostics['phpdbgPath'],
+    );
+}
+
+/**
+ * @param list<string> $coverageExtensions
+ */
+function coverageBlockerMessage(string $sapi, array $coverageExtensions, ?string $phpdbgPath): string
+{
+    $extensionSummary = $coverageExtensions === [] ? 'none' : implode(', ', $coverageExtensions);
+    $phpdbgSummary = $phpdbgPath ?? 'not found';
+
     return <<<TEXT
 Coverage driver blocker: no working PHPUnit coverage driver is available.
+Detected SAPI: {$sapi}
+Detected coverage extensions: {$extensionSummary}
+Detected phpdbg: {$phpdbgSummary}
 Install/enable Xdebug with XDEBUG_MODE=coverage, PCOV, or a phpdbg build that exposes code coverage.
 Running PHPUnit without coverage so the test suite still gates this environment.
 

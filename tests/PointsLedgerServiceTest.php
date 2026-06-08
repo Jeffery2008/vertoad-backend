@@ -273,4 +273,28 @@ final class FakePointsLedgerRepository implements PointsLedgerRepositoryInterfac
 
         return null;
     }
+
+    public function listForOrganization(int $organizationId, int $limit = 50): array
+    {
+        $entries = array_values(array_filter(
+            $this->entries,
+            fn (PointsLedgerEntry $entry): bool => $entry->organizationId === $organizationId,
+        ));
+
+        return array_slice(array_reverse($entries), 0, max(1, min(200, $limit)));
+    }
+
+    public function balanceForOrganization(int $organizationId, string $accountType = 'advertiser_balance'): int
+    {
+        $balance = 0;
+        foreach ($this->entries as $entry) {
+            if ($entry->organizationId !== $organizationId || $entry->accountType !== trim($accountType)) {
+                continue;
+            }
+
+            $balance += $entry->direction === LedgerDirection::Credit ? $entry->pointsAmount : -$entry->pointsAmount;
+        }
+
+        return $balance;
+    }
 }

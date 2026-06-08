@@ -149,6 +149,51 @@ final class RechargeKeyServiceTest extends TestCase
         self::assertCount(1, $ledgerRepository->entries);
     }
 
+    public function testRedeemRejectsStoredKeyWithoutIdBeforeLedgerCredit(): void
+    {
+        $repository = new FakeRechargeKeyRepository(assignIds: false);
+        $ledgerRepository = new FakeRechargeLedgerRepository();
+        $service = new RechargeKeyService(
+            repository: $repository,
+            ledger: new PointsLedgerService($ledgerRepository),
+            cipher: new FakeRechargeKeyCipher(),
+        );
+        $service->issue('rk_live_NO_ID', 800, null, null, null, 7, null);
+
+        try {
+            $service->redeem('rk_live_NO_ID', 42, 9, new DateTimeImmutable('2026-06-07 10:00:00'));
+            self::fail('Expected recharge key without ID to be rejected.');
+        } catch (RuntimeException $exception) {
+            self::assertSame('Recharge key ID is required for redemption.', $exception->getMessage());
+        }
+
+        self::assertCount(0, $ledgerRepository->entries);
+    }
+
+    public function testRedeemRejectsLedgerCreditWithoutIdBeforeMarkingRedeemed(): void
+    {
+        $repository = new FakeRechargeKeyRepository();
+        $ledgerRepository = new FakeRechargeLedgerRepository(assignIds: false);
+        $service = new RechargeKeyService(
+            repository: $repository,
+            ledger: new PointsLedgerService($ledgerRepository),
+            cipher: new FakeRechargeKeyCipher(),
+        );
+        $service->issue('rk_live_NO_LEDGER_ID', 800, null, null, null, 7, null);
+
+        try {
+            $service->redeem('rk_live_NO_LEDGER_ID', 42, 9, new DateTimeImmutable('2026-06-07 10:00:00'));
+            self::fail('Expected ledger entry without ID to be rejected.');
+        } catch (RuntimeException $exception) {
+            self::assertSame('Recharge redemption ledger entry ID is required.', $exception->getMessage());
+        }
+
+        $key = $repository->findByKeyHash(hash('sha256', 'rk_live_NO_LEDGER_ID'));
+        self::assertSame(RechargeKeyStatus::Issued, $key?->status);
+        self::assertCount(1, $ledgerRepository->entries);
+        self::assertNull($ledgerRepository->entries[0]->id);
+    }
+
     public function testRedeemIsIdempotentForAlreadyRedeemedSameOrganizationAndUser(): void
     {
         $ledgerRepository = new FakeRechargeLedgerRepository();
@@ -313,9 +358,13 @@ final class FakeRechargeKeyRepository implements RechargeKeyRepositoryInterface
     /** @var array<string, RechargeKey> */
     private array $keysByHash = [];
 
+    public function __construct(private readonly bool $assignIds = true)
+    {
+    }
+
     public function store(RechargeKey $key): RechargeKey
     {
-        $stored = $key->id === null ? $key->withId(count($this->keysByHash) + 1) : $key;
+        $stored = $this->assignIds && $key->id === null ? $key->withId(count($this->keysByHash) + 1) : $key;
         $this->keysByHash[$stored->keyHash] = $stored;
 
         return $stored;
@@ -347,10 +396,14 @@ final class FakeRechargeLedgerRepository implements PointsLedgerRepositoryInterf
     /** @var list<PointsLedgerEntry> */
     public array $entries = [];
 
+    public function __construct(private readonly bool $assignIds = true)
+    {
+    }
+
     public function append(PointsLedgerEntry $entry): PointsLedgerEntry
     {
         $stored = new PointsLedgerEntry(
-            id: count($this->entries) + 1,
+            id: $this->assignIds ? count($this->entries) + 1 : null,
             organizationId: $entry->organizationId,
             accountType: $entry->accountType,
             accountId: $entry->accountId,
@@ -388,5 +441,29 @@ final class FakeRechargeLedgerRepository implements PointsLedgerRepositoryInterf
         }
 
         return null;
+    }
+
+    public function listForOrganization(int $organizationId, int $limit = 50): array
+    {
+        $entries = array_values(array_filter(
+            $this->entries,
+            fn (PointsLedgerEntry $entry): bool => $entry->organizationId === $organizationId,
+        ));
+
+        return array_slice(array_reverse($entries), 0, max(1, min(200, $limit)));
+    }
+
+    public function balanceForOrganization(int $organizationId, string $accountType = 'advertiser_balance'): int
+    {
+        $balance = 0;
+        foreach ($this->entries as $entry) {
+            if ($entry->organizationId !== $organizationId || $entry->accountType !== trim($accountType)) {
+                continue;
+            }
+
+            $balance += $entry->direction === LedgerDirection::Credit ? $entry->pointsAmount : -$entry->pointsAmount;
+        }
+
+        return $balance;
     }
 }

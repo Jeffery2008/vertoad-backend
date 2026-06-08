@@ -68,6 +68,47 @@ final class AuditLogServiceTest extends TestCase
         $service->record(action: ' ', subjectType: 'system_config');
     }
 
+    public function testRecordRejectsMissingSubjectTypeWithoutAppending(): void
+    {
+        $service = new AuditLogService(new class implements AuditLogRepositoryInterface {
+            public function append(AuditLogEntry $entry): void
+            {
+                TestCase::fail('Audit entry should not be appended.');
+            }
+        });
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Audit subject type is required.');
+
+        $service->record(action: 'admin.config.update', subjectType: ' ');
+    }
+
+    public function testRecordStoresNullIpUserAgentAndMetadataWhenOptionalValuesAreBlank(): void
+    {
+        $repository = new class implements AuditLogRepositoryInterface {
+            public ?AuditLogEntry $entry = null;
+
+            public function append(AuditLogEntry $entry): void
+            {
+                $this->entry = $entry;
+            }
+        };
+        $service = new AuditLogService($repository);
+
+        $service->record(
+            action: 'admin.config.update',
+            subjectType: 'system_config',
+            ipAddress: ' ',
+            userAgent: '  CLI  ',
+            metadata: null,
+        );
+
+        self::assertNotNull($repository->entry);
+        self::assertNull($repository->entry->packedIpAddress);
+        self::assertSame('CLI', $repository->entry->userAgent);
+        self::assertNull($repository->entry->metadata);
+    }
+
     public function testRecordRejectsInvalidIpAddress(): void
     {
         $service = new AuditLogService(new class implements AuditLogRepositoryInterface {

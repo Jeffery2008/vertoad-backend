@@ -7,6 +7,7 @@ return [
         'name' => getenv('APP_NAME') ?: 'VertoAD API',
         'env' => getenv('APP_ENV') ?: 'local',
         'debug' => filter_var(getenv('APP_DEBUG') ?: false, FILTER_VALIDATE_BOOL),
+        'key' => getenv('APP_KEY') ?: '',
     ],
     'database' => [
         'driver' => getenv('DB_DRIVER') ?: 'pdo_mysql',
@@ -18,11 +19,16 @@ return [
         'charset' => getenv('DB_CHARSET') ?: 'utf8mb4',
     ],
     'redis' => [
+        'driver' => getenv('REDIS_DRIVER') ?: 'auto',
         'host' => getenv('REDIS_HOST') ?: '127.0.0.1',
         'port' => (int) (getenv('REDIS_PORT') ?: 6379),
         'password' => getenv('REDIS_PASSWORD') ?: '',
         'database' => (int) (getenv('REDIS_DATABASE') ?: 0),
         'prefix' => getenv('REDIS_PREFIX') ?: 'vertoad:',
+        'timeout_seconds' => (float) (getenv('REDIS_TIMEOUT_SECONDS') ?: 2.0),
+        'read_timeout_seconds' => (float) (getenv('REDIS_READ_TIMEOUT_SECONDS') ?: 2.0),
+        'serving_event_visibility_timeout_seconds' => (int) (getenv('REDIS_SERVING_EVENT_VISIBILITY_TIMEOUT_SECONDS') ?: 300),
+        'serving_event_retention_seconds' => (int) (getenv('REDIS_SERVING_EVENT_RETENTION_SECONDS') ?: 604800),
     ],
     'storage' => [
         's3' => [
@@ -34,6 +40,17 @@ return [
             'path_style_endpoint' => filter_var(getenv('S3_PATH_STYLE_ENDPOINT') ?: true, FILTER_VALIDATE_BOOL),
             'public_base_url' => getenv('R2_PUBLIC_BASE_URL') ?: '',
         ],
+    ],
+    'assets' => [
+        'upload_intent_ttl_seconds' => (int) (getenv('ASSET_UPLOAD_INTENT_TTL_SECONDS') ?: 900),
+        'image_max_bytes' => (int) (getenv('ASSET_IMAGE_MAX_BYTES') ?: 10485760),
+        'video_max_bytes' => (int) (getenv('ASSET_VIDEO_MAX_BYTES') ?: 209715200),
+        'snapshot_max_bytes' => (int) (getenv('ASSET_SNAPSHOT_MAX_BYTES') ?: 1048576),
+        'image_max_width' => (int) (getenv('ASSET_IMAGE_MAX_WIDTH') ?: 4096),
+        'image_max_height' => (int) (getenv('ASSET_IMAGE_MAX_HEIGHT') ?: 4096),
+        'video_max_width' => (int) (getenv('ASSET_VIDEO_MAX_WIDTH') ?: 3840),
+        'video_max_height' => (int) (getenv('ASSET_VIDEO_MAX_HEIGHT') ?: 2160),
+        'video_max_duration_seconds' => (float) (getenv('ASSET_VIDEO_MAX_DURATION_SECONDS') ?: 120),
     ],
     'oauth' => [
         'private_key_path' => getenv('OAUTH_PRIVATE_KEY_PATH') ?: 'storage/oauth/private.key',
@@ -48,6 +65,8 @@ return [
             static fn (string $ip): string => trim($ip),
             explode(',', getenv('CRON_API_ALLOWED_IPS') ?: '127.0.0.1,::1')
         ))),
+        'lock_ttl_seconds' => (int) (getenv('CRON_LOCK_TTL_SECONDS') ?: 300),
+        'event_consume_batch_size' => (int) (getenv('CRON_EVENT_CONSUME_BATCH_SIZE') ?: 500),
         'jobs' => [
             'redis-events-consume',
             'aggregate-statistics',
@@ -72,6 +91,12 @@ return [
         'site_key' => getenv('TURNSTILE_SITE_KEY') ?: '',
         'secret_key' => getenv('TURNSTILE_SECRET_KEY') ?: '',
         'verify_url' => getenv('TURNSTILE_VERIFY_URL') ?: 'https://challenges.cloudflare.com/turnstile/v0/siteverify',
+    ],
+    'security' => [
+        'rate_limit' => [
+            'limit' => (int) (getenv('SECURITY_RATE_LIMIT') ?: 60),
+            'window_seconds' => (int) (getenv('SECURITY_RATE_LIMIT_WINDOW_SECONDS') ?: 60),
+        ],
     ],
     'ai_review' => [
         'base_url' => getenv('AI_REVIEW_BASE_URL') ?: '',

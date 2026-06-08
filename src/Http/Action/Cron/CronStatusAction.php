@@ -6,13 +6,17 @@ namespace VertoAD\Http\Action\Cron;
 
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
+use VertoAD\Service\Cron\CronJobRegistry;
 
 final class CronStatusAction
 {
     /**
      * @param array<string, mixed> $settings
      */
-    public function __construct(private readonly array $settings)
+    public function __construct(
+        private readonly array $settings,
+        private readonly ?CronJobRegistry $registry = null,
+    )
     {
     }
 
@@ -20,7 +24,7 @@ final class CronStatusAction
     {
         $response->getBody()->write(json_encode([
             'status' => 'ok',
-            'jobs' => $this->settings['cron']['jobs'] ?? [],
+            'jobs' => $this->registry?->names() ?? $this->settings['cron']['jobs'] ?? [],
             'lock_provider' => 'redis',
         ], JSON_THROW_ON_ERROR));
 
