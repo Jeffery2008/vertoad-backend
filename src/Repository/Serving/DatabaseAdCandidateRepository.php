@@ -33,6 +33,7 @@ final readonly class DatabaseAdCandidateRepository implements AdCandidateReposit
                 'a.id AS asset_id',
                 'a.type AS asset_type',
                 'a.object_key',
+                'a.content_type',
                 'a.width',
                 'a.height',
             )
@@ -81,6 +82,9 @@ final readonly class DatabaseAdCandidateRepository implements AdCandidateReposit
                 height: $height,
                 impressionCostPoints: $pricingModel === 'cpm' ? $bidPoints : 0,
                 clickCostPoints: $pricingModel === 'cpc' ? $bidPoints : 0,
+                assetType: (string) $row['asset_type'],
+                assetObjectKey: (string) $row['object_key'],
+                assetContentType: (string) $row['content_type'],
             );
         }
 

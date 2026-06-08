@@ -16,6 +16,9 @@ final readonly class AdCandidate
         public int $height,
         public int $impressionCostPoints,
         public int $clickCostPoints,
+        public string $assetType = 'html_placeholder',
+        public string $assetObjectKey = '',
+        public string $assetContentType = '',
     ) {
     }
 }

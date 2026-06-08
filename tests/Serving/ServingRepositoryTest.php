@@ -48,6 +48,9 @@ final class ServingRepositoryTest extends TestCase
         self::assertSame(90, $candidates[1]->impressionCostPoints);
         self::assertSame(0, $candidates[1]->clickCostPoints);
         self::assertStringContainsString('data-vertoad-asset="organizations/99/assets/creative-201.png"', $candidates[0]->creativeHtml);
+        self::assertSame('image', $candidates[0]->assetType);
+        self::assertSame('organizations/99/assets/creative-201.png', $candidates[0]->assetObjectKey);
+        self::assertSame('image/png', $candidates[0]->assetContentType);
     }
 
     public function testDatabaseCandidateRepositoryExcludesIneligibleCampaignCreativeAndTargetingRows(): void

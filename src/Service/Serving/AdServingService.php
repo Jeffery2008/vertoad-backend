@@ -183,7 +183,7 @@ final readonly class AdServingService
     private function filled(int $siteId, int $slotId, string $viewerId, AdCandidate $candidate, DateTimeImmutable $now): AdDecision
     {
         $decisionId = 'ad:' . hash('sha256', $siteId . '|' . $slotId . '|' . $viewerId . '|' . $candidate->adId . '|' . $now->format(DATE_ATOM));
-        $creative = htmlspecialchars($candidate->creativeHtml, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $creative = htmlspecialchars($this->creativeSrcdoc($decisionId, $candidate), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 
         return new AdDecision(
             decisionId: $decisionId,
@@ -204,6 +204,33 @@ final readonly class AdServingService
             landingUrl: $candidate->landingUrl,
             decidedAt: $now,
         );
+    }
+
+    private function creativeSrcdoc(string $decisionId, AdCandidate $candidate): string
+    {
+        $payload = [
+            'decision_id' => $decisionId,
+            'render_mode' => $candidate->assetType === 'fabric_snapshot' ? 'fabric-json' : 'asset-fallback',
+            'asset_type' => $candidate->assetType,
+            'asset_object_key' => $candidate->assetObjectKey,
+            'asset_content_type' => $candidate->assetContentType,
+            'fallback_object_key' => $candidate->assetObjectKey,
+            'width' => $candidate->width,
+            'height' => $candidate->height,
+        ];
+        $json = json_encode($payload, JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+        $asset = htmlspecialchars($candidate->assetObjectKey, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $type = htmlspecialchars($candidate->assetType, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $fallback = $candidate->assetObjectKey !== ''
+            ? '<img alt="Advertisement" data-vertoad-fallback="snapshot" src="' . $asset . '">'
+            : '<div data-vertoad-fallback="empty"></div>';
+
+        return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            . '<style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}.vertoad-frame{display:grid;place-items:center;width:100%;height:100%}.vertoad-frame img{display:block;max-width:100%;max-height:100%;object-fit:contain}</style>'
+            . '</head><body><div class="vertoad-frame" data-vertoad-renderer="platform-controlled" data-vertoad-asset-type="' . $type . '">'
+            . '<script type="application/json" id="vertoad-render-payload">' . $json . '</script>'
+            . $fallback
+            . '</div></body></html>';
     }
 
     private function budgetRejection(AdCandidate $candidate, DateTimeImmutable $now): ?SpendFailureReason

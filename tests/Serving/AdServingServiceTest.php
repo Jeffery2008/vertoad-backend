@@ -92,6 +92,40 @@ final class AdServingServiceTest extends TestCase
         self::assertSame(1, $events->impressionCount());
     }
 
+    public function testServeUsesPlatformControlledRendererForFabricCandidates(): void
+    {
+        $candidate = new AdCandidate(
+            adId: 'ad-fabric',
+            campaignId: 30,
+            advertiserOrganizationId: 40,
+            creativeHtml: '<script>window.top.location="https://evil.example"</script>',
+            landingUrl: 'https://advertiser.example/landing',
+            width: 300,
+            height: 250,
+            impressionCostPoints: 10,
+            clickCostPoints: 20,
+            assetType: 'fabric_snapshot',
+            assetObjectKey: 'organizations/40/assets/fabric-creative.json',
+            assetContentType: 'application/json',
+        );
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([$candidate]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+        );
+
+        $decision = $service->serve(10, 20, 'viewer-1', null, false, new DateTimeImmutable('2026-06-08 10:00:00'));
+        $srcdoc = html_entity_decode($decision->iframeHtml, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+        self::assertTrue($decision->filled);
+        self::assertStringContainsString('sandbox="allow-popups allow-popups-to-escape-sandbox"', $decision->iframeHtml);
+        self::assertStringContainsString('data-vertoad-renderer="platform-controlled"', $srcdoc);
+        self::assertStringContainsString('"render_mode":"fabric-json"', $srcdoc);
+        self::assertStringContainsString('"fallback_object_key":"organizations\/40\/assets\/fabric-creative.json"', $srcdoc);
+        self::assertStringNotContainsString('<script>window.top.location', $srcdoc);
+    }
+
     public function testTrackRejectsUnknownOrMismatchedDecisions(): void
     {
         $decisions = new InMemoryAdDecisionRepository();

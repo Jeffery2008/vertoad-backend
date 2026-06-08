@@ -101,8 +101,11 @@ final class ServingRouteIntegrationTest extends TestCase
         self::assertSame(200, $response->getStatusCode());
         self::assertStringStartsWith('text/html', $response->getHeaderLine('Content-Type'));
         $html = (string) $response->getBody();
+        $srcdoc = html_entity_decode($html, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         self::assertStringContainsString('sandbox=', $html);
-        self::assertStringContainsString('VertoAD creative', $html);
+        self::assertStringContainsString('data-vertoad-renderer="platform-controlled"', $srcdoc);
+        self::assertStringContainsString('data-vertoad-fallback="snapshot"', $srcdoc);
+        self::assertStringContainsString('organizations/40/assets/creative.png', $srcdoc);
 
         $invalidResponse = $this->handleRaw($app, 'GET', '/api/v1/ads/serve?site_id=0&slot_id=20&viewer_id=viewer-1');
         self::assertSame(422, $invalidResponse->getStatusCode());
@@ -117,11 +120,17 @@ final class ServingRouteIntegrationTest extends TestCase
 
         $noSize = $this->handleRaw($app, 'GET', '/api/v1/ads/serve?site_id=10&slot_id=20&viewer_id=viewer-1&debug=false');
         self::assertSame(200, $noSize->getStatusCode());
-        self::assertStringContainsString('VertoAD creative', (string) $noSize->getBody());
+        self::assertStringContainsString(
+            'data-vertoad-renderer="platform-controlled"',
+            html_entity_decode((string) $noSize->getBody(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+        );
 
         $defaultDebug = $this->handleRaw($app, 'GET', '/api/v1/ads/serve?site_id=10&slot_id=20&viewer_id=viewer-1');
         self::assertSame(200, $defaultDebug->getStatusCode());
-        self::assertStringContainsString('VertoAD creative', (string) $defaultDebug->getBody());
+        self::assertStringContainsString(
+            'data-vertoad-fallback="snapshot"',
+            html_entity_decode((string) $defaultDebug->getBody(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+        );
 
         $invalidViewer = $this->handleJson($app, 'GET', '/api/v1/ads/serve?site_id=10&slot_id=20&viewer_id=');
         self::assertSame('invalid_request', $invalidViewer['error']['code']);
@@ -332,6 +341,9 @@ final class ServingRouteIntegrationTest extends TestCase
             height: 250,
             impressionCostPoints: 10,
             clickCostPoints: 20,
+            assetType: 'image',
+            assetObjectKey: 'organizations/40/assets/creative.png',
+            assetContentType: 'image/png',
         );
     }
 }
