@@ -14,14 +14,22 @@ final class ConnectionFactory
      */
     public function create(array $settings): Connection
     {
+        if (($settings['driver'] ?? '') === 'pdo_sqlite') {
+            return DriverManager::getConnection([
+                'driver' => 'pdo_sqlite',
+                'memory' => (bool) ($settings['memory'] ?? false),
+                'path' => $settings['path'] ?? null,
+            ]);
+        }
+
         return DriverManager::getConnection([
-            'driver' => $settings['driver'],
-            'host' => $settings['host'],
-            'port' => $settings['port'],
-            'dbname' => $settings['database'],
-            'user' => $settings['username'],
-            'password' => $settings['password'],
-            'charset' => $settings['charset'],
+            'driver' => $settings['driver'] ?? 'pdo_mysql',
+            'host' => $settings['host'] ?? '127.0.0.1',
+            'port' => $settings['port'] ?? 3306,
+            'dbname' => $settings['database'] ?? 'vertoad',
+            'user' => $settings['username'] ?? 'vertoad',
+            'password' => $settings['password'] ?? '',
+            'charset' => $settings['charset'] ?? 'utf8mb4',
         ]);
     }
 }

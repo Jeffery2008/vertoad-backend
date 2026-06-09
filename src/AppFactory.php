@@ -11,6 +11,7 @@ use Slim\App;
 use Slim\Factory\AppFactory as SlimAppFactory;
 use VertoAD\Http\Action\Cron\CronStatusAction;
 use VertoAD\Http\Action\Cron\CronRunAction;
+use VertoAD\Http\Error\OperationErrorHandler;
 use VertoAD\Http\Auth\BearerTokenAuthenticator;
 use VertoAD\Http\Middleware\AuthenticateRequestMiddleware;
 use VertoAD\Http\Middleware\CronAuthMiddleware;
@@ -68,8 +69,8 @@ use VertoAD\Repository\OAuthConsentRepositoryInterface;
 use VertoAD\Repository\OAuthTokenRepository;
 use VertoAD\Repository\OAuthTokenRepositoryInterface;
 use VertoAD\Repository\Operations\ConfigVersionRepositoryInterface;
+use VertoAD\Repository\Operations\DatabaseOperationErrorLogRepository;
 use VertoAD\Repository\Operations\InMemoryConfigVersionRepository;
-use VertoAD\Repository\Operations\InMemoryOperationErrorLogRepository;
 use VertoAD\Repository\Operations\OperationErrorLogRepositoryInterface;
 use VertoAD\Repository\OrganizationMembershipRepository;
 use VertoAD\Repository\OrganizationMembershipRepositoryInterface;
@@ -294,12 +295,15 @@ final class AppFactory
                     $repository,
                     (string) ($settings['archive']['query_results_base_object_key'] ?? 's3://vertoad-archive/query-results'),
                 ),
-                OperationErrorLogRepositoryInterface::class => static fn (): OperationErrorLogRepositoryInterface =>
-                    new InMemoryOperationErrorLogRepository(),
+                OperationErrorLogRepositoryInterface::class => static fn (Connection $connection): OperationErrorLogRepositoryInterface =>
+                    new DatabaseOperationErrorLogRepository($connection),
                 OperationErrorCaptureService::class => static fn (
                     OperationErrorLogRepositoryInterface $errors,
                     AuditLogService $audit,
                 ): OperationErrorCaptureService => new OperationErrorCaptureService($errors, $audit),
+                OperationErrorHandler::class => static fn (
+                    OperationErrorCaptureService $errors,
+                ): OperationErrorHandler => new OperationErrorHandler(SlimAppFactory::determineResponseFactory(), $errors),
                 ConfigVersionRepositoryInterface::class => static fn (): ConfigVersionRepositoryInterface =>
                     new InMemoryConfigVersionRepository(),
                 ConfigVersionService::class => static fn (
@@ -490,7 +494,8 @@ final class AppFactory
 
         $app->add(new ApiEnvelopeMiddleware($app->getResponseFactory()));
         $app->addRoutingMiddleware();
-        $app->addErrorMiddleware((bool) $settings['app']['debug'], true, true);
+        $errorMiddleware = $app->addErrorMiddleware((bool) $settings['app']['debug'], true, true);
+        $errorMiddleware->setDefaultErrorHandler($container->get(OperationErrorHandler::class));
 
         return $app;
     }
