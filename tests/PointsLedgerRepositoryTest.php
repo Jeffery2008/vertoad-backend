@@ -143,12 +143,22 @@ final class PointsLedgerRepositoryTest extends TestCase
         $repository = new PointsLedgerRepository($this->createConnection());
         $repository->append(new PointsLedgerEntry(null, 10, 'advertiser_balance', null, 1000, LedgerDirection::Credit, 1000, null, null, 'credit:1', null, null));
         $repository->append(new PointsLedgerEntry(null, 10, 'advertiser_balance', null, 250, LedgerDirection::Debit, 750, null, null, 'debit:1', null, null));
+        $repository->append(new PointsLedgerEntry(null, 10, 'publisher_earnings', null, 400, LedgerDirection::Credit, 400, null, null, 'publisher:1', null, null));
         $repository->append(new PointsLedgerEntry(null, 11, 'advertiser_balance', null, 999, LedgerDirection::Credit, 999, null, null, 'other:1', null, null));
 
-        $entries = $repository->listForOrganization(10, 1);
+        $entries = $repository->listForOrganization(10, 2);
 
-        self::assertCount(1, $entries);
-        self::assertSame('debit:1', $entries[0]->idempotencyKey);
+        self::assertCount(2, $entries);
+        self::assertSame('publisher:1', $entries[0]->idempotencyKey);
+        self::assertSame('debit:1', $entries[1]->idempotencyKey);
+        self::assertSame(['publisher:1'], array_map(
+            static fn (PointsLedgerEntry $entry): string => $entry->idempotencyKey,
+            $repository->listForOrganization(10, 50, 'publisher_earnings'),
+        ));
+        self::assertSame(['publisher:1'], array_map(
+            static fn (PointsLedgerEntry $entry): string => $entry->idempotencyKey,
+            $repository->listForOrganization(10, 50, ' publisher_earnings '),
+        ));
         self::assertSame(750, $repository->balanceForOrganization(10));
         self::assertSame(0, $repository->balanceForOrganization(0));
         self::assertSame([], $repository->listForOrganization(0));

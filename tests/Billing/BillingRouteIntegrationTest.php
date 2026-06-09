@@ -147,6 +147,20 @@ final class BillingRouteIntegrationTest extends TestCase
         $ledger = $this->handleJson($app, 'GET', '/api/v1/billing/ledger?organization_id=99&limit=999', null, $token);
         self::assertSame(200, $ledger['data']['limit']);
 
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        $ledgerService = new PointsLedgerService($ledgerRepository);
+        $ledgerService->credit(99, 'advertiser_balance', null, 500, 'route:advertiser-ledger-filter');
+        $ledgerService->credit(99, 'publisher_earnings', null, 300, 'route:publisher-ledger-filter');
+        $publisherLedger = $this->handleJson(
+            $app,
+            'GET',
+            '/api/v1/billing/ledger?organization_id=99&account_type=publisher_earnings',
+            null,
+            $token,
+        );
+        self::assertSame('publisher_earnings', $publisherLedger['data']['account_type']);
+        self::assertSame(['publisher_earnings'], array_values(array_unique(array_column($publisherLedger['data']['entries'], 'account_type'))));
+
         $blankKey = $this->handleJson(
             $app,
             'POST',
@@ -208,6 +222,15 @@ final class BillingRouteIntegrationTest extends TestCase
             $token,
         );
         self::assertSame(1, $tooSmallLimit['data']['limit']);
+
+        $invalidAccountType = $this->handleJson(
+            $app,
+            'GET',
+            '/api/v1/billing/ledger?organization_id=99&account_type[]=publisher_earnings',
+            null,
+            $token,
+        );
+        self::assertSame('invalid_request', $invalidAccountType['error']['code']);
     }
 
     public function testRechargeKeyRedeemRejectsMissingAndWrongTypeKey(): void

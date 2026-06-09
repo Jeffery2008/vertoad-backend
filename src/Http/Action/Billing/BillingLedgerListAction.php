@@ -32,13 +32,26 @@ final readonly class BillingLedgerListAction
             ], 422);
         }
 
-        $entries = $this->ledger->listForOrganization((int) $context->organizationId, $limit);
+        $accountType = $this->accountType($request);
+        if ($accountType === '') {
+            return $this->json($response, [
+                'code' => 'invalid_request',
+                'message' => 'account_type must be a non-empty string when provided.',
+            ], 422);
+        }
 
-        return $this->json($response, [
+        $entries = $this->ledger->listForOrganization((int) $context->organizationId, $limit, $accountType);
+
+        $payload = [
             'organization_id' => $context->organizationId,
             'entries' => array_map($this->serializeEntry(...), $entries),
             'limit' => $limit,
-        ], 200);
+        ];
+        if ($accountType !== null) {
+            $payload['account_type'] = $accountType;
+        }
+
+        return $this->json($response, $payload, 200);
     }
 
     private function limit(ServerRequestInterface $request): ?int
@@ -49,6 +62,19 @@ final readonly class BillingLedgerListAction
         }
 
         return is_int($value) ? max(1, min(200, $value)) : null;
+    }
+
+    private function accountType(ServerRequestInterface $request): ?string
+    {
+        $value = $request->getQueryParams()['account_type'] ?? null;
+        if ($value === null) {
+            return null;
+        }
+        if (!is_string($value)) {
+            return '';
+        }
+
+        return trim($value);
     }
 
     /**

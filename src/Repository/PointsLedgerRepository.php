@@ -129,14 +129,14 @@ final class PointsLedgerRepository implements PointsLedgerRepositoryInterface
     /**
      * @return list<PointsLedgerEntry>
      */
-    public function listForOrganization(int $organizationId, int $limit = 50): array
+    public function listForOrganization(int $organizationId, int $limit = 50, ?string $accountType = null): array
     {
         if ($organizationId <= 0) {
             return [];
         }
 
         $limit = max(1, min(200, $limit));
-        $rows = $this->connection->createQueryBuilder()
+        $query = $this->connection->createQueryBuilder()
             ->select(
                 'id',
                 'organization_id',
@@ -155,8 +155,15 @@ final class PointsLedgerRepository implements PointsLedgerRepositoryInterface
             ->where('organization_id = :organization_id')
             ->orderBy('id', 'DESC')
             ->setMaxResults($limit)
-            ->setParameter('organization_id', $organizationId)
-            ->fetchAllAssociative();
+            ->setParameter('organization_id', $organizationId);
+
+        if ($accountType !== null && trim($accountType) !== '') {
+            $query
+                ->andWhere('account_type = :account_type')
+                ->setParameter('account_type', trim($accountType));
+        }
+
+        $rows = $query->fetchAllAssociative();
 
         return array_map(fn (array $row): PointsLedgerEntry => $this->hydrate($row), $rows);
     }

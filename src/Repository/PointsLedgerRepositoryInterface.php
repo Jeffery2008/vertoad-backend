@@ -17,7 +17,7 @@ interface PointsLedgerRepositoryInterface
     /**
      * @return list<PointsLedgerEntry>
      */
-    public function listForOrganization(int $organizationId, int $limit = 50): array;
+    public function listForOrganization(int $organizationId, int $limit = 50, ?string $accountType = null): array;
 
     public function balanceForOrganization(int $organizationId, string $accountType = 'advertiser_balance'): int;
 }

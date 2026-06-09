@@ -590,7 +590,7 @@ function frontendUsedQueryParameters(): array
     return [
         'GET /api/v1/auth/me' => ['organization_id'],
         'GET /api/v1/billing/balance' => ['organization_id'],
-        'GET /api/v1/billing/ledger' => ['organization_id', 'limit'],
+        'GET /api/v1/billing/ledger' => ['organization_id', 'limit', 'account_type'],
         'POST /api/v1/billing/recharge-keys/redeem' => ['organization_id'],
         'GET /api/v1/feature-flags' => ['environment'],
         'POST /api/v1/assets/upload-intents' => ['organization_id'],

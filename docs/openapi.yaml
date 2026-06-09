@@ -384,6 +384,13 @@ paths:
             minimum: 1
             maximum: 200
             default: 50
+        - name: account_type
+          in: query
+          required: false
+          description: Optional ledger account filter, for example publisher_earnings for publisher withdrawal balances.
+          schema:
+            type: string
+            minLength: 1
       responses:
         "200":
           description: Recent ledger entries.
@@ -3342,6 +3349,9 @@ components:
           type: integer
           minimum: 1
           maximum: 200
+        account_type:
+          type: string
+          minLength: 1
       additionalProperties: false
     PointsLedgerEntry:
       type: object

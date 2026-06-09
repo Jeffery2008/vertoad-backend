@@ -443,11 +443,12 @@ final class FakeRechargeLedgerRepository implements PointsLedgerRepositoryInterf
         return null;
     }
 
-    public function listForOrganization(int $organizationId, int $limit = 50): array
+    public function listForOrganization(int $organizationId, int $limit = 50, ?string $accountType = null): array
     {
         $entries = array_values(array_filter(
             $this->entries,
-            fn (PointsLedgerEntry $entry): bool => $entry->organizationId === $organizationId,
+            fn (PointsLedgerEntry $entry): bool => $entry->organizationId === $organizationId
+                && ($accountType === null || $entry->accountType === trim($accountType)),
         ));
 
         return array_slice(array_reverse($entries), 0, max(1, min(200, $limit)));
