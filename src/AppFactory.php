@@ -114,6 +114,7 @@ use VertoAD\Service\Cron\CronJobRegistry;
 use VertoAD\Service\Cron\CronLockStoreInterface;
 use VertoAD\Service\Cron\CronRunner;
 use VertoAD\Service\Cron\EventConsumptionJob;
+use VertoAD\Service\Cron\ExpiredTokenCleanupJob;
 use VertoAD\Service\Cron\InMemoryCronLockStore;
 use VertoAD\Service\Cron\NoOpCronJob;
 use VertoAD\Service\Cron\RedisCronLockStore;
@@ -420,11 +421,18 @@ final class AppFactory
                     $billing,
                     (int) ($settings['cron']['event_consume_batch_size'] ?? 500),
                 ),
+                ExpiredTokenCleanupJob::class => static fn (
+                    OAuthTokenRepositoryInterface $tokens,
+                ): ExpiredTokenCleanupJob => new ExpiredTokenCleanupJob(
+                    $tokens,
+                    (int) ($settings['cron']['expired_token_retention_seconds'] ?? 86400),
+                ),
                 CronJobRegistry::class => static function (
                     EventConsumptionJob $eventConsumption,
                     WebhookDeliveryJob $webhookDelivery,
+                    ExpiredTokenCleanupJob $expiredTokenCleanup,
                 ) use ($settings): CronJobRegistry {
-                    $jobs = [$eventConsumption, $webhookDelivery];
+                    $jobs = [$eventConsumption, $webhookDelivery, $expiredTokenCleanup];
                     $registeredNames = array_fill_keys(array_map(
                         static fn (CronJobInterface $job): string => $job->name(),
                         $jobs,

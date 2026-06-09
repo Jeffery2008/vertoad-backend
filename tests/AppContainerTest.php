@@ -49,6 +49,7 @@ use VertoAD\Service\Cron\CronJobRegistry;
 use VertoAD\Service\Cron\CronLockStoreInterface;
 use VertoAD\Service\Cron\CronRunner;
 use VertoAD\Service\Cron\EventConsumptionJob;
+use VertoAD\Service\Cron\ExpiredTokenCleanupJob;
 use VertoAD\Service\PasswordHasher;
 use VertoAD\Service\Cron\RedisCronLockStore;
 use VertoAD\Service\PermissionMatcher;
@@ -157,6 +158,7 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(OperationErrorHandler::class, $container->get(OperationErrorHandler::class));
             self::assertInstanceOf(CronJobRegistry::class, $container->get(CronJobRegistry::class));
             self::assertInstanceOf(WebhookDeliveryJob::class, $container->get(CronJobRegistry::class)->get('webhook-retry'));
+            self::assertInstanceOf(ExpiredTokenCleanupJob::class, $container->get(CronJobRegistry::class)->get('expired-token-cleanup'));
             self::assertInstanceOf(CronRunner::class, $container->get(CronRunner::class));
         } finally {
             if ($previousAppKey === false) {

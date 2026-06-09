@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VertoAD\Repository;
 
 use DateTimeImmutable;
+use DateInterval;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\ParameterType;
 use VertoAD\Domain\Auth\AuthenticatedUser;
@@ -230,6 +231,45 @@ final readonly class OAuthTokenRepository implements OAuthTokenRepositoryInterfa
             ->fetchAssociative();
 
         return $row === false ? null : new AuthenticatedUser((int) $row['id'], (string) $row['email'], false);
+    }
+
+    public function cleanupExpiredTokens(DateTimeImmutable $now, int $retentionSeconds): array
+    {
+        if ($retentionSeconds < 0) {
+            throw new \InvalidArgumentException('Expired token cleanup retention seconds must be non-negative.');
+        }
+
+        $cutoff = $now->sub(new DateInterval('PT' . $retentionSeconds . 'S'));
+        $cutoffValue = $this->format($cutoff);
+        $refreshDeleted = $this->connection->executeStatement(
+            'DELETE FROM oauth_refresh_tokens
+             WHERE expires_at <= ?
+                OR revoked_at <= ?
+                OR rotated_at <= ?
+                OR reuse_detected_at <= ?',
+            [$cutoffValue, $cutoffValue, $cutoffValue, $cutoffValue],
+            [ParameterType::STRING, ParameterType::STRING, ParameterType::STRING, ParameterType::STRING],
+        );
+        $accessDeleted = $this->connection->executeStatement(
+            'DELETE FROM oauth_access_tokens
+             WHERE (expires_at <= ? OR revoked_at <= ?)
+               AND NOT EXISTS (
+                   SELECT 1 FROM oauth_refresh_tokens WHERE oauth_refresh_tokens.access_token_id = oauth_access_tokens.id
+               )',
+            [$cutoffValue, $cutoffValue],
+            [ParameterType::STRING, ParameterType::STRING],
+        );
+        $authorizationCodesDeleted = $this->connection->executeStatement(
+            'DELETE FROM oauth_authorization_codes WHERE expires_at <= ? OR revoked_at <= ?',
+            [$cutoffValue, $cutoffValue],
+            [ParameterType::STRING, ParameterType::STRING],
+        );
+
+        return [
+            'authorization_codes_deleted' => $authorizationCodesDeleted,
+            'access_tokens_deleted' => $accessDeleted,
+            'refresh_tokens_deleted' => $refreshDeleted,
+        ];
     }
 
     /** @param list<string> $values */

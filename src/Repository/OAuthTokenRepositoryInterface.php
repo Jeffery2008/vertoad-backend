@@ -64,4 +64,9 @@ interface OAuthTokenRepositoryInterface
     public function isAccessTokenActive(string $accessTokenHash, DateTimeImmutable $now): bool;
 
     public function findActiveUserByAccessTokenHash(string $accessTokenHash, DateTimeImmutable $now): ?AuthenticatedUser;
+
+    /**
+     * @return array{authorization_codes_deleted:int, access_tokens_deleted:int, refresh_tokens_deleted:int}
+     */
+    public function cleanupExpiredTokens(DateTimeImmutable $now, int $retentionSeconds): array;
 }
