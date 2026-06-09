@@ -10,4 +10,9 @@ interface SystemConfigRepositoryInterface
      * @return array<string, mixed>|null
      */
     public function findLatestValue(string $configKey): ?array;
+
+    /**
+     * @return array<string, array<string, mixed>>
+     */
+    public function listLatestValues(): array;
 }

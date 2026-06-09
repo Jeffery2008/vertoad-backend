@@ -25,6 +25,8 @@ use VertoAD\Repository\Cron\ServingEventBufferInterface;
 use VertoAD\Repository\FirstPartySessionRepositoryInterface;
 use VertoAD\Repository\OrganizationMembershipRepositoryInterface;
 use VertoAD\Repository\Operations\DatabaseOperationErrorLogRepository;
+use VertoAD\Repository\Operations\DatabaseConfigVersionRepository;
+use VertoAD\Repository\Operations\ConfigVersionRepositoryInterface;
 use VertoAD\Repository\Operations\OperationErrorLogRepositoryInterface;
 use VertoAD\Repository\PasswordResetTokenRepositoryInterface;
 use VertoAD\Repository\PointsLedgerRepositoryInterface;
@@ -51,6 +53,7 @@ use VertoAD\Service\Cron\BackupCheckJob;
 use VertoAD\Service\Cron\CronJobRegistry;
 use VertoAD\Service\Cron\CronLockStoreInterface;
 use VertoAD\Service\Cron\CronRunner;
+use VertoAD\Service\Cron\ConfigCacheRefreshJob;
 use VertoAD\Service\Cron\DuckDbColdQueryJob;
 use VertoAD\Service\Cron\EventConsumptionJob;
 use VertoAD\Service\Cron\ExpiredTokenCleanupJob;
@@ -159,11 +162,14 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(DatabaseWebhookDeliveryRepository::class, $container->get(WebhookDeliveryRepositoryInterface::class));
             self::assertInstanceOf(OperationErrorLogRepositoryInterface::class, $container->get(OperationErrorLogRepositoryInterface::class));
             self::assertInstanceOf(DatabaseOperationErrorLogRepository::class, $container->get(OperationErrorLogRepositoryInterface::class));
+            self::assertInstanceOf(ConfigVersionRepositoryInterface::class, $container->get(ConfigVersionRepositoryInterface::class));
+            self::assertInstanceOf(DatabaseConfigVersionRepository::class, $container->get(ConfigVersionRepositoryInterface::class));
             self::assertInstanceOf(OperationErrorHandler::class, $container->get(OperationErrorHandler::class));
             self::assertInstanceOf(CronJobRegistry::class, $container->get(CronJobRegistry::class));
             self::assertInstanceOf(WebhookDeliveryJob::class, $container->get(CronJobRegistry::class)->get('webhook-retry'));
             self::assertInstanceOf(ExpiredTokenCleanupJob::class, $container->get(CronJobRegistry::class)->get('expired-token-cleanup'));
             self::assertInstanceOf(AiReviewQueueJob::class, $container->get(CronJobRegistry::class)->get('ai-review-queue'));
+            self::assertInstanceOf(ConfigCacheRefreshJob::class, $container->get(CronJobRegistry::class)->get('config-cache-refresh'));
             self::assertInstanceOf(ArchiveParquetJob::class, $container->get(CronJobRegistry::class)->get('archive-parquet'));
             self::assertInstanceOf(DuckDbColdQueryJob::class, $container->get(CronJobRegistry::class)->get('duckdb-cold-query'));
             self::assertInstanceOf(BackupCheckJob::class, $container->get(CronJobRegistry::class)->get('backup-check'));
@@ -314,6 +320,21 @@ final class AppContainerTest extends TestCase
         $this->expectExceptionMessage('The Redis extension is required for phpredis connections.');
 
         $container?->get(AdEventRepositoryInterface::class);
+    }
+
+    #[RunInSeparateProcess]
+    public function testProductionConfigCacheRefreshRequiresRedisPassword(): void
+    {
+        putenv('APP_KEY=' . Key::createNewRandomKey()->saveToAsciiSafeString());
+        putenv('APP_ENV=prod');
+        putenv('REDIS_PASSWORD=');
+
+        $container = AppFactory::create()->getContainer();
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('REDIS_PASSWORD is required for config cache refresh.');
+
+        $container?->get(ConfigCacheRefreshJob::class);
     }
 
     public function testCreateLoadsEnvironmentFileWhenPresentInBasePath(): void

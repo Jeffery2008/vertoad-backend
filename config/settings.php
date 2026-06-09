@@ -83,6 +83,7 @@ return [
         'lock_ttl_seconds' => (int) (getenv('CRON_LOCK_TTL_SECONDS') ?: 300),
         'event_consume_batch_size' => (int) (getenv('CRON_EVENT_CONSUME_BATCH_SIZE') ?: 500),
         'ai_review_batch_size' => (int) (getenv('CRON_AI_REVIEW_BATCH_SIZE') ?: 50),
+        'config_cache_ttl_seconds' => (int) (getenv('CRON_CONFIG_CACHE_TTL_SECONDS') ?: 300),
         'expired_token_retention_seconds' => (int) (getenv('CRON_EXPIRED_TOKEN_RETENTION_SECONDS') ?: 86400),
         'jobs' => [
             'redis-events-consume',

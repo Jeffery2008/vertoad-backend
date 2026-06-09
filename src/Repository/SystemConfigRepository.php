@@ -34,4 +34,24 @@ final class SystemConfigRepository implements SystemConfigRepositoryInterface
 
         return is_array($decoded) ? $decoded : null;
     }
+
+    public function listLatestValues(): array
+    {
+        $rows = $this->connection->createQueryBuilder()
+            ->select('config_key', 'value_json')
+            ->from('system_config_versions', 'current_versions')
+            ->where('version = (SELECT MAX(latest_versions.version) FROM system_config_versions latest_versions WHERE latest_versions.config_key = current_versions.config_key)')
+            ->orderBy('config_key', 'ASC')
+            ->fetchAllAssociative();
+
+        $values = [];
+        foreach ($rows as $row) {
+            $decoded = json_decode((string) $row['value_json'], true, flags: JSON_THROW_ON_ERROR);
+            if (is_array($decoded)) {
+                $values[(string) $row['config_key']] = $decoded;
+            }
+        }
+
+        return $values;
+    }
 }

@@ -27,6 +27,8 @@ use VertoAD\Infrastructure\Security\RateLimitPolicy;
 use VertoAD\Infrastructure\Security\RateLimitStoreInterface;
 use VertoAD\Infrastructure\Security\RedisRateLimitStore;
 use VertoAD\Infrastructure\Security\TurnstileVerifier;
+use VertoAD\Infrastructure\Redis\InMemoryRedisClient;
+use VertoAD\Infrastructure\Redis\RedisClientInterface;
 use VertoAD\Infrastructure\Redis\RedisClientFactory;
 use VertoAD\Infrastructure\Storage\DeterministicPresignedUploadSigner;
 use VertoAD\Infrastructure\Storage\ObjectStorageUploadSignerInterface;
@@ -69,8 +71,8 @@ use VertoAD\Repository\OAuthConsentRepositoryInterface;
 use VertoAD\Repository\OAuthTokenRepository;
 use VertoAD\Repository\OAuthTokenRepositoryInterface;
 use VertoAD\Repository\Operations\ConfigVersionRepositoryInterface;
+use VertoAD\Repository\Operations\DatabaseConfigVersionRepository;
 use VertoAD\Repository\Operations\DatabaseOperationErrorLogRepository;
-use VertoAD\Repository\Operations\InMemoryConfigVersionRepository;
 use VertoAD\Repository\Operations\OperationErrorLogRepositoryInterface;
 use VertoAD\Repository\OrganizationMembershipRepository;
 use VertoAD\Repository\OrganizationMembershipRepositoryInterface;
@@ -116,6 +118,7 @@ use VertoAD\Service\Cron\CronJobInterface;
 use VertoAD\Service\Cron\CronJobRegistry;
 use VertoAD\Service\Cron\CronLockStoreInterface;
 use VertoAD\Service\Cron\CronRunner;
+use VertoAD\Service\Cron\ConfigCacheRefreshJob;
 use VertoAD\Service\Cron\DuckDbColdQueryJob;
 use VertoAD\Service\Cron\EventConsumptionJob;
 use VertoAD\Service\Cron\ExpiredTokenCleanupJob;
@@ -309,8 +312,8 @@ final class AppFactory
                 OperationErrorHandler::class => static fn (
                     OperationErrorCaptureService $errors,
                 ): OperationErrorHandler => new OperationErrorHandler(SlimAppFactory::determineResponseFactory(), $errors),
-                ConfigVersionRepositoryInterface::class => static fn (): ConfigVersionRepositoryInterface =>
-                    new InMemoryConfigVersionRepository(),
+                ConfigVersionRepositoryInterface::class => static fn (Connection $connection): ConfigVersionRepositoryInterface =>
+                    new DatabaseConfigVersionRepository($connection),
                 ConfigVersionService::class => static fn (
                     ConfigVersionRepositoryInterface $versions,
                     AuditLogService $audit,
@@ -439,6 +442,14 @@ final class AppFactory
                     $provider,
                     (int) ($settings['cron']['ai_review_batch_size'] ?? 50),
                 ),
+                ConfigCacheRefreshJob::class => static fn (
+                    SystemConfigRepositoryInterface $configs,
+                ): ConfigCacheRefreshJob => new ConfigCacheRefreshJob(
+                    $configs,
+                    self::configCacheRedisClient($settings),
+                    (string) ($settings['redis']['prefix'] ?? 'vertoad:local:'),
+                    (int) ($settings['cron']['config_cache_ttl_seconds'] ?? 300),
+                ),
                 ArchiveParquetJob::class => static fn (ArchiveJob $archive): ArchiveParquetJob =>
                     new ArchiveParquetJob($archive),
                 DuckDbColdQueryJob::class => static fn (ColdQueryService $queries): DuckDbColdQueryJob =>
@@ -450,6 +461,7 @@ final class AppFactory
                     WebhookDeliveryJob $webhookDelivery,
                     ExpiredTokenCleanupJob $expiredTokenCleanup,
                     AiReviewQueueJob $aiReviewQueue,
+                    ConfigCacheRefreshJob $configCacheRefresh,
                     ArchiveParquetJob $archiveParquet,
                     DuckDbColdQueryJob $duckDbColdQuery,
                     BackupCheckJob $backupCheck,
@@ -459,6 +471,7 @@ final class AppFactory
                         $webhookDelivery,
                         $expiredTokenCleanup,
                         $aiReviewQueue,
+                        $configCacheRefresh,
                         $archiveParquet,
                         $duckDbColdQuery,
                         $backupCheck,
@@ -602,6 +615,21 @@ final class AppFactory
         }
 
         return RedisRateLimitStore::fromSettings($redis);
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function configCacheRedisClient(array $settings): RedisClientInterface
+    {
+        $redis = $settings['redis'] ?? [];
+        if (!is_array($redis) || (string) ($redis['password'] ?? '') === '') {
+            if (self::redisRequired($settings)) {
+                throw new \RuntimeException('REDIS_PASSWORD is required for config cache refresh.');
+            }
+
+            return new InMemoryRedisClient();
+        }
+
+        return RedisClientFactory::fromSettings($redis);
     }
 
     /** @param array<string, mixed> $settings */

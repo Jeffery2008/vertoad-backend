@@ -19,6 +19,11 @@ final class SystemConfigServiceTest extends TestCase
 
                 return ['publisher_percent' => 72];
             }
+
+            public function listLatestValues(): array
+            {
+                return ['billing.default_revenue_share' => ['publisher_percent' => 72]];
+            }
         };
 
         $service = new SystemConfigService($repository);
@@ -33,6 +38,11 @@ final class SystemConfigServiceTest extends TestCase
             {
                 return null;
             }
+
+            public function listLatestValues(): array
+            {
+                return [];
+            }
         };
 
         $service = new SystemConfigService($repository);
@@ -46,6 +56,11 @@ final class SystemConfigServiceTest extends TestCase
             public function findLatestValue(string $configKey): ?array
             {
                 return ['publisher_percent' => 101];
+            }
+
+            public function listLatestValues(): array
+            {
+                return ['billing.default_revenue_share' => ['publisher_percent' => 101]];
             }
         };
 
