@@ -17,13 +17,11 @@ final class RedisClientFactoryTest extends TestCase
         RedisClientFactory::fromSettings(['password' => '']);
     }
 
-    public function testFactoryUsesPredisWhenNativeRedisExtensionIsUnavailable(): void
+    public function testAutoDriverReflectsNativeRedisExtensionAvailability(): void
     {
-        if (extension_loaded('redis')) {
-            self::markTestSkipped('Native redis extension is loaded in this PHP runtime.');
-        }
+        $expected = extension_loaded('redis') ? 'phpredis' : 'predis';
 
-        self::assertSame('predis', RedisClientFactory::driverForSettings(['driver' => 'auto']));
+        self::assertSame($expected, RedisClientFactory::driverForSettings(['driver' => 'auto']));
     }
 
     public function testFactoryHonorsExplicitDriver(): void
@@ -80,16 +78,16 @@ final class RedisClientFactoryTest extends TestCase
 
     public function testFactoryReportsMissingPhpRedisExtensionWhenExplicitlyRequested(): void
     {
-        if (class_exists(\Redis::class)) {
-            self::markTestSkipped('Redis class is already defined in this process.');
-        }
-
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('The Redis extension is required for phpredis connections.');
 
-        RedisClientFactory::fromSettings([
-            'driver' => 'phpredis',
-            'password' => 'secret',
-        ]);
+        RedisClientFactory::requirePhpRedisExtension(false);
+    }
+
+    public function testFactoryAcceptsAvailablePhpRedisExtension(): void
+    {
+        RedisClientFactory::requirePhpRedisExtension(true);
+
+        self::assertTrue(true);
     }
 }

@@ -29,8 +29,9 @@
     }
   },
   "scripts": {
-    "test": "phpunit",
+    "test": "phpunit --exclude-group redis-integration --fail-on-skipped",
     "test:coverage": "php scripts/coverage-gate.php",
+    "test:redis-integration": "phpunit --group redis-integration --fail-on-skipped --display-skipped",
     "serve": "php -S 127.0.0.1:8080 -t public",
     "migrate": "phinx migrate",
     "migrate:rollback": "phinx rollback",

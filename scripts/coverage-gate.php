@@ -53,7 +53,7 @@ function coverageGateMain(): int
     }
 
     fwrite(STDERR, coverageFallbackBlockerMessage($diagnostics));
-    $tests = runCommand([PHP_BINARY, $phpunit]);
+    $tests = runCommand([PHP_BINARY, $phpunit, ...phpunitGateArguments()]);
     echo $tests['output'];
 
     return $tests['exitCode'];
@@ -64,7 +64,7 @@ function coverageGateMain(): int
  */
 function coverageRunner(string $phpunit, string $clover, ?array $diagnostics = null): ?array
 {
-    $args = [$phpunit, '--coverage-clover', $clover, '--coverage-text'];
+    $args = [$phpunit, ...phpunitGateArguments(), '--coverage-clover', $clover, '--coverage-text'];
     $diagnostics ??= currentCoverageDriverDiagnostics();
 
     if (!$diagnostics['available']) {
@@ -72,6 +72,14 @@ function coverageRunner(string $phpunit, string $clover, ?array $diagnostics = n
     }
 
     return [...$diagnostics['runnerPrefix'], ...$args];
+}
+
+/**
+ * @return list<string>
+ */
+function phpunitGateArguments(): array
+{
+    return ['--exclude-group', 'redis-integration', '--fail-on-skipped'];
 }
 
 /**

@@ -44,6 +44,34 @@ final class CoverageGateScriptTest extends TestCase
         self::assertSame('', $diagnostics['message']);
     }
 
+    public function testCoverageRunnerExcludesExplicitRedisIntegrationAndFailsOnSkippedTests(): void
+    {
+        $runner = coverageRunner(
+            'vendor/phpunit/phpunit/phpunit',
+            'build/coverage/clover.xml',
+            [
+                'available' => true,
+                'runnerPrefix' => [PHP_BINARY],
+                'message' => '',
+                'sapi' => 'cli',
+                'coverageExtensions' => ['xdebug'],
+                'phpdbgPath' => null,
+            ],
+        );
+
+        self::assertSame([
+            PHP_BINARY,
+            'vendor/phpunit/phpunit/phpunit',
+            '--exclude-group',
+            'redis-integration',
+            '--fail-on-skipped',
+            '--coverage-clover',
+            'build/coverage/clover.xml',
+            '--coverage-text',
+        ], $runner);
+        self::assertSame(['--exclude-group', 'redis-integration', '--fail-on-skipped'], phpunitGateArguments());
+    }
+
     public function testBuildsFallbackBlockerAfterDetectedDriverCannotProduceCoverage(): void
     {
         $diagnostics = coverageDriverDiagnostics(

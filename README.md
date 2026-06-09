@@ -40,13 +40,14 @@ Phinx reads `phinx.php` and environment values from `.env` when present. Set `PH
 ```powershell
 composer test
 composer test:coverage
+composer test:redis-integration
 ```
 
 The PHPUnit suite uses `phpunit.xml` and boots from `vendor/autoload.php`.
 
-`composer test:coverage` runs `scripts/coverage-gate.php`. When Xdebug, PCOV, or a working phpdbg coverage driver is available, it generates Clover coverage for `src/` and requires 100% line coverage. If no working coverage driver is available, the script prints an explicit blocker with the detected SAPI, coverage extensions, and phpdbg status, then still runs the full PHPUnit suite so this environment remains test-gated. Install or enable Xdebug with `XDEBUG_MODE=coverage`, PCOV, or phpdbg to make the coverage gate enforce line coverage locally. No `src/` files are excluded from the configured coverage source.
+`composer test` and `composer test:coverage` exclude only the explicit external `redis-integration` group and fail if any default-suite test is skipped. `composer test:coverage` runs `scripts/coverage-gate.php`. When Xdebug, PCOV, or a working phpdbg coverage driver is available, it generates Clover coverage for `src/` and requires 100% line coverage. If no working coverage driver is available, the script prints an explicit blocker with the detected SAPI, coverage extensions, and phpdbg status, then still runs the default PHPUnit suite so this environment remains test-gated. Install or enable Xdebug with `XDEBUG_MODE=coverage`, PCOV, or phpdbg to make the coverage gate enforce line coverage locally. No `src/` files are excluded from the configured coverage source.
 
-Redis serving event buffering has an optional real Redis integration harness. It is skipped by default so local and CI runs without Redis remain green. To exercise the production Redis path, run Redis 8.8 with a strong password, then opt in:
+Redis serving event buffering has an explicit real Redis integration harness outside the default suite so local and CI runs without external Redis remain deterministic. To exercise the production Redis path, run Redis 8.8 with a strong password, then opt in:
 
 ```powershell
 $redisPassword = "replace-with-32-plus-character-random-password"
@@ -56,7 +57,7 @@ $env:VERTOAD_REDIS_INTEGRATION = "1"
 $env:REDIS_HOST = "127.0.0.1"
 $env:REDIS_PORT = "6379"
 $env:REDIS_PASSWORD = $redisPassword
-vendor\bin\phpunit tests\Serving\RedisAdEventRepositoryRealRedisTest.php --group redis-integration
+composer test:redis-integration
 ```
 
 For a local Redis 8.8 container, use a throwaway password and disable dangerous commands in the config used by the container. Production Redis is password-only in the current deployment assumption, so the password must be long random material, dangerous commands must remain disabled where the managed service allows it, the Redis key prefix must be environment-specific, and failed auth/connectivity alerts must be monitored.
@@ -117,6 +118,7 @@ Recommended targeted checks before deploying Redis/Cron changes:
 vendor\bin\phpunit tests\Serving
 vendor\bin\phpunit tests\Cron
 composer test:coverage
+composer test:redis-integration
 composer openapi:check
 ```
 

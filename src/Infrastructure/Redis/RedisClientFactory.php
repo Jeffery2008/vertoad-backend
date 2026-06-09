@@ -22,9 +22,7 @@ final class RedisClientFactory
         }
 
         if ($driver === 'phpredis') {
-            if (!class_exists(\Redis::class)) {
-                throw new \RuntimeException('The Redis extension is required for phpredis connections.');
-            }
+            self::requirePhpRedisExtension();
 
             $redis = new \Redis();
             $redis->connect(
@@ -65,5 +63,14 @@ final class RedisClientFactory
         }
 
         return $driver;
+    }
+
+    public static function requirePhpRedisExtension(?bool $available = null): void
+    {
+        if ($available ?? class_exists(\Redis::class)) {
+            return;
+        }
+
+        throw new \RuntimeException('The Redis extension is required for phpredis connections.');
     }
 }
