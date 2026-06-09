@@ -222,7 +222,7 @@ function operationErrorsFromYaml(string $contents): array
             continue;
         }
 
-        if (preg_match('/^\s{8}"?2\d\d"?:\s*$/m', $block) !== 1) {
+        if (preg_match('/^\s{8}"?[23]\d\d"?:\s*$/m', $block) !== 1) {
             $errors[] = "OpenAPI operation {$route} is missing success response.";
         }
 
@@ -620,7 +620,7 @@ function frontendUsedQueryParameters(): array
 function hasSuccessResponse(array $responses): bool
 {
     foreach (array_keys($responses) as $statusCode) {
-        if (preg_match('/^2\d\d$/', (string) $statusCode) === 1) {
+        if (preg_match('/^[23]\d\d$/', (string) $statusCode) === 1) {
             return true;
         }
     }

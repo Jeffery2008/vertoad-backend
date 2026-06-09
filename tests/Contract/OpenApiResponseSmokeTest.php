@@ -20,8 +20,10 @@ use VertoAD\Http\Action\Auth\MeAction;
 use VertoAD\Http\Action\Cron\CronStatusAction;
 use VertoAD\Http\Action\HealthAction;
 use VertoAD\Http\Action\OAuth\TokenAction;
+use VertoAD\Http\Action\Serving\ClickAction;
 use VertoAD\Http\Action\Serving\ServeAction;
 use VertoAD\Http\Action\Serving\ServeFrameAction;
+use VertoAD\Http\Action\Serving\TrackAction;
 use VertoAD\Http\Auth\BearerTokenAuthenticator;
 use VertoAD\Http\Middleware\ApiEnvelopeMiddleware;
 use VertoAD\Http\Middleware\AuthenticateRequestMiddleware;
@@ -178,6 +180,39 @@ final class OpenApiResponseSmokeTest extends TestCase
         $this->assertDocumentedResponseContentType('GET', '/api/v1/ads/serve', '200', 'text/html');
     }
 
+    public function testClickRedirectSuccessIsDocumentedOutsideTheJsonEnvelope(): void
+    {
+        $app = $this->servingApp([$this->safeCandidate()]);
+        $served = $this->jsonPayload($this->handle($app, 'POST', '/api/v1/ads/serve', [
+            'site_id' => 10,
+            'slot_id' => 20,
+            'viewer_id' => 'viewer-1',
+        ]));
+
+        $this->handle($app, 'POST', '/api/v1/ads/track', [
+            'decision_id' => $served['data']['decision_id'],
+            'viewer_id' => 'viewer-1',
+            'event_id' => 'imp-1',
+            'visible_ratio' => 0.5,
+            'visible_ms' => 1000,
+        ]);
+
+        $response = $this->handle(
+            $app,
+            'GET',
+            '/api/v1/ads/click?decision_id=' . rawurlencode((string) $served['data']['decision_id']) . '&viewer_id=viewer-1&event_id=clk-1',
+        );
+
+        self::assertSame(302, $response->getStatusCode());
+        self::assertSame('https://advertiser.example/landing', $response->getHeaderLine('Location'));
+        self::assertStringContainsString('Location:', $this->responseBlock('GET', '/api/v1/ads/click', '302'));
+        self::assertStringNotContainsString(
+            PHP_EOL . '        "200":',
+            $this->operationBlock('/api/v1/ads/click', 'get'),
+            'GET /api/v1/ads/click must not advertise a JSON 200 success response.',
+        );
+    }
+
     private function healthApp(): App
     {
         return $this->app(static function (App $app): void {
@@ -316,6 +351,8 @@ final class OpenApiResponseSmokeTest extends TestCase
             );
             $app->get('/api/v1/ads/serve', new ServeFrameAction($service));
             $app->post('/api/v1/ads/serve', new ServeAction($service));
+            $app->post('/api/v1/ads/track', new TrackAction($service));
+            $app->get('/api/v1/ads/click', new ClickAction($service));
         });
     }
 

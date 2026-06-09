@@ -1619,17 +1619,6 @@ paths:
             type: string
             minLength: 1
       responses:
-        "200":
-          description: JSON click acceptance response reserved for non-redirect clients.
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: "#/components/schemas/SuccessEnvelope"
-                  - type: object
-                    properties:
-                      data:
-                        $ref: "#/components/schemas/AdClickAcceptedData"
         "302":
           description: Redirect to validated advertiser landing URL.
           headers:
@@ -4634,22 +4623,6 @@ components:
           const: true
         duplicate:
           type: boolean
-      additionalProperties: false
-    AdClickAcceptedData:
-      type: object
-      required:
-        - accepted
-        - duplicate
-        - redirect_url
-      properties:
-        accepted:
-          type: boolean
-          const: true
-        duplicate:
-          type: boolean
-        redirect_url:
-            type: string
-            format: uri
       additionalProperties: false
     OAuthClientCreateRequest:
       type: object
