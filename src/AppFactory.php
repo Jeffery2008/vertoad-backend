@@ -133,6 +133,7 @@ use VertoAD\Service\RechargeKeyPlaintextCipherInterface;
 use VertoAD\Service\RechargeKeyService;
 use VertoAD\Service\Review\CreativeReviewProviderInterface;
 use VertoAD\Service\Review\DeterministicCreativeReviewProvider;
+use VertoAD\Service\Review\OpenAiCompatibleCreativeReviewProvider;
 use VertoAD\Service\Reporting\ReportQueryService;
 use VertoAD\Service\ReviewService;
 use VertoAD\Service\SystemConfigService;
@@ -226,10 +227,7 @@ final class AppFactory
                 ReviewRepositoryInterface::class => static fn (Connection $connection): ReviewRepositoryInterface =>
                     new ReviewRepository($connection),
                 CreativeReviewProviderInterface::class => static fn (): CreativeReviewProviderInterface =>
-                    new DeterministicCreativeReviewProvider([
-                        'provider' => 'openai-compatible-deterministic',
-                        'model' => (string) ($settings['ai_review']['model'] ?? 'deterministic-v1'),
-                    ]),
+                    self::creativeReviewProvider($settings),
                 ReviewService::class => static fn (
                     ReviewRepositoryInterface $repository,
                     CreativeReviewProviderInterface $provider,
@@ -513,6 +511,24 @@ final class AppFactory
         }
 
         return RedisAdEventRepository::fromSettings(is_array($redis) ? $redis : []);
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function creativeReviewProvider(array $settings): CreativeReviewProviderInterface
+    {
+        $config = $settings['ai_review'] ?? [];
+        if (is_array($config)
+            && (string) ($config['base_url'] ?? '') !== ''
+            && (string) ($config['api_key'] ?? '') !== ''
+            && (string) ($config['model'] ?? '') !== ''
+        ) {
+            return new OpenAiCompatibleCreativeReviewProvider($config);
+        }
+
+        return new DeterministicCreativeReviewProvider([
+            'provider' => 'openai-compatible-deterministic',
+            'model' => is_array($config) ? (string) ($config['model'] ?? 'deterministic-v1') : 'deterministic-v1',
+        ]);
     }
 
     /** @param array<string, mixed> $settings */

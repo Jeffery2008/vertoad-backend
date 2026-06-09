@@ -53,6 +53,9 @@ use VertoAD\Service\PointsLedgerService;
 use VertoAD\Service\PublisherSiteVerificationService;
 use VertoAD\Service\RechargeKeyPlaintextCipherInterface;
 use VertoAD\Service\RechargeKeyService;
+use VertoAD\Service\Review\CreativeReviewProviderInterface;
+use VertoAD\Service\Review\DeterministicCreativeReviewProvider;
+use VertoAD\Service\Review\OpenAiCompatibleCreativeReviewProvider;
 use VertoAD\Service\Serving\AdServingService;
 use VertoAD\Service\Serving\CampaignSpendEligibilityInterface;
 use VertoAD\Service\SystemConfigService;
@@ -351,6 +354,77 @@ PHP);
             @rmdir($configPath);
             @rmdir($basePath);
         }
+    }
+
+    public function testContainerSelectsAiReviewProviderFromConfigurationCompleteness(): void
+    {
+        $basePaths = [];
+        try {
+            $basePaths[] = $this->temporaryAppBasePath([
+                'base_url' => '',
+                'api_key' => '',
+                'model' => 'deterministic-from-config',
+            ]);
+            $fallbackContainer = AppFactory::create($basePaths[0])->getContainer();
+            self::assertInstanceOf(
+                DeterministicCreativeReviewProvider::class,
+                $fallbackContainer?->get(CreativeReviewProviderInterface::class),
+            );
+
+            $basePaths[] = $this->temporaryAppBasePath([
+                'base_url' => 'https://ai.example.test/v1',
+                'api_key' => 'unit-test-ai-review-key',
+                'model' => 'review-model',
+                'prompt' => 'Return JSON.',
+            ]);
+            $openAiContainer = AppFactory::create($basePaths[1])->getContainer();
+            self::assertInstanceOf(
+                OpenAiCompatibleCreativeReviewProvider::class,
+                $openAiContainer?->get(CreativeReviewProviderInterface::class),
+            );
+        } finally {
+            foreach ($basePaths as $basePath) {
+                @unlink($basePath . '/config/routes.php');
+                @unlink($basePath . '/config/settings.php');
+                @rmdir($basePath . '/config');
+                @rmdir($basePath);
+            }
+        }
+    }
+
+    /** @param array<string, mixed> $aiReview */
+    private function temporaryAppBasePath(array $aiReview): string
+    {
+        $basePath = sys_get_temp_dir() . '/vertoad-appfactory-ai-' . bin2hex(random_bytes(4));
+        $configPath = $basePath . '/config';
+        mkdir($configPath, recursive: true);
+        file_put_contents($configPath . '/settings.php', '<?php return ' . var_export([
+            'app' => [
+                'debug' => false,
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'memory' => true,
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+            'ai_review' => $aiReview,
+        ], true) . ';');
+        file_put_contents($configPath . '/routes.php', <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+use Slim\App;
+
+return static function (App $app): void {
+};
+PHP);
+
+        return $basePath;
     }
 
     private function defineFakeRedisIfMissing(): void
