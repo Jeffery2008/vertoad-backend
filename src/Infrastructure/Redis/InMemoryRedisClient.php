@@ -14,6 +14,17 @@ final class InMemoryRedisClient implements RedisClientInterface
         return isset($this->values[$key]);
     }
 
+    public function delete(string $key): int
+    {
+        if (!isset($this->values[$key])) {
+            return 0;
+        }
+
+        unset($this->values[$key]);
+
+        return 1;
+    }
+
     public function expire(string $key, int $seconds): bool
     {
         return isset($this->values[$key]) && $seconds > 0;

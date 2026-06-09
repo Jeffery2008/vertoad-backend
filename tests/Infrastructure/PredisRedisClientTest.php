@@ -51,6 +51,7 @@ final class PredisRedisClientTest extends TestCase
     {
         $commands = new RecordingPredisCommandClient([
             'exists' => 1,
+            'del' => 1,
             'expire' => 1,
             'get' => 42,
             'incr' => 3,
@@ -63,6 +64,7 @@ final class PredisRedisClientTest extends TestCase
         $client = new PredisRedisClient($commands);
 
         self::assertTrue($client->exists('key'));
+        self::assertSame(1, $client->delete('key'));
         self::assertTrue($client->expire('key', 60));
         self::assertSame('42', $client->get('key'));
         self::assertSame(3, $client->increment('key'));
@@ -73,14 +75,15 @@ final class PredisRedisClientTest extends TestCase
         self::assertSame(['leased-a', '8'], $client->eval('return {}', ['k1', 'k2'], ['a1']));
 
         self::assertSame(['key'], $commands->calls[0][1]);
-        self::assertSame(['key', 60], $commands->calls[1][1]);
-        self::assertSame(['key'], $commands->calls[2][1]);
+        self::assertSame(['key'], $commands->calls[1][1]);
+        self::assertSame(['key', 60], $commands->calls[2][1]);
         self::assertSame(['key'], $commands->calls[3][1]);
-        self::assertSame(['key', 'value', 'EX', 10, 'NX'], $commands->calls[4][1]);
-        self::assertSame(['z', '-inf', '+inf', ['limit' => [1, 2]]], $commands->calls[5][1]);
-        self::assertSame(['z', ['member' => 1.5]], $commands->calls[6][1]);
-        self::assertSame(['z', ['member']], $commands->calls[7][1]);
-        self::assertSame(['return {}', 2, 'k1', 'k2', 'a1'], $commands->calls[8][1]);
+        self::assertSame(['key'], $commands->calls[4][1]);
+        self::assertSame(['key', 'value', 'EX', 10, 'NX'], $commands->calls[5][1]);
+        self::assertSame(['z', '-inf', '+inf', ['limit' => [1, 2]]], $commands->calls[6][1]);
+        self::assertSame(['z', ['member' => 1.5]], $commands->calls[7][1]);
+        self::assertSame(['z', ['member']], $commands->calls[8][1]);
+        self::assertSame(['return {}', 2, 'k1', 'k2', 'a1'], $commands->calls[9][1]);
     }
 
     public function testNormalizesMissingValuesAndFailedSet(): void

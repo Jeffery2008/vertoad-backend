@@ -5,12 +5,15 @@ declare(strict_types=1);
 namespace VertoAD\Tests\Serving;
 
 use DI\ContainerBuilder;
+use DateTimeImmutable;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Message\ResponseInterface;
+use ReflectionMethod;
 use Slim\App;
 use Slim\Factory\AppFactory as SlimAppFactory;
 use Slim\Psr7\Factory\ServerRequestFactory;
 use VertoAD\Domain\Serving\AdCandidate;
+use VertoAD\Domain\Serving\AdDecision;
 use VertoAD\Http\Action\Serving\ClickAction;
 use VertoAD\Http\Action\Serving\ServeAction;
 use VertoAD\Http\Action\Serving\ServeFrameAction;
@@ -145,6 +148,29 @@ final class ServingRouteIntegrationTest extends TestCase
 
         $invalidDebug = $this->handleJson($app, 'GET', '/api/v1/ads/serve?site_id=10&slot_id=20&viewer_id=viewer-1&debug=yes');
         self::assertSame('invalid_request', $invalidDebug['error']['code']);
+    }
+
+    public function testServeFrameDocumentExtractionPreservesFullDocumentsAndFallsBackWhenSrcdocIsMissing(): void
+    {
+        $app = $this->createApp([]);
+        $container = $app->getContainer();
+        self::assertNotNull($container);
+        $action = $container->get(ServeFrameAction::class);
+        self::assertInstanceOf(ServeFrameAction::class, $action);
+        $extract = new ReflectionMethod(ServeFrameAction::class, 'frameDocument');
+
+        $fullDocument = '<!doctype html><html><body><strong>Already complete</strong></body></html>';
+        self::assertSame(
+            $fullDocument,
+            $extract->invoke($action, $this->decisionWithIframe(
+                '<iframe srcdoc="' . htmlspecialchars($fullDocument, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '"></iframe>'
+            ))
+        );
+
+        self::assertSame(
+            '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body></body></html>',
+            $extract->invoke($action, $this->decisionWithIframe('<iframe title="Advertisement"></iframe>'))
+        );
     }
 
     public function testTrackAcceptsValidImpressionAndDeduplicates(): void
@@ -346,6 +372,29 @@ final class ServingRouteIntegrationTest extends TestCase
             assetType: 'image',
             assetObjectKey: 'organizations/40/assets/creative.png',
             assetContentType: 'image/png',
+        );
+    }
+
+    private function decisionWithIframe(string $iframeHtml): AdDecision
+    {
+        return new AdDecision(
+            decisionId: 'decision-test',
+            siteId: 10,
+            slotId: 20,
+            viewerId: 'viewer-1',
+            filled: true,
+            reason: null,
+            iframeHtml: $iframeHtml,
+            width: 300,
+            height: 250,
+            adId: 'ad-1',
+            campaignId: 30,
+            advertiserOrganizationId: 40,
+            publisherOrganizationId: 42,
+            impressionCostPoints: 10,
+            clickCostPoints: 20,
+            landingUrl: 'https://advertiser.example/landing',
+            decidedAt: new DateTimeImmutable('2026-06-09T00:00:00+00:00'),
         );
     }
 }

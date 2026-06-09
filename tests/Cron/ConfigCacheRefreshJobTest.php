@@ -92,6 +92,11 @@ final class RecordingRedisClient implements RedisClientInterface
         return false;
     }
 
+    public function delete(string $key): int
+    {
+        return 1;
+    }
+
     public function expire(string $key, int $seconds): bool
     {
         return true;

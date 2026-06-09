@@ -31,6 +31,11 @@ final readonly class RedisCronLockStore implements CronLockStoreInterface
         return $this->client->setNxEx($this->prefix . $lockKey, '1', $ttlSeconds);
     }
 
+    public function release(string $lockKey): void
+    {
+        $this->client->delete($this->prefix . $lockKey);
+    }
+
     public function isLocked(string $lockKey): bool
     {
         return $this->client->exists($this->prefix . $lockKey);

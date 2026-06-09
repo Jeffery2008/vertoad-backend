@@ -106,6 +106,10 @@ final readonly class WebhookDeliveryJob implements CronJobInterface
     public function deliver(string $deliveryId, callable $transport): WebhookDelivery
     {
         $delivery = $this->requiredDelivery($deliveryId);
+        if ($delivery->status === 'delivered') {
+            return $delivery;
+        }
+
         $signature = $this->signer->signatureHeader($delivery->payload_json);
         $statusCode = $transport($delivery, $signature);
         $delivered = $statusCode >= 200 && $statusCode < 300;

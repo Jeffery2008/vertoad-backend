@@ -15,6 +15,11 @@ final readonly class NativeRedisClient implements RedisClientInterface
         return (bool) $this->redis->exists($key);
     }
 
+    public function delete(string $key): int
+    {
+        return (int) $this->redis->del($key);
+    }
+
     public function expire(string $key, int $seconds): bool
     {
         return (bool) $this->redis->expire($key, $seconds);

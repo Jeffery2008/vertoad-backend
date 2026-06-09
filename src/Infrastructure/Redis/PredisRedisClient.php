@@ -19,6 +19,11 @@ final readonly class PredisRedisClient implements RedisClientInterface
         return (int) $this->runAuthenticated(fn (object $client): mixed => $client->exists($key)) > 0;
     }
 
+    public function delete(string $key): int
+    {
+        return (int) $this->runAuthenticated(fn (object $client): mixed => $client->del($key));
+    }
+
     public function expire(string $key, int $seconds): bool
     {
         return (bool) $this->runAuthenticated(fn (object $client): mixed => $client->expire($key, $seconds));

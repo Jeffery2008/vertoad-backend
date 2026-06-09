@@ -32,6 +32,11 @@ final class InMemoryCronLockStore implements CronLockStoreInterface
         return isset($this->locks[$lockKey]);
     }
 
+    public function release(string $lockKey): void
+    {
+        unset($this->locks[$lockKey]);
+    }
+
     private function purgeExpired(): void
     {
         $now = time();

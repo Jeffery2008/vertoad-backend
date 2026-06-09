@@ -67,6 +67,17 @@ namespace {
                 return isset($this->keys[$key]) ? 1 : 0;
             }
 
+            public function del(string $key): int
+            {
+                if (!isset($this->keys[$key])) {
+                    return 0;
+                }
+
+                unset($this->keys[$key], $this->values[$key], $this->ttl[$key]);
+
+                return 1;
+            }
+
             public function incr(string $key): int
             {
                 $this->counts[$key] = ($this->counts[$key] ?? 0) + 1;
@@ -195,6 +206,8 @@ namespace VertoAD\Tests\Cron {
             self::assertFalse($store->acquire('cron:lock:events', 30));
             self::assertTrue($store->isLocked('cron:lock:events'));
             self::assertSame(30, $redis->keys['vertoad:test:cron:lock:events'] ?? null);
+            $store->release('cron:lock:events');
+            self::assertFalse($store->isLocked('cron:lock:events'));
         }
 
         public function testRedisLockRejectsInvalidTtl(): void

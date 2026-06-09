@@ -42,6 +42,11 @@ final class SocketRedisClient implements RedisClientInterface
         return (int) $this->command('EXISTS', [$key]) > 0;
     }
 
+    public function delete(string $key): int
+    {
+        return (int) $this->command('DEL', [$key]);
+    }
+
     public function expire(string $key, int $seconds): bool
     {
         return (int) $this->command('EXPIRE', [$key, (string) $seconds]) === 1;

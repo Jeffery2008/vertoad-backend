@@ -22,11 +22,16 @@ final readonly class CronRunner
             return CronJobResult::notFound($jobName);
         }
 
-        if (!$this->locks->acquire($this->lockKey($jobName), $this->defaultLockTtlSeconds)) {
+        $lockKey = $this->lockKey($jobName);
+        if (!$this->locks->acquire($lockKey, $this->defaultLockTtlSeconds)) {
             return CronJobResult::locked($jobName);
         }
 
-        return $job->run();
+        try {
+            return $job->run();
+        } finally {
+            $this->locks->release($lockKey);
+        }
     }
 
     private function lockKey(string $jobName): string

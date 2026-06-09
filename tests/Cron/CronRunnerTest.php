@@ -16,7 +16,8 @@ final class CronRunnerTest extends TestCase
     public function testRunsRegisteredJobBehindLock(): void
     {
         $job = new CountingCronJob('aggregate-statistics');
-        $runner = new CronRunner(new CronJobRegistry([$job]), new InMemoryCronLockStore(), 60);
+        $locks = new InMemoryCronLockStore();
+        $runner = new CronRunner(new CronJobRegistry([$job]), $locks, 60);
 
         $result = $runner->run('aggregate-statistics');
 
@@ -25,6 +26,22 @@ final class CronRunnerTest extends TestCase
         self::assertSame('completed', $result->status);
         self::assertSame(1, $job->runs);
         self::assertSame(1, $result->metrics['runs'] ?? null);
+        self::assertFalse($locks->isLocked('cron:lock:aggregate-statistics'));
+    }
+
+    public function testReleasesLockWhenJobThrows(): void
+    {
+        $locks = new InMemoryCronLockStore();
+        $runner = new CronRunner(new CronJobRegistry([new ThrowingCronJob('webhook-retry')]), $locks, 60);
+
+        try {
+            $runner->run('webhook-retry');
+            self::fail('Cron job exception should bubble to the caller.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('boom', $exception->getMessage());
+        }
+
+        self::assertFalse($locks->isLocked('cron:lock:webhook-retry'));
     }
 
     public function testSkipsJobWhenLockIsAlreadyHeld(): void
@@ -72,5 +89,22 @@ final class CountingCronJob implements CronJobInterface
         ++$this->runs;
 
         return CronJobResult::completed($this->name, ['runs' => $this->runs]);
+    }
+}
+
+final class ThrowingCronJob implements CronJobInterface
+{
+    public function __construct(private readonly string $name)
+    {
+    }
+
+    public function name(): string
+    {
+        return $this->name;
+    }
+
+    public function run(): CronJobResult
+    {
+        throw new \RuntimeException('boom');
     }
 }

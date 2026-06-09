@@ -29,6 +29,9 @@ final class SocketRedisClientTest extends TestCase
             ":1\r\n",
             "+OK\r\n",
             "+OK\r\n",
+            ":1\r\n",
+            "+OK\r\n",
+            "+OK\r\n",
             "$5\r\nvalue\r\n",
             "+OK\r\n",
             "+OK\r\n",
@@ -57,6 +60,7 @@ final class SocketRedisClientTest extends TestCase
         $client = new SocketRedisClient('127.0.0.1', 6379, 'secret', 2, connection: $connection);
 
         self::assertTrue($client->exists('key'));
+        self::assertSame(1, $client->delete('key'));
         self::assertTrue($client->expire('key', 60));
         self::assertSame('value', $client->get('key'));
         self::assertSame(3, $client->increment('key'));
@@ -70,6 +74,9 @@ final class SocketRedisClientTest extends TestCase
             ['AUTH', ['secret']],
             ['SELECT', ['2']],
             ['EXISTS', ['key']],
+            ['AUTH', ['secret']],
+            ['SELECT', ['2']],
+            ['DEL', ['key']],
             ['AUTH', ['secret']],
             ['SELECT', ['2']],
             ['EXPIRE', ['key', '60']],

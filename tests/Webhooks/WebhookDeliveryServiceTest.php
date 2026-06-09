@@ -85,6 +85,34 @@ final class WebhookDeliveryServiceTest extends TestCase
         self::assertSame('delivered', $retry->toArray()['status']);
     }
 
+    public function testDeliveryJobDoesNotRedeliverAlreadyDeliveredWebhook(): void
+    {
+        $repositoryClass = 'VertoAD\\Repository\\Webhooks\\InMemoryWebhookDeliveryRepository';
+        $jobClass = 'VertoAD\\Service\\Webhooks\\WebhookDeliveryJob';
+        $signerClass = 'VertoAD\\Service\\Webhooks\\WebhookSigner';
+
+        $repository = new $repositoryClass();
+        $delivery = $repository->queue(
+            endpointUrl: 'https://example.test/webhooks',
+            eventType: 'campaign.status.changed',
+            payload: ['campaign_id' => 'cmp_1'],
+        );
+        $job = new $jobClass($repository, new $signerClass('whsec_test_secret'));
+        $delivered = $job->deliver((string) $this->value($delivery, 'delivery_id'), static fn (): int => 200);
+        $transportCalls = 0;
+
+        $again = $job->retry((string) $this->value($delivery, 'delivery_id'), static function () use (&$transportCalls): int {
+            ++$transportCalls;
+
+            return 500;
+        });
+
+        self::assertSame('delivered', $this->value($again, 'status'));
+        self::assertSame(1, $this->value($again, 'retry_count'));
+        self::assertSame($this->value($delivered, 'signature_header'), $this->value($again, 'signature_header'));
+        self::assertSame(0, $transportCalls);
+    }
+
     public function testDeliveryJobRejectsMissingDelivery(): void
     {
         $repositoryClass = 'VertoAD\\Repository\\Webhooks\\InMemoryWebhookDeliveryRepository';

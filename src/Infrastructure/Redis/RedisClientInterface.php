@@ -8,6 +8,8 @@ interface RedisClientInterface
 {
     public function exists(string $key): bool;
 
+    public function delete(string $key): int;
+
     public function expire(string $key, int $seconds): bool;
 
     public function get(string $key): string|false;

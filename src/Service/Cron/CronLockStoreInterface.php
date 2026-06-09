@@ -8,5 +8,7 @@ interface CronLockStoreInterface
 {
     public function acquire(string $lockKey, int $ttlSeconds): bool;
 
+    public function release(string $lockKey): void;
+
     public function isLocked(string $lockKey): bool;
 }
