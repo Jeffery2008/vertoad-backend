@@ -35,7 +35,7 @@ use VertoAD\Infrastructure\Storage\ObjectStorageUploadSignerInterface;
 use VertoAD\Repository\AdSlotRepository;
 use VertoAD\Repository\AdSlotRepositoryInterface;
 use VertoAD\Repository\Archive\ArchiveRepositoryInterface;
-use VertoAD\Repository\Archive\InMemoryArchiveRepository;
+use VertoAD\Repository\Archive\DatabaseArchiveRepository;
 use VertoAD\Repository\AuditLogRepository;
 use VertoAD\Repository\AuditLogRepositoryInterface;
 use VertoAD\Repository\Assets\AssetRepository;
@@ -291,8 +291,8 @@ final class AppFactory
                     $events,
                     (int) ($settings['attribution']['default_window_seconds'] ?? 604800),
                 ),
-                ArchiveRepositoryInterface::class => static fn (): ArchiveRepositoryInterface =>
-                    new InMemoryArchiveRepository(),
+                ArchiveRepositoryInterface::class => static fn (Connection $connection): ArchiveRepositoryInterface =>
+                    new DatabaseArchiveRepository($connection),
                 ArchiveJob::class => static fn (
                     ArchiveRepositoryInterface $repository,
                 ): ArchiveJob => new ArchiveJob(

@@ -12,6 +12,7 @@ use VertoAD\AppFactory;
 use VertoAD\Repository\AuditLogRepositoryInterface;
 use VertoAD\Repository\AdSlotRepositoryInterface;
 use VertoAD\Repository\Archive\ArchiveRepositoryInterface;
+use VertoAD\Repository\Archive\DatabaseArchiveRepository;
 use VertoAD\Repository\Attribution\AttributionEventRepositoryInterface;
 use VertoAD\Repository\Attribution\DatabaseAttributionEventRepository;
 use VertoAD\Repository\Serving\AdCandidateRepositoryInterface;
@@ -166,6 +167,7 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(CampaignBudgetService::class, $container->get(CampaignSpendEligibilityInterface::class));
             self::assertInstanceOf(AdServingService::class, $container->get(AdServingService::class));
             self::assertInstanceOf(ArchiveRepositoryInterface::class, $container->get(ArchiveRepositoryInterface::class));
+            self::assertInstanceOf(DatabaseArchiveRepository::class, $container->get(ArchiveRepositoryInterface::class));
             self::assertInstanceOf(ArchiveJob::class, $container->get(ArchiveJob::class));
             self::assertInstanceOf(ArchiveService::class, $container->get(ArchiveService::class));
             self::assertInstanceOf(ColdQueryService::class, $container->get(ColdQueryService::class));
