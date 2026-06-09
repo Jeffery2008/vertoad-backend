@@ -22,6 +22,8 @@ use VertoAD\Repository\Serving\DatabaseAdDecisionRepository;
 use VertoAD\Repository\Serving\DatabaseAdEventRepository;
 use VertoAD\Repository\Serving\InMemoryAdEventRepository;
 use VertoAD\Repository\Cron\ServingEventBufferInterface;
+use VertoAD\Repository\FeatureFlags\DatabaseFeatureFlagRepository;
+use VertoAD\Repository\FeatureFlags\FeatureFlagRepositoryInterface;
 use VertoAD\Repository\FirstPartySessionRepositoryInterface;
 use VertoAD\Repository\Fraud\DatabaseFraudRiskFeatureRepository;
 use VertoAD\Repository\OrganizationMembershipRepositoryInterface;
@@ -35,6 +37,8 @@ use VertoAD\Repository\PublisherSiteRepositoryInterface;
 use VertoAD\Repository\RechargeKeyRepositoryInterface;
 use VertoAD\Repository\Reporting\DatabaseReportAggregateRepository;
 use VertoAD\Repository\Reporting\ReportAggregateRepositoryInterface;
+use VertoAD\Repository\Support\DatabaseSupportTicketRepository;
+use VertoAD\Repository\Support\SupportTicketRepositoryInterface;
 use VertoAD\Repository\SystemConfigRepositoryInterface;
 use VertoAD\Repository\UserIdentityRepositoryInterface;
 use VertoAD\Repository\Webhooks\DatabaseWebhookDeliveryRepository;
@@ -123,6 +127,10 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(AuditLogService::class, $container->get(AuditLogService::class));
             self::assertInstanceOf(PointsLedgerRepositoryInterface::class, $container->get(PointsLedgerRepositoryInterface::class));
             self::assertInstanceOf(PointsLedgerService::class, $container->get(PointsLedgerService::class));
+            self::assertInstanceOf(SupportTicketRepositoryInterface::class, $container->get(SupportTicketRepositoryInterface::class));
+            self::assertInstanceOf(DatabaseSupportTicketRepository::class, $container->get(SupportTicketRepositoryInterface::class));
+            self::assertInstanceOf(FeatureFlagRepositoryInterface::class, $container->get(FeatureFlagRepositoryInterface::class));
+            self::assertInstanceOf(DatabaseFeatureFlagRepository::class, $container->get(FeatureFlagRepositoryInterface::class));
 
             $cipher = $container->get(RechargeKeyPlaintextCipherInterface::class);
             self::assertInstanceOf(RechargeKeyPlaintextCipherInterface::class, $cipher);

@@ -48,8 +48,8 @@ use VertoAD\Repository\Campaign\CampaignRepository;
 use VertoAD\Repository\Campaign\CampaignRepositoryInterface;
 use VertoAD\Repository\CampaignBudgetRepository;
 use VertoAD\Repository\CampaignBudgetRepositoryInterface;
+use VertoAD\Repository\FeatureFlags\DatabaseFeatureFlagRepository;
 use VertoAD\Repository\FeatureFlags\FeatureFlagRepositoryInterface;
-use VertoAD\Repository\FeatureFlags\InMemoryFeatureFlagRepository;
 use VertoAD\Repository\Serving\AdCandidateRepositoryInterface;
 use VertoAD\Repository\Serving\AdDecisionRepositoryInterface;
 use VertoAD\Repository\Serving\AdEventRepositoryInterface;
@@ -92,7 +92,7 @@ use VertoAD\Repository\Reporting\InMemoryReportAggregateRepository;
 use VertoAD\Repository\Reporting\ReportAggregateRepositoryInterface;
 use VertoAD\Repository\SystemConfigRepository;
 use VertoAD\Repository\SystemConfigRepositoryInterface;
-use VertoAD\Repository\Support\InMemorySupportTicketRepository;
+use VertoAD\Repository\Support\DatabaseSupportTicketRepository;
 use VertoAD\Repository\Support\SupportTicketRepositoryInterface;
 use VertoAD\Repository\UserIdentityRepository;
 use VertoAD\Repository\UserIdentityRepositoryInterface;
@@ -356,14 +356,14 @@ final class AppFactory
                     WebhookDeliveryJob::httpTransport((int) ($settings['webhooks']['http_timeout_seconds'] ?? 5)),
                     (int) ($settings['webhooks']['retry_batch_size'] ?? 50),
                 ),
-                SupportTicketRepositoryInterface::class => static fn (): SupportTicketRepositoryInterface =>
-                    new InMemorySupportTicketRepository(),
+                SupportTicketRepositoryInterface::class => static fn (Connection $connection): SupportTicketRepositoryInterface =>
+                    new DatabaseSupportTicketRepository($connection),
                 SupportTicketService::class => static fn (
                     SupportTicketRepositoryInterface $tickets,
                     AuditLogService $audit,
                 ): SupportTicketService => new SupportTicketService($tickets, $audit),
-                FeatureFlagRepositoryInterface::class => static fn (): FeatureFlagRepositoryInterface =>
-                    new InMemoryFeatureFlagRepository(),
+                FeatureFlagRepositoryInterface::class => static fn (Connection $connection): FeatureFlagRepositoryInterface =>
+                    new DatabaseFeatureFlagRepository($connection),
                 FeatureFlagService::class => static fn (
                     FeatureFlagRepositoryInterface $flags,
                     AuditLogService $audit,
