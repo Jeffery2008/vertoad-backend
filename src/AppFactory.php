@@ -100,6 +100,7 @@ use VertoAD\Service\Assets\AssetUploadService;
 use VertoAD\Service\Archive\ArchiveJob;
 use VertoAD\Service\Archive\ArchiveService;
 use VertoAD\Service\Archive\ColdQueryService;
+use VertoAD\Service\Cron\ArchiveParquetJob;
 use VertoAD\Service\Attribution\AttributionService;
 use VertoAD\Service\AuditLogService;
 use VertoAD\Service\AuthService;
@@ -113,6 +114,7 @@ use VertoAD\Service\Cron\CronJobInterface;
 use VertoAD\Service\Cron\CronJobRegistry;
 use VertoAD\Service\Cron\CronLockStoreInterface;
 use VertoAD\Service\Cron\CronRunner;
+use VertoAD\Service\Cron\DuckDbColdQueryJob;
 use VertoAD\Service\Cron\EventConsumptionJob;
 use VertoAD\Service\Cron\ExpiredTokenCleanupJob;
 use VertoAD\Service\Cron\InMemoryCronLockStore;
@@ -427,12 +429,18 @@ final class AppFactory
                     $tokens,
                     (int) ($settings['cron']['expired_token_retention_seconds'] ?? 86400),
                 ),
+                ArchiveParquetJob::class => static fn (ArchiveJob $archive): ArchiveParquetJob =>
+                    new ArchiveParquetJob($archive),
+                DuckDbColdQueryJob::class => static fn (ColdQueryService $queries): DuckDbColdQueryJob =>
+                    new DuckDbColdQueryJob($queries),
                 CronJobRegistry::class => static function (
                     EventConsumptionJob $eventConsumption,
                     WebhookDeliveryJob $webhookDelivery,
                     ExpiredTokenCleanupJob $expiredTokenCleanup,
+                    ArchiveParquetJob $archiveParquet,
+                    DuckDbColdQueryJob $duckDbColdQuery,
                 ) use ($settings): CronJobRegistry {
-                    $jobs = [$eventConsumption, $webhookDelivery, $expiredTokenCleanup];
+                    $jobs = [$eventConsumption, $webhookDelivery, $expiredTokenCleanup, $archiveParquet, $duckDbColdQuery];
                     $registeredNames = array_fill_keys(array_map(
                         static fn (CronJobInterface $job): string => $job->name(),
                         $jobs,
