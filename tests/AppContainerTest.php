@@ -45,6 +45,7 @@ use VertoAD\Service\Attribution\AttributionService;
 use VertoAD\Service\AuditLogService;
 use VertoAD\Service\AuthService;
 use VertoAD\Service\CampaignBudgetService;
+use VertoAD\Service\Cron\AiReviewQueueJob;
 use VertoAD\Service\Cron\ArchiveParquetJob;
 use VertoAD\Service\Cron\BackupCheckJob;
 use VertoAD\Service\Cron\CronJobRegistry;
@@ -162,6 +163,7 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(CronJobRegistry::class, $container->get(CronJobRegistry::class));
             self::assertInstanceOf(WebhookDeliveryJob::class, $container->get(CronJobRegistry::class)->get('webhook-retry'));
             self::assertInstanceOf(ExpiredTokenCleanupJob::class, $container->get(CronJobRegistry::class)->get('expired-token-cleanup'));
+            self::assertInstanceOf(AiReviewQueueJob::class, $container->get(CronJobRegistry::class)->get('ai-review-queue'));
             self::assertInstanceOf(ArchiveParquetJob::class, $container->get(CronJobRegistry::class)->get('archive-parquet'));
             self::assertInstanceOf(DuckDbColdQueryJob::class, $container->get(CronJobRegistry::class)->get('duckdb-cold-query'));
             self::assertInstanceOf(BackupCheckJob::class, $container->get(CronJobRegistry::class)->get('backup-check'));

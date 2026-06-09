@@ -101,6 +101,7 @@ use VertoAD\Service\Archive\ArchiveJob;
 use VertoAD\Service\Archive\ArchiveService;
 use VertoAD\Service\Archive\ColdQueryService;
 use VertoAD\Service\Cron\ArchiveParquetJob;
+use VertoAD\Service\Cron\AiReviewQueueJob;
 use VertoAD\Service\Cron\BackupCheckJob;
 use VertoAD\Service\Attribution\AttributionService;
 use VertoAD\Service\AuditLogService;
@@ -430,6 +431,14 @@ final class AppFactory
                     $tokens,
                     (int) ($settings['cron']['expired_token_retention_seconds'] ?? 86400),
                 ),
+                AiReviewQueueJob::class => static fn (
+                    ReviewRepositoryInterface $reviews,
+                    CreativeReviewProviderInterface $provider,
+                ): AiReviewQueueJob => new AiReviewQueueJob(
+                    $reviews,
+                    $provider,
+                    (int) ($settings['cron']['ai_review_batch_size'] ?? 50),
+                ),
                 ArchiveParquetJob::class => static fn (ArchiveJob $archive): ArchiveParquetJob =>
                     new ArchiveParquetJob($archive),
                 DuckDbColdQueryJob::class => static fn (ColdQueryService $queries): DuckDbColdQueryJob =>
@@ -440,6 +449,7 @@ final class AppFactory
                     EventConsumptionJob $eventConsumption,
                     WebhookDeliveryJob $webhookDelivery,
                     ExpiredTokenCleanupJob $expiredTokenCleanup,
+                    AiReviewQueueJob $aiReviewQueue,
                     ArchiveParquetJob $archiveParquet,
                     DuckDbColdQueryJob $duckDbColdQuery,
                     BackupCheckJob $backupCheck,
@@ -448,6 +458,7 @@ final class AppFactory
                         $eventConsumption,
                         $webhookDelivery,
                         $expiredTokenCleanup,
+                        $aiReviewQueue,
                         $archiveParquet,
                         $duckDbColdQuery,
                         $backupCheck,
