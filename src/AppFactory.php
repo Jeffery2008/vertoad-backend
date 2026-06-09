@@ -104,6 +104,7 @@ use VertoAD\Service\Archive\ArchiveService;
 use VertoAD\Service\Archive\ColdQueryService;
 use VertoAD\Service\Cron\ArchiveParquetJob;
 use VertoAD\Service\Cron\AiReviewQueueJob;
+use VertoAD\Service\Cron\AggregateStatisticsJob;
 use VertoAD\Service\Cron\BackupCheckJob;
 use VertoAD\Service\Attribution\AttributionService;
 use VertoAD\Service\AuditLogService;
@@ -450,6 +451,12 @@ final class AppFactory
                     (string) ($settings['redis']['prefix'] ?? 'vertoad:local:'),
                     (int) ($settings['cron']['config_cache_ttl_seconds'] ?? 300),
                 ),
+                AggregateStatisticsJob::class => static fn (
+                    DatabaseReportAggregateRepository $aggregates,
+                ): AggregateStatisticsJob => self::aggregateStatisticsJob(
+                    $aggregates,
+                    (int) ($settings['cron']['aggregate_statistics_lookback_hours'] ?? 24),
+                ),
                 ArchiveParquetJob::class => static fn (ArchiveJob $archive): ArchiveParquetJob =>
                     new ArchiveParquetJob($archive),
                 DuckDbColdQueryJob::class => static fn (ColdQueryService $queries): DuckDbColdQueryJob =>
@@ -462,6 +469,7 @@ final class AppFactory
                     ExpiredTokenCleanupJob $expiredTokenCleanup,
                     AiReviewQueueJob $aiReviewQueue,
                     ConfigCacheRefreshJob $configCacheRefresh,
+                    AggregateStatisticsJob $aggregateStatistics,
                     ArchiveParquetJob $archiveParquet,
                     DuckDbColdQueryJob $duckDbColdQuery,
                     BackupCheckJob $backupCheck,
@@ -472,6 +480,7 @@ final class AppFactory
                         $expiredTokenCleanup,
                         $aiReviewQueue,
                         $configCacheRefresh,
+                        $aggregateStatistics,
                         $archiveParquet,
                         $duckDbColdQuery,
                         $backupCheck,
@@ -638,5 +647,16 @@ final class AppFactory
         $env = (string) ($settings['app']['env'] ?? 'local');
 
         return !in_array($env, ['local', 'test', 'testing'], true);
+    }
+
+    private static function aggregateStatisticsJob(DatabaseReportAggregateRepository $aggregates, int $lookbackHours): AggregateStatisticsJob
+    {
+        if ($lookbackHours <= 0) {
+            throw new \InvalidArgumentException('CRON_AGGREGATE_STATISTICS_LOOKBACK_HOURS must be positive.');
+        }
+
+        $to = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+
+        return new AggregateStatisticsJob($aggregates, $to->modify('-' . $lookbackHours . ' hours'), $to);
     }
 }

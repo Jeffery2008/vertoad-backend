@@ -48,6 +48,7 @@ use VertoAD\Service\AuditLogService;
 use VertoAD\Service\AuthService;
 use VertoAD\Service\CampaignBudgetService;
 use VertoAD\Service\Cron\AiReviewQueueJob;
+use VertoAD\Service\Cron\AggregateStatisticsJob;
 use VertoAD\Service\Cron\ArchiveParquetJob;
 use VertoAD\Service\Cron\BackupCheckJob;
 use VertoAD\Service\Cron\CronJobRegistry;
@@ -169,6 +170,7 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(WebhookDeliveryJob::class, $container->get(CronJobRegistry::class)->get('webhook-retry'));
             self::assertInstanceOf(ExpiredTokenCleanupJob::class, $container->get(CronJobRegistry::class)->get('expired-token-cleanup'));
             self::assertInstanceOf(AiReviewQueueJob::class, $container->get(CronJobRegistry::class)->get('ai-review-queue'));
+            self::assertInstanceOf(AggregateStatisticsJob::class, $container->get(CronJobRegistry::class)->get('aggregate-statistics'));
             self::assertInstanceOf(ConfigCacheRefreshJob::class, $container->get(CronJobRegistry::class)->get('config-cache-refresh'));
             self::assertInstanceOf(ArchiveParquetJob::class, $container->get(CronJobRegistry::class)->get('archive-parquet'));
             self::assertInstanceOf(DuckDbColdQueryJob::class, $container->get(CronJobRegistry::class)->get('duckdb-cold-query'));
@@ -335,6 +337,58 @@ final class AppContainerTest extends TestCase
         $this->expectExceptionMessage('REDIS_PASSWORD is required for config cache refresh.');
 
         $container?->get(ConfigCacheRefreshJob::class);
+    }
+
+    public function testAggregateStatisticsLookbackMustBePositive(): void
+    {
+        $basePath = sys_get_temp_dir() . '/vertoad-appfactory-aggregate-' . bin2hex(random_bytes(4));
+        $configPath = $basePath . '/config';
+        mkdir($configPath, recursive: true);
+        file_put_contents($configPath . '/settings.php', <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+return [
+    'app' => [
+        'debug' => false,
+    ],
+    'database' => [
+        'driver' => 'pdo_sqlite',
+        'memory' => true,
+    ],
+    'cron' => [
+        'token' => '',
+        'allowed_ips' => [],
+        'aggregate_statistics_lookback_hours' => 0,
+        'jobs' => ['aggregate-statistics'],
+    ],
+];
+PHP);
+        file_put_contents($configPath . '/routes.php', <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+use Slim\App;
+
+return static function (App $app): void {
+};
+PHP);
+
+        try {
+            $container = AppFactory::create($basePath)->getContainer();
+
+            $this->expectException(\InvalidArgumentException::class);
+            $this->expectExceptionMessage('CRON_AGGREGATE_STATISTICS_LOOKBACK_HOURS must be positive.');
+
+            $container?->get(AggregateStatisticsJob::class);
+        } finally {
+            @unlink($configPath . '/routes.php');
+            @unlink($configPath . '/settings.php');
+            @rmdir($configPath);
+            @rmdir($basePath);
+        }
     }
 
     public function testCreateLoadsEnvironmentFileWhenPresentInBasePath(): void
