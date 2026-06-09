@@ -100,12 +100,14 @@ final class ServingRouteIntegrationTest extends TestCase
 
         self::assertSame(200, $response->getStatusCode());
         self::assertStringStartsWith('text/html', $response->getHeaderLine('Content-Type'));
+        self::assertSame('nosniff', $response->getHeaderLine('X-Content-Type-Options'));
+        self::assertStringContainsString('sandbox allow-popups allow-popups-to-escape-sandbox', $response->getHeaderLine('Content-Security-Policy'));
         $html = (string) $response->getBody();
-        $srcdoc = html_entity_decode($html, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-        self::assertStringContainsString('sandbox=', $html);
-        self::assertStringContainsString('data-vertoad-renderer="platform-controlled"', $srcdoc);
-        self::assertStringContainsString('data-vertoad-fallback="snapshot"', $srcdoc);
-        self::assertStringContainsString('organizations/40/assets/creative.png', $srcdoc);
+        self::assertStringStartsWith('<!doctype html>', $html);
+        self::assertStringNotContainsString('<iframe', $html);
+        self::assertStringContainsString('data-vertoad-renderer="platform-controlled"', $html);
+        self::assertStringContainsString('data-vertoad-fallback="snapshot"', $html);
+        self::assertStringContainsString('organizations/40/assets/creative.png', $html);
 
         $invalidResponse = $this->handleRaw($app, 'GET', '/api/v1/ads/serve?site_id=0&slot_id=20&viewer_id=viewer-1');
         self::assertSame(422, $invalidResponse->getStatusCode());
@@ -122,14 +124,14 @@ final class ServingRouteIntegrationTest extends TestCase
         self::assertSame(200, $noSize->getStatusCode());
         self::assertStringContainsString(
             'data-vertoad-renderer="platform-controlled"',
-            html_entity_decode((string) $noSize->getBody(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+            (string) $noSize->getBody()
         );
 
         $defaultDebug = $this->handleRaw($app, 'GET', '/api/v1/ads/serve?site_id=10&slot_id=20&viewer_id=viewer-1');
         self::assertSame(200, $defaultDebug->getStatusCode());
         self::assertStringContainsString(
             'data-vertoad-fallback="snapshot"',
-            html_entity_decode((string) $defaultDebug->getBody(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+            (string) $defaultDebug->getBody()
         );
 
         $invalidViewer = $this->handleJson($app, 'GET', '/api/v1/ads/serve?site_id=10&slot_id=20&viewer_id=');

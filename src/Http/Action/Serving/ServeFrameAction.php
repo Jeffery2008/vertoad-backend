@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use InvalidArgumentException;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
+use VertoAD\Domain\Serving\AdDecision;
 use VertoAD\Service\Serving\AdServingService;
 
 final readonly class ServeFrameAction
@@ -32,10 +33,33 @@ final readonly class ServeFrameAction
             return $this->json($response, ['code' => 'invalid_request', 'message' => $exception->getMessage()], 422);
         }
 
-        $response = $response->withStatus(200)->withHeader('Content-Type', 'text/html; charset=utf-8');
-        $response->getBody()->write($decision->iframeHtml);
+        $response = $response
+            ->withStatus(200)
+            ->withHeader('Content-Type', 'text/html; charset=utf-8')
+            ->withHeader('X-Content-Type-Options', 'nosniff')
+            ->withHeader(
+                'Content-Security-Policy',
+                "sandbox allow-popups allow-popups-to-escape-sandbox; default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; script-src 'none'; base-uri 'none'; form-action 'none'",
+            );
+        $response->getBody()->write($this->frameDocument($decision));
 
         return $response;
+    }
+
+    private function frameDocument(AdDecision $decision): string
+    {
+        if (preg_match('/\ssrcdoc="([^"]*)"/', $decision->iframeHtml, $matches) === 1) {
+            $html = html_entity_decode($matches[1], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+            return str_starts_with(strtolower($html), '<!doctype html>') ? $html : $this->wrapFragment($html);
+        }
+
+        return $this->wrapFragment('');
+    }
+
+    private function wrapFragment(string $fragment): string
+    {
+        return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>' . $fragment . '</body></html>';
     }
 
     /**
