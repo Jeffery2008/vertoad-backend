@@ -101,6 +101,7 @@ use VertoAD\Service\Archive\ArchiveJob;
 use VertoAD\Service\Archive\ArchiveService;
 use VertoAD\Service\Archive\ColdQueryService;
 use VertoAD\Service\Cron\ArchiveParquetJob;
+use VertoAD\Service\Cron\BackupCheckJob;
 use VertoAD\Service\Attribution\AttributionService;
 use VertoAD\Service\AuditLogService;
 use VertoAD\Service\AuthService;
@@ -433,14 +434,24 @@ final class AppFactory
                     new ArchiveParquetJob($archive),
                 DuckDbColdQueryJob::class => static fn (ColdQueryService $queries): DuckDbColdQueryJob =>
                     new DuckDbColdQueryJob($queries),
+                BackupCheckJob::class => static fn (OperationsSummaryService $operations): BackupCheckJob =>
+                    new BackupCheckJob($operations),
                 CronJobRegistry::class => static function (
                     EventConsumptionJob $eventConsumption,
                     WebhookDeliveryJob $webhookDelivery,
                     ExpiredTokenCleanupJob $expiredTokenCleanup,
                     ArchiveParquetJob $archiveParquet,
                     DuckDbColdQueryJob $duckDbColdQuery,
+                    BackupCheckJob $backupCheck,
                 ) use ($settings): CronJobRegistry {
-                    $jobs = [$eventConsumption, $webhookDelivery, $expiredTokenCleanup, $archiveParquet, $duckDbColdQuery];
+                    $jobs = [
+                        $eventConsumption,
+                        $webhookDelivery,
+                        $expiredTokenCleanup,
+                        $archiveParquet,
+                        $duckDbColdQuery,
+                        $backupCheck,
+                    ];
                     $registeredNames = array_fill_keys(array_map(
                         static fn (CronJobInterface $job): string => $job->name(),
                         $jobs,

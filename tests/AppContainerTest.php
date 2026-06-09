@@ -46,6 +46,7 @@ use VertoAD\Service\AuditLogService;
 use VertoAD\Service\AuthService;
 use VertoAD\Service\CampaignBudgetService;
 use VertoAD\Service\Cron\ArchiveParquetJob;
+use VertoAD\Service\Cron\BackupCheckJob;
 use VertoAD\Service\Cron\CronJobRegistry;
 use VertoAD\Service\Cron\CronLockStoreInterface;
 use VertoAD\Service\Cron\CronRunner;
@@ -163,6 +164,7 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(ExpiredTokenCleanupJob::class, $container->get(CronJobRegistry::class)->get('expired-token-cleanup'));
             self::assertInstanceOf(ArchiveParquetJob::class, $container->get(CronJobRegistry::class)->get('archive-parquet'));
             self::assertInstanceOf(DuckDbColdQueryJob::class, $container->get(CronJobRegistry::class)->get('duckdb-cold-query'));
+            self::assertInstanceOf(BackupCheckJob::class, $container->get(CronJobRegistry::class)->get('backup-check'));
             self::assertInstanceOf(CronRunner::class, $container->get(CronRunner::class));
         } finally {
             if ($previousAppKey === false) {
