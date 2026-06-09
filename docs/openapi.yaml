@@ -84,7 +84,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AuthUser"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AuthUser"
         "409":
           $ref: "#/components/responses/Error"
         "422":
@@ -111,7 +116,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/LoginData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/LoginData"
         "401":
           $ref: "#/components/responses/Error"
         "422":
@@ -133,13 +143,18 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required:
-                  - revoked
-                properties:
-                  revoked:
-                    type: boolean
-                additionalProperties: false
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required:
+                          - revoked
+                        properties:
+                          revoked:
+                            type: boolean
+                        additionalProperties: false
         "401":
           $ref: "#/components/responses/Error"
         default:
@@ -164,7 +179,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PasswordResetRequestData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PasswordResetRequestData"
         "422":
           $ref: "#/components/responses/Error"
         default:
@@ -189,7 +209,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PasswordResetConfirmData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PasswordResetConfirmData"
         "400":
           $ref: "#/components/responses/Error"
         "422":
@@ -227,7 +252,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MeData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/MeData"
         "401":
           $ref: "#/components/responses/Error"
         default:
@@ -254,7 +284,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OrganizationMemberListData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/OrganizationMemberListData"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -277,15 +312,24 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/HealthData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/HealthData"
               examples:
                 healthy:
                   summary: Healthy API response
                   value:
-                    status: ok
-                    service: vertoad-api
-                    environment: local
-                    timestamp: "2026-06-06T14:00:00+00:00"
+                    data:
+                      status: ok
+                      service: vertoad-api
+                      environment: local
+                      timestamp: "2026-06-06T14:00:00+00:00"
+                    error: null
+                    meta: {}
+                    request_id: req_0123456789abcdef
         default:
           $ref: "#/components/responses/Error"
   /api/v1/permissions:
@@ -353,7 +397,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/BillingBalanceData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/BillingBalanceData"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -397,7 +446,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/BillingLedgerListData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/BillingLedgerListData"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -432,7 +486,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RechargeKeyRedemptionData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/RechargeKeyRedemptionData"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -471,7 +530,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/WithdrawalRequestData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/WithdrawalRequestData"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -505,7 +569,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/WithdrawalRequestData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/WithdrawalRequestData"
         "401":
           $ref: "#/components/responses/Error"
         "409":
@@ -535,7 +604,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/WithdrawalRequestData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/WithdrawalRequestData"
         "401":
           $ref: "#/components/responses/Error"
         "409":
@@ -565,7 +639,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/WithdrawalRequestData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/WithdrawalRequestData"
         "401":
           $ref: "#/components/responses/Error"
         "409":
@@ -595,7 +674,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/WithdrawalProofIntentData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/WithdrawalProofIntentData"
         "401":
           $ref: "#/components/responses/Error"
         "422":
@@ -625,7 +709,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/WithdrawalProofData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/WithdrawalProofData"
         "401":
           $ref: "#/components/responses/Error"
         "422":
@@ -660,7 +749,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AssetUploadIntentData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AssetUploadIntentData"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -697,7 +791,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CreativeAssetData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/CreativeAssetData"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -730,9 +829,14 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/CampaignData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/CampaignData"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -766,7 +870,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CampaignData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/CampaignData"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -807,7 +916,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CampaignData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/CampaignData"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -851,7 +965,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CampaignData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/CampaignData"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -898,7 +1017,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CreativeReviewData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/CreativeReviewData"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -939,7 +1063,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CreativeReviewData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/CreativeReviewData"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -984,7 +1113,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CreativeReviewData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/CreativeReviewData"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -1031,7 +1165,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CreativeReviewData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/CreativeReviewData"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -1146,7 +1285,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AdDecisionData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AdDecisionData"
         "422":
           $ref: "#/components/responses/Error"
         default:
@@ -1437,7 +1581,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AdEventAcceptedData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AdEventAcceptedData"
         "422":
           $ref: "#/components/responses/Error"
         default:
@@ -1475,7 +1624,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AdClickAcceptedData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AdClickAcceptedData"
         "302":
           description: Redirect to validated advertiser landing URL.
           headers:
@@ -1551,7 +1705,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ReportDashboardData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ReportDashboardData"
         "422":
           $ref: "#/components/responses/Error"
         default:
@@ -1578,7 +1737,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OAuthClientListData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/OAuthClientListData"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -1614,7 +1778,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OAuthClientSecretData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/OAuthClientSecretData"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -1653,7 +1822,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OAuthClientSecretData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/OAuthClientSecretData"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -1716,7 +1890,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OAuthAuthorizationCodeData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/OAuthAuthorizationCodeData"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -1751,7 +1930,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OAuthConsentData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/OAuthConsentData"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -1778,7 +1962,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OAuthTokenData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/OAuthTokenData"
         "400":
           $ref: "#/components/responses/Error"
         default:
@@ -1803,7 +1992,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OAuthRevokeData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/OAuthRevokeData"
         "400":
           $ref: "#/components/responses/Error"
         default:
@@ -1828,7 +2022,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ConversionData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ConversionData"
         "422":
           $ref: "#/components/responses/Error"
         default:
@@ -1885,7 +2084,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ConversionData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ConversionData"
         "422":
           $ref: "#/components/responses/Error"
         default:
@@ -1905,7 +2109,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ArchiveManifest"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ArchiveManifest"
         default:
           $ref: "#/components/responses/Error"
   /api/v1/archive/manifests/{manifest_id}:
@@ -1929,7 +2138,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ArchiveManifest"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ArchiveManifest"
         "404":
           $ref: "#/components/responses/Error"
         default:
@@ -1955,7 +2169,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ColdQueryJob"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ColdQueryJob"
         "422":
           $ref: "#/components/responses/Error"
         default:
@@ -1981,7 +2200,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ColdQueryJob"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ColdQueryJob"
         "404":
           $ref: "#/components/responses/Error"
         default:
@@ -2000,7 +2224,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OperationsSummary"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/OperationsSummary"
         default:
           $ref: "#/components/responses/Error"
   /api/v1/operations/errors:
@@ -2017,15 +2246,20 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required:
-                  - errors
-                properties:
-                  errors:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/OperationErrorLog"
-                additionalProperties: false
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required:
+                          - errors
+                        properties:
+                          errors:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/OperationErrorLog"
+                        additionalProperties: false
         default:
           $ref: "#/components/responses/Error"
   /api/v1/operations/errors/{error_id}/raw-context:
@@ -2049,18 +2283,23 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required:
-                  - raw_context
-                  - audit_on_view
-                properties:
-                  raw_context:
-                    type: object
-                    additionalProperties: true
-                  audit_on_view:
-                    type: boolean
-                    const: true
-                additionalProperties: false
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required:
+                          - raw_context
+                          - audit_on_view
+                        properties:
+                          raw_context:
+                            type: object
+                            additionalProperties: true
+                          audit_on_view:
+                            type: boolean
+                            const: true
+                        additionalProperties: false
         "403":
           $ref: "#/components/responses/Error"
         default:
@@ -2086,15 +2325,20 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required:
-                  - versions
-                properties:
-                  versions:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/ConfigVersion"
-                additionalProperties: false
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required:
+                          - versions
+                        properties:
+                          versions:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/ConfigVersion"
+                        additionalProperties: false
         "422":
           $ref: "#/components/responses/Error"
         default:
@@ -2129,7 +2373,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ConfigVersion"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ConfigVersion"
         "422":
           $ref: "#/components/responses/Error"
         default:
@@ -2155,7 +2404,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ConfigVersion"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ConfigVersion"
         "404":
           $ref: "#/components/responses/Error"
         default:
@@ -2174,15 +2428,20 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required:
-                  - deliveries
-                properties:
-                  deliveries:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/WebhookDelivery"
-                additionalProperties: false
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required:
+                          - deliveries
+                        properties:
+                          deliveries:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/WebhookDelivery"
+                        additionalProperties: false
         default:
           $ref: "#/components/responses/Error"
   /api/v1/operations/webhooks/deliveries/{delivery_id}/retry:
@@ -2206,7 +2465,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/WebhookDelivery"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/WebhookDelivery"
         "404":
           $ref: "#/components/responses/Error"
         default:
@@ -2260,7 +2524,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SupportTicket"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/SupportTicket"
         "422":
           $ref: "#/components/responses/Error"
         default:
@@ -2278,15 +2547,20 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required:
-                  - tickets
-                properties:
-                  tickets:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/SupportTicket"
-                additionalProperties: false
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required:
+                          - tickets
+                        properties:
+                          tickets:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/SupportTicket"
+                        additionalProperties: false
         default:
           $ref: "#/components/responses/Error"
   /api/v1/support/tickets/{ticket_id}/notes:
@@ -2326,7 +2600,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SupportTicket"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/SupportTicket"
         "403":
           $ref: "#/components/responses/Error"
         "422":
@@ -2366,7 +2645,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SupportTicket"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/SupportTicket"
         "404":
           $ref: "#/components/responses/Error"
         "422":
@@ -2393,7 +2677,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/FeatureFlag"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/FeatureFlag"
         "422":
           $ref: "#/components/responses/Error"
         default:
@@ -2418,15 +2707,20 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required:
-                  - feature_flags
-                properties:
-                  feature_flags:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/FeatureFlag"
-                additionalProperties: false
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required:
+                          - feature_flags
+                        properties:
+                          feature_flags:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/FeatureFlag"
+                        additionalProperties: false
         default:
           $ref: "#/components/responses/Error"
   /api/v1/feature-flags/{flag_key}/evaluate:
@@ -2456,7 +2750,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/FeatureFlagEvaluation"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/FeatureFlagEvaluation"
         default:
           $ref: "#/components/responses/Error"
   /api/v1/cron/status:
@@ -2488,24 +2787,33 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CronStatusData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/CronStatusData"
               examples:
                 available:
                   summary: Authorized cron status response
                   value:
-                    status: ok
-                    jobs:
-                      - redis-events-consume
-                      - aggregate-statistics
-                      - archive-parquet
-                      - duckdb-cold-query
-                      - ai-review-queue
-                      - fraud-feature-compute
-                      - expired-token-cleanup
-                      - config-cache-refresh
-                      - backup-check
-                      - webhook-retry
-                    lock_provider: redis
+                    data:
+                      status: ok
+                      jobs:
+                        - redis-events-consume
+                        - aggregate-statistics
+                        - archive-parquet
+                        - duckdb-cold-query
+                        - ai-review-queue
+                        - fraud-feature-compute
+                        - expired-token-cleanup
+                        - config-cache-refresh
+                        - backup-check
+                        - webhook-retry
+                      lock_provider: redis
+                    error: null
+                    meta: {}
+                    request_id: req_0123456789abcdef
         "401":
           $ref: "#/components/responses/Error"
         "403":
@@ -2547,19 +2855,28 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CronJobRunData"
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/CronJobRunData"
               examples:
                 eventConsumption:
                   value:
-                    job: redis-events-consume
-                    status: completed
-                    acquired_lock: true
-                    metrics:
-                      consumed: 250
-                      billed: 240
-                      skipped: 10
-                      duplicates: 0
-                    message: null
+                    data:
+                      job: redis-events-consume
+                      status: completed
+                      acquired_lock: true
+                      metrics:
+                        consumed: 250
+                        billed: 240
+                        skipped: 10
+                        duplicates: 0
+                      message: null
+                    error: null
+                    meta: {}
+                    request_id: req_0123456789abcdef
         "401":
           $ref: "#/components/responses/Error"
         "403":
@@ -2591,13 +2908,17 @@ components:
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/ErrorObject"
+            $ref: "#/components/schemas/ErrorEnvelope"
           examples:
             unauthorized:
               summary: Missing or invalid cron token
               value:
-                code: unauthorized
-                message: Cron token is missing or invalid.
+                data: null
+                error:
+                  code: unauthorized
+                  message: Cron token is missing or invalid.
+                meta: {}
+                request_id: req_0123456789abcdef
   parameters:
     OrganizationId:
       name: organization_id
@@ -2616,7 +2937,7 @@ components:
   schemas:
     EnvelopeBase:
       type: object
-      description: Reserved shared envelope shape for future authenticated API slices; current implemented paths do not use it.
+      description: Standard response envelope used by JSON API responses.
       required:
         - data
         - error

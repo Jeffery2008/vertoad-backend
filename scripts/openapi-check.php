@@ -147,6 +147,11 @@ function operationErrorsFromParsedOpenApi(array $parsed): array
 
                 if (!responseHasContentType($responses[$statusCode] ?? null, $parsed, 'application/json')) {
                     $errors[] = "OpenAPI operation {$route} response {$statusCode} must declare application/json content.";
+                    continue;
+                }
+
+                if (isJsonSuccessStatus($statusCode) && !responseHasSchemaRef($responses[$statusCode] ?? null, $parsed, '#/components/schemas/SuccessEnvelope')) {
+                    $errors[] = "OpenAPI operation {$route} response {$statusCode} schema must wrap JSON payload with SuccessEnvelope.";
                 }
             }
         }
@@ -161,6 +166,10 @@ function operationErrorsFromParsedOpenApi(array $parsed): array
 function metadataErrorsFromParsedOpenApi(array $parsed, string $contents): array
 {
     $errors = metadataPlaceholderErrors($contents);
+    if (!sharedErrorResponseUsesErrorEnvelopeFromParsedOpenApi($parsed)) {
+        $errors[] = 'OpenAPI component response Error must use ErrorEnvelope for JSON error payloads.';
+    }
+
     $tagNames = [];
     foreach (($parsed['tags'] ?? []) as $tag) {
         if (!is_array($tag) || !isset($tag['name'])) {
@@ -232,6 +241,11 @@ function operationErrorsFromYaml(string $contents): array
 
             if (!yamlResponseHasContentType($contents, $block, $statusCode, 'application/json')) {
                 $errors[] = "OpenAPI operation {$route} response {$statusCode} must declare application/json content.";
+                continue;
+            }
+
+            if (isJsonSuccessStatus($statusCode) && !yamlResponseHasSchemaRef($contents, $block, $statusCode, '#/components/schemas/SuccessEnvelope')) {
+                $errors[] = "OpenAPI operation {$route} response {$statusCode} schema must wrap JSON payload with SuccessEnvelope.";
             }
         }
     }
@@ -245,6 +259,10 @@ function operationErrorsFromYaml(string $contents): array
 function metadataErrorsFromYaml(string $contents): array
 {
     $errors = metadataPlaceholderErrors($contents);
+    if (!sharedErrorResponseUsesErrorEnvelopeFromYaml($contents)) {
+        $errors[] = 'OpenAPI component response Error must use ErrorEnvelope for JSON error payloads.';
+    }
+
     $tagNames = [];
 
     if (preg_match_all('/^\s{2}-\s+name:\s*([^\r\n]+)\s*$/m', $contents, $matches) === false) {
@@ -635,6 +653,51 @@ function responseHasContentType(mixed $response, array $parsed, string $contentT
     return is_array($response) && isset($response['content'][$contentType]);
 }
 
+function responseHasSchemaRef(mixed $response, array $parsed, string $ref): bool
+{
+    if (is_array($response) && isset($response['$ref']) && is_string($response['$ref'])) {
+        $response = resolveLocalRef($parsed, $response['$ref']);
+    }
+
+    $schema = is_array($response) ? ($response['content']['application/json']['schema'] ?? null) : null;
+
+    return schemaContainsRef($schema, $ref);
+}
+
+function sharedErrorResponseUsesErrorEnvelopeFromParsedOpenApi(array $parsed): bool
+{
+    $response = $parsed['components']['responses']['Error'] ?? null;
+
+    return responseHasSchemaRef($response, $parsed, '#/components/schemas/ErrorEnvelope');
+}
+
+function schemaContainsRef(mixed $schema, string $ref): bool
+{
+    if (!is_array($schema)) {
+        return false;
+    }
+
+    if (($schema['$ref'] ?? null) === $ref) {
+        return true;
+    }
+
+    foreach (['allOf', 'anyOf', 'oneOf'] as $composition) {
+        foreach (($schema[$composition] ?? []) as $part) {
+            if (schemaContainsRef($part, $ref)) {
+                return true;
+            }
+        }
+    }
+
+    foreach (($schema['properties'] ?? []) as $property) {
+        if (schemaContainsRef($property, $ref)) {
+            return true;
+        }
+    }
+
+    return schemaContainsRef($schema['items'] ?? null, $ref);
+}
+
 function resolveLocalRef(array $document, string $ref): mixed
 {
     if (!str_starts_with($ref, '#/')) {
@@ -679,6 +742,11 @@ function responseMustDeclareHtml(string $route, string $statusCode): bool
     return $route === 'GET /api/v1/ads/serve' && $statusCode === '200';
 }
 
+function isJsonSuccessStatus(string $statusCode): bool
+{
+    return preg_match('/^2\d\d$/', $statusCode) === 1 && $statusCode !== '204';
+}
+
 function yamlResponseHasContentType(string $contents, string $operationBlock, string $statusCode, string $contentType): bool
 {
     $responseBlock = yamlNestedBlock($operationBlock, 8, $statusCode);
@@ -694,6 +762,33 @@ function yamlResponseHasContentType(string $contents, string $operationBlock, st
     }
 
     return preg_match('/^\s+' . preg_quote($contentType, '/') . ':\s*$/m', $responseBlock) === 1;
+}
+
+function yamlResponseHasSchemaRef(string $contents, string $operationBlock, string $statusCode, string $ref): bool
+{
+    $responseBlock = yamlNestedBlock($operationBlock, 8, $statusCode);
+    if ($responseBlock === null) {
+        return false;
+    }
+
+    if (preg_match('/^\s{10}\$ref:\s*[\'"]?#\/components\/responses\/([^\'"\s]+)[\'"]?\s*$/m', $responseBlock, $refMatch) === 1) {
+        $responseBlock = yamlNestedBlock($contents, 4, $refMatch[1]);
+        if ($responseBlock === null) {
+            return false;
+        }
+    }
+
+    return preg_match('/^\s+-?\s*\$ref:\s*[\'"]?' . preg_quote($ref, '/') . '[\'"]?\s*$/m', $responseBlock) === 1;
+}
+
+function sharedErrorResponseUsesErrorEnvelopeFromYaml(string $contents): bool
+{
+    $errorResponseBlock = yamlNestedBlock($contents, 4, 'Error');
+    if ($errorResponseBlock === null) {
+        return false;
+    }
+
+    return preg_match('/^\s+\$ref:\s*[\'"]?#\/components\/schemas\/ErrorEnvelope[\'"]?\s*$/m', $errorResponseBlock) === 1;
 }
 
 function yamlNestedBlock(string $contents, int $indent, string $key): ?string

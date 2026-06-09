@@ -30,7 +30,12 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
         default:
           $ref: "#/components/responses/Error"
 components:
@@ -40,7 +45,7 @@ components:
       content:
         application/json:
           schema:
-            type: object
+            $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
     SuccessEnvelope:
       type: object
@@ -94,7 +99,12 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
         default:
           $ref: "#/components/responses/Error"
 components:
@@ -104,7 +114,7 @@ components:
       content:
         application/json:
           schema:
-            type: object
+            $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
     SuccessEnvelope:
       type: object
@@ -166,7 +176,7 @@ components:
       content:
         application/json:
           schema:
-            type: object
+            $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
     SuccessEnvelope:
       type: object
@@ -195,6 +205,147 @@ PHP);
         self::assertSame(1, $exitCode, implode(PHP_EOL, $output));
         self::assertStringContainsString(
             'OpenAPI operation GET /api/v1/health response 200 must declare application/json content.',
+            implode(PHP_EOL, $output),
+        );
+    }
+
+    public function testCheckerFailsWhenJsonSuccessResponseUsesBareDataSchema(): void
+    {
+        $workspace = sys_get_temp_dir() . '/vertoad-openapi-check-' . bin2hex(random_bytes(8));
+        self::assertTrue(mkdir($workspace));
+
+        $openApiPath = $workspace . '/openapi.yaml';
+        $routesPath = $workspace . '/routes.php';
+
+        file_put_contents($openApiPath, <<<'YAML'
+openapi: 3.1.0
+paths:
+  /api/v1/health:
+    get:
+      tags:
+        - Health
+      operationId: getHealth
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthData"
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  responses:
+    Error:
+      description: error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    SuccessEnvelope:
+      type: object
+    ErrorEnvelope:
+      type: object
+    HealthData:
+      type: object
+YAML);
+
+        file_put_contents($routesPath, <<<'PHP'
+<?php
+
+$app->get('/api/v1/health', HealthAction::class);
+PHP);
+
+        exec(
+            sprintf(
+                '%s %s %s %s 2>&1',
+                escapeshellarg(PHP_BINARY),
+                escapeshellarg(dirname(__DIR__, 2) . '/scripts/openapi-check.php'),
+                escapeshellarg($openApiPath),
+                escapeshellarg($routesPath),
+            ),
+            $output,
+            $exitCode,
+        );
+
+        self::assertSame(1, $exitCode, implode(PHP_EOL, $output));
+        self::assertStringContainsString(
+            'OpenAPI operation GET /api/v1/health response 200 schema must wrap JSON payload with SuccessEnvelope.',
+            implode(PHP_EOL, $output),
+        );
+    }
+
+    public function testCheckerFailsWhenSharedErrorResponseUsesBareErrorObject(): void
+    {
+        $workspace = sys_get_temp_dir() . '/vertoad-openapi-check-' . bin2hex(random_bytes(8));
+        self::assertTrue(mkdir($workspace));
+
+        $openApiPath = $workspace . '/openapi.yaml';
+        $routesPath = $workspace . '/routes.php';
+
+        file_put_contents($openApiPath, <<<'YAML'
+openapi: 3.1.0
+paths:
+  /api/v1/health:
+    get:
+      tags:
+        - Health
+      operationId: getHealth
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/HealthData"
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  responses:
+    Error:
+      description: error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorObject"
+  schemas:
+    SuccessEnvelope:
+      type: object
+    ErrorEnvelope:
+      type: object
+    ErrorObject:
+      type: object
+    HealthData:
+      type: object
+YAML);
+
+        file_put_contents($routesPath, <<<'PHP'
+<?php
+
+$app->get('/api/v1/health', HealthAction::class);
+PHP);
+
+        exec(
+            sprintf(
+                '%s %s %s %s 2>&1',
+                escapeshellarg(PHP_BINARY),
+                escapeshellarg(dirname(__DIR__, 2) . '/scripts/openapi-check.php'),
+                escapeshellarg($openApiPath),
+                escapeshellarg($routesPath),
+            ),
+            $output,
+            $exitCode,
+        );
+
+        self::assertSame(1, $exitCode, implode(PHP_EOL, $output));
+        self::assertStringContainsString(
+            'OpenAPI component response Error must use ErrorEnvelope for JSON error payloads.',
             implode(PHP_EOL, $output),
         );
     }
@@ -231,7 +382,7 @@ components:
       content:
         application/json:
           schema:
-            type: object
+            $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
     SuccessEnvelope:
       type: object
@@ -283,7 +434,12 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
         default:
           $ref: "#/components/responses/Error"
 components:
@@ -293,7 +449,7 @@ components:
       content:
         application/json:
           schema:
-            type: object
+            $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
     SuccessEnvelope:
       type: object
@@ -349,7 +505,12 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
         default:
           $ref: "#/components/responses/Error"
 components:
@@ -359,7 +520,7 @@ components:
       content:
         application/json:
           schema:
-            type: object
+            $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
     SuccessEnvelope:
       type: object
@@ -418,7 +579,12 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
         default:
           $ref: "#/components/responses/Error"
 components:
@@ -428,7 +594,7 @@ components:
       content:
         application/json:
           schema:
-            type: object
+            $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
     SuccessEnvelope:
       type: object
@@ -487,7 +653,12 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
         default:
           $ref: "#/components/responses/Error"
   /api/v1/assets/confirm:
@@ -503,7 +674,12 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
         default:
           $ref: "#/components/responses/Error"
   /api/v1/reviews/assets/{asset_id}/ai-review:
@@ -525,7 +701,12 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
         default:
           $ref: "#/components/responses/Error"
 components:
@@ -535,7 +716,7 @@ components:
       content:
         application/json:
           schema:
-            type: object
+            $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
     SuccessEnvelope:
       type: object
@@ -610,7 +791,12 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
         default:
           $ref: "#/components/responses/Error"
   /api/v1/cron/status:
@@ -627,7 +813,12 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
         default:
           $ref: "#/components/responses/Error"
 components:
@@ -637,7 +828,7 @@ components:
       content:
         application/json:
           schema:
-            type: object
+            $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
     SuccessEnvelope:
       type: object
@@ -762,7 +953,12 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
         default:
           $ref: "#/components/responses/Error"
 components:
@@ -772,7 +968,7 @@ components:
       content:
         application/json:
           schema:
-            type: object
+            $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
     SuccessEnvelope:
       type: object
@@ -826,7 +1022,12 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
         default:
           $ref: "#/components/responses/Error"
   /api/v1/health:
@@ -840,7 +1041,12 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
         default:
           $ref: "#/components/responses/Error"
 components:
@@ -850,7 +1056,7 @@ components:
       content:
         application/json:
           schema:
-            type: object
+            $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
     SuccessEnvelope:
       type: object
