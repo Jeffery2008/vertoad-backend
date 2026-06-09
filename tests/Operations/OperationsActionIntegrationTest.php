@@ -10,6 +10,7 @@ use Slim\App;
 use Slim\Factory\AppFactory as SlimAppFactory;
 use Slim\Psr7\Factory\ServerRequestFactory;
 use VertoAD\Domain\Auth\AuthenticatedUser;
+use VertoAD\Domain\Webhooks\WebhookEndpoint;
 use VertoAD\Http\Action\Operations\CreateConfigVersionAction;
 use VertoAD\Http\Action\Operations\GetRawOperationErrorContextAction;
 use VertoAD\Http\Action\Operations\ListConfigVersionsAction;
@@ -27,8 +28,10 @@ use VertoAD\Service\AuditLogService;
 use VertoAD\Service\Operations\ConfigVersionService;
 use VertoAD\Service\Operations\OperationErrorCaptureService;
 use VertoAD\Service\Operations\OperationsSummaryService;
+use VertoAD\Service\Webhooks\WebhookEndpointSecretCipherInterface;
 use VertoAD\Service\Webhooks\WebhookDeliveryJob;
 use VertoAD\Service\Webhooks\WebhookSigner;
+use VertoAD\Tests\Webhooks\InMemoryWebhookEndpointRepository;
 
 final class OperationsActionIntegrationTest extends TestCase
 {
@@ -38,11 +41,58 @@ final class OperationsActionIntegrationTest extends TestCase
         $errorRepository = new InMemoryOperationErrorLogRepository();
         $configRepository = new InMemoryConfigVersionRepository();
         $deliveryRepository = new InMemoryWebhookDeliveryRepository();
+        $endpointRepository = new InMemoryWebhookEndpointRepository();
+        $secretCipher = new class implements WebhookEndpointSecretCipherInterface {
+            public function generateSigningSecret(): string
+            {
+                return 'whsec_operations_generated';
+            }
+
+            public function generateSecret(): string
+            {
+                return $this->generateSigningSecret();
+            }
+
+            public function encrypt(string $plaintext): string
+            {
+                return 'test-encrypted:' . trim($plaintext);
+            }
+
+            public function decrypt(string $ciphertext): string
+            {
+                return str_replace('test-encrypted:', '', $ciphertext);
+            }
+
+            public function preview(string $plaintext): string
+            {
+                return 'whsec_...' . substr(trim($plaintext), -6);
+            }
+        };
         $audit = new AuditLogService($auditRepository);
         $errors = new OperationErrorCaptureService($errorRepository, $audit);
         $configs = new ConfigVersionService($configRepository, $audit);
-        $signer = new WebhookSigner('whsec_test_secret');
-        $deliveries = new WebhookDeliveryJob($deliveryRepository, $signer, static fn (): int => 200);
+        $endpointSecret = 'whsec_operations_test_secret';
+        $endpoint = $endpointRepository->store(new WebhookEndpoint(
+            id: null,
+            endpointId: 'whe_operations_errors',
+            organizationId: 99,
+            createdByUserId: 7,
+            name: 'Operations error sink',
+            endpointUrl: 'https://example.test/webhooks',
+            status: 'active',
+            events: ['operations.error.created'],
+            encryptedSigningSecret: $secretCipher->encrypt($endpointSecret),
+            secretPreview: $secretCipher->preview($endpointSecret),
+            secretRotatedAt: new \DateTimeImmutable('2026-06-08T13:00:00Z'),
+            createdAt: new \DateTimeImmutable('2026-06-08T13:00:00Z'),
+            updatedAt: new \DateTimeImmutable('2026-06-08T13:00:00Z'),
+        ));
+        $deliveries = new WebhookDeliveryJob(
+            $deliveryRepository,
+            $endpointRepository,
+            $secretCipher,
+            static fn (): int => 200,
+        );
 
         $captured = $errors->captureApiError(
             requestId: 'req-route-1',
@@ -52,7 +102,7 @@ final class OperationsActionIntegrationTest extends TestCase
             occurredAt: new \DateTimeImmutable('2026-06-08T13:00:00Z'),
         );
         $created = $configs->createVersion('security.rate_limit', ['limit' => 60], 7);
-        $delivery = $deliveryRepository->queue('https://example.test/webhooks', 'operations.error.created', ['error_id' => 'err_1']);
+        $delivery = $deliveryRepository->queueForEndpoint($endpoint, 'operations.error.created', ['error_id' => 'err_1']);
         $app = $this->createApp($errors, $configs, $deliveryRepository, $deliveries);
 
         $summary = $this->handle($app, 'GET', '/api/v1/operations/summary');
@@ -102,6 +152,10 @@ final class OperationsActionIntegrationTest extends TestCase
         self::assertSame(404, $rollbackMissing['status']);
         self::assertSame($delivery->delivery_id, $webhookList['body']['data']['deliveries'][0]['delivery_id']);
         self::assertSame('delivered', $retry['body']['data']['status']);
+        self::assertTrue((new WebhookSigner($endpointSecret))->verify(
+            (string) $retry['body']['data']['payload_json'],
+            (string) $retry['body']['data']['signature_header'],
+        ));
         self::assertSame(404, $retryMissing['status']);
         self::assertSame('operations.error.raw_context.viewed', $auditRepository->entries[0]->action);
     }

@@ -6,10 +6,8 @@ namespace VertoAD\Tests\Operations;
 
 use DateTimeImmutable;
 use PHPUnit\Framework\TestCase;
-use VertoAD\Domain\Audit\AuditLogEntry;
 use VertoAD\Domain\Auth\AuthenticatedUser;
 use VertoAD\Http\Auth\RequestUserContext;
-use VertoAD\Repository\AuditLogRepositoryInterface;
 use VertoAD\Service\AuditLogService;
 
 final class OperationErrorCaptureServiceTest extends TestCase
@@ -113,16 +111,5 @@ final class OperationErrorCaptureServiceTest extends TestCase
         }
 
         return null;
-    }
-}
-
-final class OperationAuditRepository implements AuditLogRepositoryInterface
-{
-    /** @var list<AuditLogEntry> */
-    public array $entries = [];
-
-    public function append(AuditLogEntry $entry): void
-    {
-        $this->entries[] = $entry;
     }
 }

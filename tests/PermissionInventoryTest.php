@@ -53,4 +53,13 @@ final class PermissionInventoryTest extends TestCase
         self::assertNotContains('org.member.remove.own', $codes);
         self::assertNotContains('org.member.manage.platform', $codes);
     }
+
+    public function testBootstrapSuperAdminSeedIncludesEveryCurrentPermissionCode(): void
+    {
+        $script = (string) file_get_contents(dirname(__DIR__) . '/db/init-super-admin.sql');
+
+        foreach (array_column((new PermissionInventory())->all(), 'code') as $code) {
+            self::assertStringContainsString("'" . $code . "'", $script, $code . ' must be seeded for the initial super admin role.');
+        }
+    }
 }

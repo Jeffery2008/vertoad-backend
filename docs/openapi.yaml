@@ -1827,6 +1827,292 @@ paths:
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/webhooks/endpoints:
+    get:
+      tags:
+        - Webhooks
+      operationId: listWebhookEndpoints
+      summary: List webhook endpoints for an advertiser organization.
+      description: Returns organization-scoped webhook endpoint metadata. Stored signing secrets are never returned.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Webhook endpoints.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/WebhookEndpointListData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags:
+        - Webhooks
+      operationId: createWebhookEndpoint
+      summary: Create a webhook endpoint for an advertiser organization.
+      description: Creates an HTTPS webhook endpoint and returns the plaintext signing secret exactly once.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookEndpointCreateRequest"
+      responses:
+        "201":
+          description: Webhook endpoint created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/WebhookEndpointSecretData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/webhooks/endpoints/{endpoint_id}:
+    patch:
+      tags:
+        - Webhooks
+      operationId: updateWebhookEndpoint
+      summary: Update a webhook endpoint.
+      description: Updates endpoint display metadata, HTTPS target URL, event subscriptions, or enabled state inside one organization scope.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: endpoint_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookEndpointUpdateRequest"
+      responses:
+        "200":
+          description: Webhook endpoint updated.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required:
+                          - endpoint
+                        properties:
+                          endpoint:
+                            $ref: "#/components/schemas/WebhookEndpoint"
+                        additionalProperties: false
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/webhooks/endpoints/{endpoint_id}/rotate-secret:
+    post:
+      tags:
+        - Webhooks
+      operationId: rotateWebhookEndpointSecret
+      summary: Rotate a webhook endpoint signing secret.
+      description: Replaces the encrypted endpoint signing secret and returns the new plaintext secret exactly once.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: endpoint_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Webhook endpoint secret rotated.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/WebhookEndpointSecretData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/webhooks/endpoints/{endpoint_id}/test:
+    post:
+      tags:
+        - Webhooks
+      operationId: testWebhookEndpoint
+      summary: Queue a test webhook delivery.
+      description: Queues a synthetic `webhook.test` delivery for the endpoint and returns the queued delivery metadata.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: endpoint_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "202":
+          description: Webhook test delivery queued.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/WebhookEndpointTestData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/webhooks/deliveries:
+    get:
+      tags:
+        - Webhooks
+      operationId: listOwnWebhookDeliveries
+      summary: List webhook deliveries for an advertiser organization.
+      description: Returns delivery status and retry metadata scoped to the authenticated organization.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: endpoint_id
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - queued
+              - delivered
+              - failed
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: Webhook deliveries.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/OwnWebhookDeliveriesData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/oauth/authorize:
     get:
       tags:
@@ -5297,21 +5583,183 @@ components:
           type: string
           format: date-time
       additionalProperties: false
+    WebhookEndpointCreateRequest:
+      type: object
+      required:
+        - name
+        - endpoint_url
+        - events
+      properties:
+        name:
+          type: string
+          minLength: 1
+        endpoint_url:
+          type: string
+          format: uri
+          description: HTTPS endpoint URL. Localhost, private IP, reserved IP, and link-local hosts are rejected by the API.
+        events:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            pattern: "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
+        enabled:
+          type: boolean
+          default: true
+      additionalProperties: false
+    WebhookEndpointUpdateRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+        endpoint_url:
+          type: string
+          format: uri
+          description: HTTPS endpoint URL. Localhost, private IP, reserved IP, and link-local hosts are rejected by the API.
+        events:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            pattern: "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
+        enabled:
+          type: boolean
+      additionalProperties: false
+    WebhookEndpoint:
+      type: object
+      required:
+        - id
+        - endpoint_id
+        - organization_id
+        - created_by_user_id
+        - name
+        - endpoint_url
+        - events
+        - status
+        - enabled
+        - secret_preview
+        - secret_rotated_at
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        endpoint_id:
+          type: string
+          minLength: 1
+        organization_id:
+          type: integer
+          minimum: 1
+        created_by_user_id:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+        endpoint_url:
+          type: string
+          format: uri
+        events:
+          type: array
+          minItems: 1
+          items:
+            type: string
+        status:
+          type: string
+          enum:
+            - active
+            - paused
+        enabled:
+          type: boolean
+        secret_preview:
+          type: string
+          minLength: 1
+          description: Redacted signing secret preview. The plaintext secret is returned only on create or rotate.
+        secret_rotated_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    WebhookEndpointListData:
+      type: object
+      required:
+        - endpoints
+      properties:
+        endpoints:
+          type: array
+          items:
+            $ref: "#/components/schemas/WebhookEndpoint"
+      additionalProperties: false
+    WebhookEndpointSecretData:
+      type: object
+      required:
+        - endpoint
+        - signing_secret
+      properties:
+        endpoint:
+          $ref: "#/components/schemas/WebhookEndpoint"
+        signing_secret:
+          type: string
+          minLength: 1
+          description: Plaintext webhook signing secret returned only on create or rotate.
+      additionalProperties: false
+    WebhookEndpointTestData:
+      type: object
+      required:
+        - endpoint
+        - delivery
+      properties:
+        endpoint:
+          $ref: "#/components/schemas/WebhookEndpoint"
+        delivery:
+          $ref: "#/components/schemas/WebhookDelivery"
+      additionalProperties: false
+    OwnWebhookDeliveriesData:
+      type: object
+      required:
+        - deliveries
+      properties:
+        deliveries:
+          type: array
+          items:
+            $ref: "#/components/schemas/WebhookDelivery"
+      additionalProperties: false
     WebhookDelivery:
       type: object
       required:
         - delivery_id
+        - organization_id
+        - endpoint_id
         - endpoint_url
         - event_type
         - payload_json
         - status
         - retry_count
+        - next_attempt_at
+        - last_attempt_at
+        - last_status_code
         - last_error
         - signature_header
         - created_at
         - delivered_at
       properties:
         delivery_id:
+          type: string
+          minLength: 1
+        organization_id:
+          type: integer
+          minimum: 1
+        endpoint_id:
           type: string
           minLength: 1
         endpoint_url:
@@ -5332,6 +5780,19 @@ components:
         retry_count:
           type: integer
           minimum: 0
+        next_attempt_at:
+          type: string
+          format: date-time
+        last_attempt_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        last_status_code:
+          type:
+            - integer
+            - "null"
+          minimum: 100
         last_error:
           type:
             - string

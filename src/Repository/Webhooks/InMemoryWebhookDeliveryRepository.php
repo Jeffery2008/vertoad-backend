@@ -5,25 +5,42 @@ declare(strict_types=1);
 namespace VertoAD\Repository\Webhooks;
 
 use DateTimeImmutable;
+use DateTimeZone;
 use VertoAD\Domain\Webhooks\WebhookDelivery;
+use VertoAD\Domain\Webhooks\WebhookEndpoint;
 
 final class InMemoryWebhookDeliveryRepository implements WebhookDeliveryRepositoryInterface
 {
     /** @var array<string, WebhookDelivery> */
     private array $deliveries = [];
 
-    public function queue(string $endpointUrl, string $eventType, array $payload): WebhookDelivery
+    /** @var array<string, list<array<string, mixed>>> */
+    private array $attempts = [];
+
+    public function queueForEndpoint(WebhookEndpoint $endpoint, string $eventType, array $payload): WebhookDelivery
     {
+        if ($endpoint->id === null) {
+            throw new \InvalidArgumentException('Webhook endpoint internal ID is required to queue a delivery.');
+        }
+
+        $payloadJson = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
         $delivery = new WebhookDelivery(
-            delivery_id: 'whd_' . sha1($endpointUrl . '|' . $eventType . '|' . json_encode($payload, JSON_THROW_ON_ERROR) . '|' . microtime(true)),
-            endpoint_url: $endpointUrl,
-            event_type: $eventType,
-            payload_json: json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            delivery_id: 'whd_' . sha1($endpoint->endpointId . '|' . $eventType . '|' . $payloadJson . '|' . microtime(true)),
+            organization_id: $endpoint->organizationId,
+            webhook_endpoint_id: $endpoint->id,
+            endpoint_id: $endpoint->endpointId,
+            endpoint_url: $endpoint->endpointUrl,
+            event_type: trim($eventType),
+            payload_json: $payloadJson,
             status: 'queued',
             retry_count: 0,
+            next_attempt_at: $now,
+            last_attempt_at: null,
+            last_status_code: null,
             last_error: null,
             signature_header: null,
-            created_at: new DateTimeImmutable(),
+            created_at: $now,
             delivered_at: null,
         );
 
@@ -47,15 +64,61 @@ final class InMemoryWebhookDeliveryRepository implements WebhookDeliveryReposito
         return array_values($this->deliveries);
     }
 
-    public function pendingRetry(int $limit): array
+    public function pendingRetry(int $limit, ?DateTimeImmutable $now = null): array
     {
         if ($limit <= 0) {
             return [];
         }
 
+        $now ??= new DateTimeImmutable('now', new DateTimeZone('UTC'));
+
         return array_slice(array_values(array_filter(
             $this->deliveries,
-            static fn (WebhookDelivery $delivery): bool => in_array($delivery->status, ['queued', 'failed'], true),
+            static fn (WebhookDelivery $delivery): bool =>
+                in_array($delivery->status, ['queued', 'failed'], true)
+                && $delivery->next_attempt_at <= $now,
         )), 0, $limit);
+    }
+
+    public function listForOrganization(int $organizationId, ?string $endpointId = null, ?string $status = null, int $limit = 50): array
+    {
+        if ($organizationId <= 0 || $limit <= 0) {
+            return [];
+        }
+
+        return array_slice(array_values(array_filter(
+            $this->deliveries,
+            static fn (WebhookDelivery $delivery): bool =>
+                $delivery->organization_id === $organizationId
+                && ($endpointId === null || trim($endpointId) === '' || $delivery->endpoint_id === trim($endpointId))
+                && ($status === null || trim($status) === '' || $delivery->status === trim($status)),
+        )), 0, min($limit, 100));
+    }
+
+    public function recordAttempt(
+        string $deliveryId,
+        int $attemptNumber,
+        ?int $statusCode,
+        ?string $error,
+        ?string $signatureHeader,
+        DateTimeImmutable $attemptedAt,
+        int $durationMs,
+    ): void {
+        $this->attempts[$deliveryId] ??= [];
+        $this->attempts[$deliveryId][] = [
+            'id' => count($this->attempts[$deliveryId]) + 1,
+            'delivery_id' => $deliveryId,
+            'attempt_number' => $attemptNumber,
+            'status_code' => $statusCode,
+            'error' => $error,
+            'signature_header' => $signatureHeader,
+            'attempted_at' => $attemptedAt->format('Y-m-d H:i:s.u'),
+            'duration_ms' => $durationMs,
+        ];
+    }
+
+    public function attemptsForDelivery(string $deliveryId): array
+    {
+        return $this->attempts[$deliveryId] ?? [];
     }
 }

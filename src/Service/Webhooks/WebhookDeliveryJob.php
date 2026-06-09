@@ -6,10 +6,12 @@ namespace VertoAD\Service\Webhooks;
 
 use Closure;
 use DateTimeImmutable;
+use DateTimeZone;
 use RuntimeException;
 use VertoAD\Domain\Cron\CronJobResult;
 use VertoAD\Domain\Webhooks\WebhookDelivery;
 use VertoAD\Repository\Webhooks\WebhookDeliveryRepositoryInterface;
+use VertoAD\Repository\Webhooks\WebhookEndpointRepositoryInterface;
 use VertoAD\Service\Cron\CronJobInterface;
 
 final readonly class WebhookDeliveryJob implements CronJobInterface
@@ -21,7 +23,8 @@ final readonly class WebhookDeliveryJob implements CronJobInterface
      */
     public function __construct(
         private WebhookDeliveryRepositoryInterface $deliveries,
-        private WebhookSigner $signer,
+        private WebhookEndpointRepositoryInterface $endpoints,
+        private WebhookEndpointSecretCipherInterface $secrets,
         ?callable $transport = null,
         private int $batchSize = 50,
     ) {
@@ -110,26 +113,54 @@ final readonly class WebhookDeliveryJob implements CronJobInterface
             return $delivery;
         }
 
-        $signature = $this->signer->signatureHeader($delivery->payload_json);
-        $statusCode = $transport($delivery, $signature);
-        $delivered = $statusCode >= 200 && $statusCode < 300;
+        $endpoint = $this->endpoints->findById($delivery->webhook_endpoint_id);
+        if ($endpoint === null) {
+            throw new RuntimeException('Webhook endpoint not found for delivery.');
+        }
 
-        return $this->deliveries->save(new WebhookDelivery(
+        $signature = (new WebhookSigner($this->secrets->decrypt($endpoint->encryptedSigningSecret)))
+            ->signatureHeader($delivery->payload_json);
+        $attemptedAt = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $started = microtime(true);
+        $statusCode = $transport($delivery, $signature);
+        $durationMs = max(0, (int) round((microtime(true) - $started) * 1000));
+        $delivered = $statusCode >= 200 && $statusCode < 300;
+        $retryCount = $delivery->retry_count + 1;
+
+        $updated = $this->deliveries->save(new WebhookDelivery(
             delivery_id: $delivery->delivery_id,
+            organization_id: $delivery->organization_id,
+            webhook_endpoint_id: $delivery->webhook_endpoint_id,
+            endpoint_id: $delivery->endpoint_id,
             endpoint_url: $delivery->endpoint_url,
             event_type: $delivery->event_type,
             payload_json: $delivery->payload_json,
             status: $delivered ? 'delivered' : 'failed',
-            retry_count: $delivery->retry_count + 1,
+            retry_count: $retryCount,
+            next_attempt_at: $delivered ? $attemptedAt : $attemptedAt->modify('+5 minutes'),
+            last_attempt_at: $attemptedAt,
+            last_status_code: $statusCode > 0 ? $statusCode : null,
             last_error: $delivered ? null : 'HTTP ' . $statusCode,
             signature_header: $signature,
             created_at: $delivery->created_at,
-            delivered_at: $delivered ? new DateTimeImmutable() : null,
+            delivered_at: $delivered ? $attemptedAt : null,
         ));
+
+        $this->deliveries->recordAttempt(
+            deliveryId: $delivery->delivery_id,
+            attemptNumber: $retryCount,
+            statusCode: $statusCode > 0 ? $statusCode : null,
+            error: $delivered ? null : 'HTTP ' . $statusCode,
+            signatureHeader: $signature,
+            attemptedAt: $attemptedAt,
+            durationMs: $durationMs,
+        );
+
+        return $updated;
     }
 
     /**
-     * @param callable(WebhookDelivery, string):int $transport
+     * @param callable(WebhookDelivery, string):int|null $transport
      */
     public function retry(string $deliveryId, ?callable $transport = null): WebhookDelivery
     {

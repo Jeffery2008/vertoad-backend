@@ -4,16 +4,21 @@ declare(strict_types=1);
 
 namespace VertoAD\Tests\Webhooks;
 
+use DateTimeImmutable;
+use DateTimeZone;
 use PHPUnit\Framework\TestCase;
+use VertoAD\Domain\Webhooks\WebhookDelivery;
+use VertoAD\Domain\Webhooks\WebhookEndpoint;
+use VertoAD\Repository\Webhooks\InMemoryWebhookDeliveryRepository;
+use VertoAD\Service\Webhooks\WebhookDeliveryJob;
+use VertoAD\Service\Webhooks\WebhookEndpointSecretCipherInterface;
+use VertoAD\Service\Webhooks\WebhookSigner;
 
 final class WebhookDeliveryServiceTest extends TestCase
 {
     public function testWebhookSignerUsesHmacSha256AndProducesVerifiableHeader(): void
     {
-        $signerClass = 'VertoAD\\Service\\Webhooks\\WebhookSigner';
-        self::assertTrue(class_exists($signerClass), $signerClass . ' must exist.');
-
-        $signer = new $signerClass('whsec_test_secret');
+        $signer = new WebhookSigner('whsec_test_secret');
         $payload = '{"event":"operations.error.created","id":"evt_1"}';
         $header = $signer->signatureHeader($payload, 1812470400);
 
@@ -25,100 +30,76 @@ final class WebhookDeliveryServiceTest extends TestCase
         self::assertFalse($signer->verify($payload, $header . 'bad'));
     }
 
-    public function testDeliveryJobTransitionsQueuedToDeliveredWithSignatureMetadata(): void
+    public function testDeliveryJobTransitionsQueuedToDeliveredWithEndpointSecretSignatureMetadata(): void
     {
-        $repositoryClass = 'VertoAD\\Repository\\Webhooks\\InMemoryWebhookDeliveryRepository';
-        $jobClass = 'VertoAD\\Service\\Webhooks\\WebhookDeliveryJob';
-        $signerClass = 'VertoAD\\Service\\Webhooks\\WebhookSigner';
-        self::assertTrue(class_exists($repositoryClass), $repositoryClass . ' must exist.');
-        self::assertTrue(class_exists($jobClass), $jobClass . ' must exist.');
-        self::assertTrue(class_exists($signerClass), $signerClass . ' must exist.');
+        [$deliveries, $endpoints, $cipher, $endpoint] = $this->deliveryFixture(endpointSecret: 'whsec_endpoint_secret');
+        $delivery = $deliveries->queueForEndpoint($endpoint, 'operations.config.changed', ['version_id' => 'cfgv_1']);
+        $job = new WebhookDeliveryJob($deliveries, $endpoints, $cipher);
 
-        $repository = new $repositoryClass();
-        $delivery = $repository->queue(
-            endpointUrl: 'https://example.test/webhooks',
-            eventType: 'operations.config.changed',
-            payload: ['version_id' => 'cfgv_1'],
-        );
-        $job = new $jobClass($repository, new $signerClass('whsec_test_secret'));
+        $processed = $job->deliver($delivery->delivery_id, static fn (): int => 200);
 
-        $processed = $job->deliver((string) $this->value($delivery, 'delivery_id'), static fn (): int => 200);
-
-        self::assertSame('delivered', $this->value($processed, 'status'));
-        self::assertSame(1, $this->value($processed, 'retry_count'));
-        self::assertNull($this->value($processed, 'last_error'));
-        self::assertStringStartsWith('t=', (string) $this->value($processed, 'signature_header'));
-        self::assertTrue((new $signerClass('whsec_test_secret'))->verify(
-            (string) $this->value($processed, 'payload_json'),
-            (string) $this->value($processed, 'signature_header'),
+        self::assertSame('delivered', $processed->status);
+        self::assertSame(1, $processed->retry_count);
+        self::assertNull($processed->last_error);
+        self::assertStringStartsWith('t=', (string) $processed->signature_header);
+        self::assertTrue((new WebhookSigner('whsec_endpoint_secret'))->verify(
+            $processed->payload_json,
+            (string) $processed->signature_header,
         ));
+        self::assertFalse((new WebhookSigner('whsec_wrong_secret'))->verify(
+            $processed->payload_json,
+            (string) $processed->signature_header,
+        ));
+        self::assertCount(1, $deliveries->attemptsForDelivery($delivery->delivery_id));
     }
 
     public function testDeliveryJobTransitionsQueuedToFailedAndRetainsLastErrorForRetry(): void
     {
-        $repositoryClass = 'VertoAD\\Repository\\Webhooks\\InMemoryWebhookDeliveryRepository';
-        $jobClass = 'VertoAD\\Service\\Webhooks\\WebhookDeliveryJob';
-        $signerClass = 'VertoAD\\Service\\Webhooks\\WebhookSigner';
-        self::assertTrue(class_exists($repositoryClass), $repositoryClass . ' must exist.');
-        self::assertTrue(class_exists($jobClass), $jobClass . ' must exist.');
-        self::assertTrue(class_exists($signerClass), $signerClass . ' must exist.');
+        [$deliveries, $endpoints, $cipher, $endpoint] = $this->deliveryFixture();
+        $delivery = $deliveries->queueForEndpoint($endpoint, 'operations.error.created', ['error_id' => 'err_1']);
+        $job = new WebhookDeliveryJob($deliveries, $endpoints, $cipher);
 
-        $repository = new $repositoryClass();
-        $delivery = $repository->queue(
-            endpointUrl: 'https://example.test/webhooks',
-            eventType: 'operations.error.created',
-            payload: ['error_id' => 'err_1'],
-        );
-        $job = new $jobClass($repository, new $signerClass('whsec_test_secret'));
+        $failed = $job->deliver($delivery->delivery_id, static fn (): int => 503);
+        $retry = $job->retry($delivery->delivery_id, static fn (): int => 200);
 
-        $failed = $job->deliver((string) $this->value($delivery, 'delivery_id'), static fn (): int => 503);
-        $retry = $job->retry((string) $this->value($delivery, 'delivery_id'), static fn (): int => 200);
-
-        self::assertSame('failed', $this->value($failed, 'status'));
-        self::assertSame(1, $this->value($failed, 'retry_count'));
-        self::assertSame('HTTP 503', $this->value($failed, 'last_error'));
-        self::assertSame('delivered', $this->value($retry, 'status'));
-        self::assertSame(2, $this->value($retry, 'retry_count'));
-        self::assertNull($this->value($retry, 'last_error'));
-        self::assertCount(1, $repository->all());
+        self::assertSame('failed', $failed->status);
+        self::assertSame(1, $failed->retry_count);
+        self::assertSame('HTTP 503', $failed->last_error);
+        self::assertNotNull($failed->last_attempt_at);
+        self::assertSame(503, $failed->last_status_code);
+        self::assertSame('delivered', $retry->status);
+        self::assertSame(2, $retry->retry_count);
+        self::assertNull($retry->last_error);
+        self::assertCount(1, $deliveries->all());
+        self::assertCount(2, $deliveries->attemptsForDelivery($delivery->delivery_id));
         self::assertSame($retry->delivery_id, $retry->toArray()['delivery_id']);
         self::assertSame('delivered', $retry->toArray()['status']);
     }
 
     public function testDeliveryJobDoesNotRedeliverAlreadyDeliveredWebhook(): void
     {
-        $repositoryClass = 'VertoAD\\Repository\\Webhooks\\InMemoryWebhookDeliveryRepository';
-        $jobClass = 'VertoAD\\Service\\Webhooks\\WebhookDeliveryJob';
-        $signerClass = 'VertoAD\\Service\\Webhooks\\WebhookSigner';
-
-        $repository = new $repositoryClass();
-        $delivery = $repository->queue(
-            endpointUrl: 'https://example.test/webhooks',
-            eventType: 'campaign.status.changed',
-            payload: ['campaign_id' => 'cmp_1'],
-        );
-        $job = new $jobClass($repository, new $signerClass('whsec_test_secret'));
-        $delivered = $job->deliver((string) $this->value($delivery, 'delivery_id'), static fn (): int => 200);
+        [$deliveries, $endpoints, $cipher, $endpoint] = $this->deliveryFixture();
+        $delivery = $deliveries->queueForEndpoint($endpoint, 'campaign.status_changed', ['campaign_id' => 'cmp_1']);
+        $job = new WebhookDeliveryJob($deliveries, $endpoints, $cipher);
+        $delivered = $job->deliver($delivery->delivery_id, static fn (): int => 200);
         $transportCalls = 0;
 
-        $again = $job->retry((string) $this->value($delivery, 'delivery_id'), static function () use (&$transportCalls): int {
+        $again = $job->retry($delivery->delivery_id, static function () use (&$transportCalls): int {
             ++$transportCalls;
 
             return 500;
         });
 
-        self::assertSame('delivered', $this->value($again, 'status'));
-        self::assertSame(1, $this->value($again, 'retry_count'));
-        self::assertSame($this->value($delivered, 'signature_header'), $this->value($again, 'signature_header'));
+        self::assertSame('delivered', $again->status);
+        self::assertSame(1, $again->retry_count);
+        self::assertSame($delivered->signature_header, $again->signature_header);
         self::assertSame(0, $transportCalls);
     }
 
     public function testDeliveryJobRejectsMissingDelivery(): void
     {
-        $repositoryClass = 'VertoAD\\Repository\\Webhooks\\InMemoryWebhookDeliveryRepository';
-        $jobClass = 'VertoAD\\Service\\Webhooks\\WebhookDeliveryJob';
-        $signerClass = 'VertoAD\\Service\\Webhooks\\WebhookSigner';
-        $job = new $jobClass(new $repositoryClass(), new $signerClass('whsec_test_secret'));
+        [$deliveries, $endpoints, $cipher] = $this->deliveryFixture();
+        $job = new WebhookDeliveryJob($deliveries, $endpoints, $cipher);
 
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('Webhook delivery not found.');
@@ -126,19 +107,30 @@ final class WebhookDeliveryServiceTest extends TestCase
         $job->deliver('missing', static fn (): int => 200);
     }
 
+    public function testDeliveryJobRejectsDeliveryWhoseEndpointWasRemoved(): void
+    {
+        [$deliveries, , $cipher, $endpoint] = $this->deliveryFixture();
+        $delivery = $deliveries->queueForEndpoint($endpoint, 'review.approved', ['asset_id' => 'ast_1']);
+        $job = new WebhookDeliveryJob($deliveries, new InMemoryWebhookEndpointRepository(), $cipher);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Webhook endpoint not found for delivery.');
+
+        $job->deliver($delivery->delivery_id, static fn (): int => 200);
+    }
+
     public function testWebhookRetryCronProcessesPendingDeliveriesAndLeavesDeliveredOnesAlone(): void
     {
-        $repositoryClass = 'VertoAD\\Repository\\Webhooks\\InMemoryWebhookDeliveryRepository';
-        $jobClass = 'VertoAD\\Service\\Webhooks\\WebhookDeliveryJob';
-        $signerClass = 'VertoAD\\Service\\Webhooks\\WebhookSigner';
-        $repository = new $repositoryClass();
-        $queued = $repository->queue('https://example.test/queued', 'review.approved', ['asset_id' => 'ast_1']);
-        $failed = $repository->queue('https://example.test/failed', 'billing.points.changed', ['delta' => -120]);
-        $delivered = $repository->queue('https://example.test/delivered', 'campaign.status.changed', ['status' => 'active']);
-        $job = new $jobClass($repository, new $signerClass('whsec_test_secret'), static function ($delivery): int {
+        [$deliveries, $endpoints, $cipher, $queuedEndpoint] = $this->deliveryFixture(endpointUrl: 'https://example.test/queued');
+        $failedEndpoint = $endpoints->store($this->endpointFixture(2, 'whe_failed', 'https://example.test/failed', $cipher));
+        $deliveredEndpoint = $endpoints->store($this->endpointFixture(3, 'whe_delivered', 'https://example.test/delivered', $cipher));
+        $queued = $deliveries->queueForEndpoint($queuedEndpoint, 'review.approved', ['asset_id' => 'ast_1']);
+        $failed = $deliveries->queueForEndpoint($failedEndpoint, 'billing.points_changed', ['delta' => -120]);
+        $delivered = $deliveries->queueForEndpoint($deliveredEndpoint, 'campaign.status_changed', ['status' => 'active']);
+        $job = new WebhookDeliveryJob($deliveries, $endpoints, $cipher, static function (WebhookDelivery $delivery): int {
             return str_contains($delivery->endpoint_url, 'failed') ? 503 : 200;
         });
-        $job->deliver((string) $this->value($delivered, 'delivery_id'), static fn (): int => 200);
+        $job->deliver($delivered->delivery_id, static fn (): int => 200);
 
         $result = $job->run();
 
@@ -147,20 +139,18 @@ final class WebhookDeliveryServiceTest extends TestCase
         self::assertSame(2, $result->metrics['processed'] ?? null);
         self::assertSame(1, $result->metrics['delivered'] ?? null);
         self::assertSame(1, $result->metrics['failed'] ?? null);
-        self::assertSame('delivered', $repository->find($queued->delivery_id)?->status);
-        self::assertSame('failed', $repository->find($failed->delivery_id)?->status);
-        self::assertSame('HTTP 503', $repository->find($failed->delivery_id)?->last_error);
-        self::assertSame(1, $repository->find($queued->delivery_id)?->retry_count);
-        self::assertSame(1, $repository->find($failed->delivery_id)?->retry_count);
-        self::assertSame(1, $repository->find($delivered->delivery_id)?->retry_count);
+        self::assertSame('delivered', $deliveries->find($queued->delivery_id)?->status);
+        self::assertSame('failed', $deliveries->find($failed->delivery_id)?->status);
+        self::assertSame('HTTP 503', $deliveries->find($failed->delivery_id)?->last_error);
+        self::assertSame(1, $deliveries->find($queued->delivery_id)?->retry_count);
+        self::assertSame(1, $deliveries->find($failed->delivery_id)?->retry_count);
+        self::assertSame(1, $deliveries->find($delivered->delivery_id)?->retry_count);
     }
 
     public function testWebhookRetryCronReportsEmptyPendingQueue(): void
     {
-        $repositoryClass = 'VertoAD\\Repository\\Webhooks\\InMemoryWebhookDeliveryRepository';
-        $jobClass = 'VertoAD\\Service\\Webhooks\\WebhookDeliveryJob';
-        $signerClass = 'VertoAD\\Service\\Webhooks\\WebhookSigner';
-        $job = new $jobClass(new $repositoryClass(), new $signerClass('whsec_test_secret'));
+        [$deliveries, $endpoints, $cipher] = $this->deliveryFixture();
+        $job = new WebhookDeliveryJob($deliveries, $endpoints, $cipher);
 
         $result = $job->run();
 
@@ -171,82 +161,183 @@ final class WebhookDeliveryServiceTest extends TestCase
 
     public function testWebhookRetryCronHonorsBatchSizeAndRejectsInvalidConfiguration(): void
     {
-        $repositoryClass = 'VertoAD\\Repository\\Webhooks\\InMemoryWebhookDeliveryRepository';
-        $jobClass = 'VertoAD\\Service\\Webhooks\\WebhookDeliveryJob';
-        $signerClass = 'VertoAD\\Service\\Webhooks\\WebhookSigner';
-        $repository = new $repositoryClass();
-        $first = $repository->queue('https://example.test/first', 'review.approved', ['asset_id' => 'ast_1']);
-        $second = $repository->queue('https://example.test/second', 'review.approved', ['asset_id' => 'ast_2']);
-        $job = new $jobClass($repository, new $signerClass('whsec_test_secret'), static fn (): int => 200, 1);
+        [$deliveries, $endpoints, $cipher, $endpoint] = $this->deliveryFixture();
+        $first = $deliveries->queueForEndpoint($endpoint, 'review.approved', ['asset_id' => 'ast_1']);
+        $second = $deliveries->queueForEndpoint($endpoint, 'review.approved', ['asset_id' => 'ast_2']);
+        $job = new WebhookDeliveryJob($deliveries, $endpoints, $cipher, static fn (): int => 200, 1);
 
         $result = $job->run();
 
         self::assertSame(1, $result->metrics['processed'] ?? null);
-        self::assertSame('delivered', $repository->find($first->delivery_id)?->status);
-        self::assertSame('queued', $repository->find($second->delivery_id)?->status);
-        self::assertSame([], $repository->pendingRetry(0));
+        self::assertSame('delivered', $deliveries->find($first->delivery_id)?->status);
+        self::assertSame('queued', $deliveries->find($second->delivery_id)?->status);
+        self::assertSame([], $deliveries->pendingRetry(0));
 
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Webhook retry batch size must be positive.');
-        new $jobClass($repository, new $signerClass('whsec_test_secret'), static fn (): int => 200, 0);
+        new WebhookDeliveryJob($deliveries, $endpoints, $cipher, static fn (): int => 200, 0);
+    }
+
+    public function testInMemoryDeliveryRepositoryFiltersOrganizationDeliveriesAndRejectsMissingEndpointInternalId(): void
+    {
+        [$deliveries, $endpoints, $cipher, $endpoint] = $this->deliveryFixture();
+        $otherEndpoint = $endpoints->store($this->endpointFixture(2, 'whe_other', 'https://example.test/other', $cipher));
+        $first = $deliveries->queueForEndpoint($endpoint, 'review.approved', ['asset_id' => 'ast_1']);
+        $second = $deliveries->queueForEndpoint($otherEndpoint, 'billing.points_changed', ['ledger_id' => 'led_1']);
+
+        self::assertSame([], $deliveries->listForOrganization(0));
+        self::assertSame([$first->delivery_id], array_map(
+            static fn (WebhookDelivery $delivery): string => $delivery->delivery_id,
+            $deliveries->listForOrganization(99, endpointId: 'whe_test', status: 'queued', limit: 10),
+        ));
+        self::assertSame([$first->delivery_id, $second->delivery_id], array_map(
+            static fn (WebhookDelivery $delivery): string => $delivery->delivery_id,
+            $deliveries->listForOrganization(99, endpointId: ' ', status: '', limit: 10),
+        ));
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Webhook endpoint internal ID is required to queue a delivery.');
+
+        $deliveries->queueForEndpoint(new WebhookEndpoint(
+            id: null,
+            endpointId: 'whe_missing_id',
+            organizationId: 99,
+            createdByUserId: 7,
+            name: 'Missing internal ID',
+            endpointUrl: 'https://example.test/missing-id',
+            status: 'active',
+            events: ['review.approved'],
+            encryptedSigningSecret: $cipher->encrypt('whsec_missing_id'),
+            secretPreview: $cipher->preview('whsec_missing_id'),
+            secretRotatedAt: new DateTimeImmutable('2026-06-10T00:00:00+00:00'),
+            createdAt: new DateTimeImmutable('2026-06-10T00:00:00+00:00'),
+            updatedAt: new DateTimeImmutable('2026-06-10T00:00:00+00:00'),
+        ), 'review.approved', ['asset_id' => 'ast_missing']);
     }
 
     public function testWebhookHttpTransportRejectsInvalidTimeout(): void
     {
-        $jobClass = 'VertoAD\\Service\\Webhooks\\WebhookDeliveryJob';
-
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Webhook HTTP timeout seconds must be positive.');
 
-        $jobClass::httpTransport(0);
+        WebhookDeliveryJob::httpTransport(0);
     }
 
     public function testWebhookHttpTransportMapsStreamResultsToStatusCodes(): void
     {
-        $deliveryClass = 'VertoAD\\Domain\\Webhooks\\WebhookDelivery';
-        $jobClass = 'VertoAD\\Service\\Webhooks\\WebhookDeliveryJob';
-        $transport = $jobClass::httpTransport(1);
+        $transport = WebhookDeliveryJob::httpTransport(1);
+        $now = new DateTimeImmutable('2026-06-10T00:00:00+00:00');
 
-        $ok = new $deliveryClass(
+        $ok = new WebhookDelivery(
             delivery_id: 'whd_ok',
+            organization_id: 99,
+            webhook_endpoint_id: 1,
+            endpoint_id: 'whe_ok',
             endpoint_url: 'data://text/plain,ok',
             event_type: 'review.approved',
             payload_json: '{}',
             status: 'queued',
             retry_count: 0,
+            next_attempt_at: $now,
+            last_attempt_at: null,
+            last_status_code: null,
             last_error: null,
             signature_header: null,
-            created_at: new \DateTimeImmutable(),
+            created_at: $now,
             delivered_at: null,
         );
-        $failed = new $deliveryClass(
+        $failed = new WebhookDelivery(
             delivery_id: 'whd_failed',
+            organization_id: 99,
+            webhook_endpoint_id: 1,
+            endpoint_id: 'whe_failed',
             endpoint_url: 'file://',
             event_type: 'review.approved',
             payload_json: '{}',
             status: 'queued',
             retry_count: 0,
+            next_attempt_at: $now,
+            last_attempt_at: null,
+            last_status_code: null,
             last_error: null,
             signature_header: null,
-            created_at: new \DateTimeImmutable(),
+            created_at: $now,
             delivered_at: null,
         );
 
         self::assertSame(200, $transport($ok, 't=1,v1=test'));
         self::assertSame(0, $transport($failed, 't=1,v1=test'));
-        self::assertSame(202, $jobClass::statusCodeFromTransportResult('accepted', ['HTTP/1.1 202 Accepted']));
+        self::assertSame(202, WebhookDeliveryJob::statusCodeFromTransportResult('accepted', ['HTTP/1.1 202 Accepted']));
     }
 
-    private function value(mixed $record, string $key): mixed
+    /**
+     * @return array{0:InMemoryWebhookDeliveryRepository, 1:InMemoryWebhookEndpointRepository, 2:WebhookEndpointSecretCipherInterface, 3:WebhookEndpoint}
+     */
+    private function deliveryFixture(
+        string $endpointSecret = 'whsec_test_secret',
+        string $endpointUrl = 'https://example.test/webhooks',
+    ): array {
+        $deliveries = new InMemoryWebhookDeliveryRepository();
+        $endpoints = new InMemoryWebhookEndpointRepository();
+        $cipher = $this->cipher();
+        $endpoint = $endpoints->store($this->endpointFixture(1, 'whe_test', $endpointUrl, $cipher, $endpointSecret));
+
+        return [$deliveries, $endpoints, $cipher, $endpoint];
+    }
+
+    private function endpointFixture(
+        int $id,
+        string $endpointId,
+        string $endpointUrl,
+        WebhookEndpointSecretCipherInterface $cipher,
+        string $secret = 'whsec_test_secret',
+    ): WebhookEndpoint {
+        $now = new DateTimeImmutable('2026-06-10T00:00:00+00:00', new DateTimeZone('UTC'));
+
+        return new WebhookEndpoint(
+            id: $id,
+            endpointId: $endpointId,
+            organizationId: 99,
+            createdByUserId: 7,
+            name: 'Test endpoint',
+            endpointUrl: $endpointUrl,
+            status: 'active',
+            events: ['review.approved', 'billing.points_changed', 'campaign.status_changed'],
+            encryptedSigningSecret: $cipher->encrypt($secret),
+            secretPreview: $cipher->preview($secret),
+            secretRotatedAt: $now,
+            createdAt: $now,
+            updatedAt: $now,
+        );
+    }
+
+    private function cipher(): WebhookEndpointSecretCipherInterface
     {
-        if (is_array($record)) {
-            return $record[$key] ?? null;
-        }
+        return new class implements WebhookEndpointSecretCipherInterface {
+            public function generateSigningSecret(): string
+            {
+                return 'whsec_test_secret';
+            }
 
-        if (is_object($record)) {
-            return $record->{$key} ?? null;
-        }
+            public function generateSecret(): string
+            {
+                return $this->generateSigningSecret();
+            }
 
-        return null;
+            public function encrypt(string $plaintext): string
+            {
+                return 'test:v1:' . $plaintext;
+            }
+
+            public function decrypt(string $ciphertext): string
+            {
+                return str_starts_with($ciphertext, 'test:v1:') ? substr($ciphertext, 8) : $ciphertext;
+            }
+
+            public function preview(string $plaintext): string
+            {
+                return 'whsec_...' . substr($plaintext, -6);
+            }
+        };
     }
 }

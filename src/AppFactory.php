@@ -97,7 +97,9 @@ use VertoAD\Repository\Support\SupportTicketRepositoryInterface;
 use VertoAD\Repository\UserIdentityRepository;
 use VertoAD\Repository\UserIdentityRepositoryInterface;
 use VertoAD\Repository\Webhooks\DatabaseWebhookDeliveryRepository;
+use VertoAD\Repository\Webhooks\DatabaseWebhookEndpointRepository;
 use VertoAD\Repository\Webhooks\WebhookDeliveryRepositoryInterface;
+use VertoAD\Repository\Webhooks\WebhookEndpointRepositoryInterface;
 use VertoAD\Service\AdSlotSetupService;
 use VertoAD\Service\Assets\AssetUploadService;
 use VertoAD\Service\Archive\ArchiveJob;
@@ -152,6 +154,8 @@ use VertoAD\Service\SystemConfigService;
 use VertoAD\Service\Support\SupportTicketService;
 use VertoAD\Service\TenantAccessService;
 use VertoAD\Service\Webhooks\WebhookDeliveryJob;
+use VertoAD\Service\Webhooks\WebhookEndpointSecretCipher;
+use VertoAD\Service\Webhooks\WebhookEndpointSecretCipherInterface;
 use VertoAD\Service\Webhooks\WebhookSigner;
 
 final class AppFactory
@@ -347,12 +351,18 @@ final class AppFactory
                 ),
                 WebhookDeliveryRepositoryInterface::class => static fn (Connection $connection): WebhookDeliveryRepositoryInterface =>
                     new DatabaseWebhookDeliveryRepository($connection),
+                WebhookEndpointRepositoryInterface::class => static fn (Connection $connection): WebhookEndpointRepositoryInterface =>
+                    new DatabaseWebhookEndpointRepository($connection),
+                WebhookEndpointSecretCipherInterface::class => static fn (): WebhookEndpointSecretCipherInterface =>
+                    new WebhookEndpointSecretCipher((string) ($settings['app']['key'] ?? '')),
                 WebhookDeliveryJob::class => static fn (
                     WebhookDeliveryRepositoryInterface $deliveries,
-                    WebhookSigner $signer,
+                    WebhookEndpointRepositoryInterface $endpoints,
+                    WebhookEndpointSecretCipherInterface $secrets,
                 ): WebhookDeliveryJob => new WebhookDeliveryJob(
                     $deliveries,
-                    $signer,
+                    $endpoints,
+                    $secrets,
                     WebhookDeliveryJob::httpTransport((int) ($settings['webhooks']['http_timeout_seconds'] ?? 5)),
                     (int) ($settings['webhooks']['retry_batch_size'] ?? 50),
                 ),
@@ -519,7 +529,7 @@ final class AppFactory
                     $locks,
                     (int) ($settings['cron']['lock_ttl_seconds'] ?? 300),
                 ),
-                CronStatusAction::class => static fn (CronJobRegistry $registry): CronStatusAction => new CronStatusAction($settings, $registry),
+                CronStatusAction::class => static fn (): CronStatusAction => new CronStatusAction($settings),
                 CronRunAction::class => static fn (CronRunner $runner): CronRunAction => new CronRunAction($runner),
                 CronAuthMiddleware::class => static fn (): CronAuthMiddleware => new CronAuthMiddleware(
                     SlimAppFactory::determineResponseFactory(),

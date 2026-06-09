@@ -278,6 +278,7 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(ServingEventBufferInterface::class, $container?->get(AdEventRepositoryInterface::class));
             self::assertInstanceOf(RedisCronLockStore::class, $container?->get(CronLockStoreInterface::class));
             self::assertInstanceOf(RedisRateLimitStore::class, $container?->get(RateLimitStoreInterface::class));
+            self::assertInstanceOf(ConfigCacheRefreshJob::class, $container?->get(ConfigCacheRefreshJob::class));
         } finally {
             if ($previousAppKey === false) {
                 putenv('APP_KEY');
@@ -367,6 +368,7 @@ declare(strict_types=1);
 return [
     'app' => [
         'debug' => false,
+        'key' => \Defuse\Crypto\Key::createNewRandomKey()->saveToAsciiSafeString(),
     ],
     'database' => [
         'driver' => 'pdo_sqlite',
@@ -419,6 +421,7 @@ declare(strict_types=1);
 return [
     'app' => [
         'debug' => false,
+        'key' => \Defuse\Crypto\Key::createNewRandomKey()->saveToAsciiSafeString(),
     ],
     'database' => [
         'driver' => 'pdo_sqlite',
@@ -471,6 +474,7 @@ declare(strict_types=1);
 return [
     'app' => [
         'debug' => false,
+        'key' => \Defuse\Crypto\Key::createNewRandomKey()->saveToAsciiSafeString(),
     ],
     'database' => [
         'driver' => 'pdo_sqlite',
@@ -520,6 +524,7 @@ declare(strict_types=1);
 return [
     'app' => [
         'debug' => false,
+        'key' => \Defuse\Crypto\Key::createNewRandomKey()->saveToAsciiSafeString(),
     ],
     'database' => [
         'driver' => 'pdo_sqlite',
@@ -607,6 +612,7 @@ PHP);
         file_put_contents($configPath . '/settings.php', '<?php return ' . var_export([
             'app' => [
                 'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
             ],
             'database' => [
                 'driver' => 'pdo_sqlite',

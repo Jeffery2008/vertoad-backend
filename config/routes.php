@@ -69,6 +69,12 @@ use VertoAD\Http\Action\Support\AddSupportTicketNoteAction;
 use VertoAD\Http\Action\Support\CreateSupportTicketAction;
 use VertoAD\Http\Action\Support\ListSupportTicketsAction;
 use VertoAD\Http\Action\Support\UpdateSupportTicketStatusAction;
+use VertoAD\Http\Action\Webhooks\CreateWebhookEndpointAction;
+use VertoAD\Http\Action\Webhooks\ListWebhookDeliveriesAction as ListOwnWebhookDeliveriesAction;
+use VertoAD\Http\Action\Webhooks\ListWebhookEndpointsAction;
+use VertoAD\Http\Action\Webhooks\RotateWebhookEndpointSecretAction;
+use VertoAD\Http\Action\Webhooks\TestWebhookEndpointAction;
+use VertoAD\Http\Action\Webhooks\UpdateWebhookEndpointAction;
 use VertoAD\Http\Auth\PermissionRequirement;
 use VertoAD\Http\Middleware\AuthenticateRequestMiddleware;
 use VertoAD\Http\Middleware\CronAuthMiddleware;
@@ -217,6 +223,24 @@ return static function (App $app): void {
         ->add(RateLimitMiddleware::class);
     $app->post('/api/v1/oauth/revoke', RevokeAction::class)
         ->add(RateLimitMiddleware::class);
+    $app->get('/api/v1/webhooks/endpoints', ListWebhookEndpointsAction::class)
+        ->add($permission('webhook.read.own'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->post('/api/v1/webhooks/endpoints', CreateWebhookEndpointAction::class)
+        ->add($permission('webhook.write.own'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->patch('/api/v1/webhooks/endpoints/{endpoint_id}', UpdateWebhookEndpointAction::class)
+        ->add($permission('webhook.write.own'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->post('/api/v1/webhooks/endpoints/{endpoint_id}/rotate-secret', RotateWebhookEndpointSecretAction::class)
+        ->add($permission('webhook.secret.rotate.own'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->post('/api/v1/webhooks/endpoints/{endpoint_id}/test', TestWebhookEndpointAction::class)
+        ->add($permission('webhook.write.own'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->get('/api/v1/webhooks/deliveries', ListOwnWebhookDeliveriesAction::class)
+        ->add($permission('webhook.delivery.read.own'))
+        ->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/attribution/conversions', ServerConversionAction::class);
     $app->get('/api/v1/attribution/pixel', ConversionPixelAction::class);
     $app->post('/api/v1/archive/jobs', CreateArchiveJobAction::class)
