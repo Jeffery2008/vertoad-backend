@@ -463,6 +463,123 @@ PHP);
         );
     }
 
+    public function testCheckerFailsWhenDesignerUploadAndReviewQueryParametersAreNotDocumented(): void
+    {
+        $workspace = sys_get_temp_dir() . '/vertoad-openapi-check-' . bin2hex(random_bytes(8));
+        self::assertTrue(mkdir($workspace));
+
+        $openApiPath = $workspace . '/openapi.yaml';
+        $routesPath = $workspace . '/routes.php';
+
+        file_put_contents($openApiPath, <<<'YAML'
+openapi: 3.1.0
+paths:
+  /api/v1/assets/upload-intents:
+    post:
+      tags:
+        - Assets
+      operationId: createAssetUploadIntent
+      security:
+        - BearerAuth: []
+      responses:
+        "201":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/assets/confirm:
+    post:
+      tags:
+        - Assets
+      operationId: confirmAssetUpload
+      security:
+        - BearerAuth: []
+      responses:
+        "201":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/reviews/assets/{asset_id}/ai-review:
+    post:
+      tags:
+        - Reviews
+      operationId: startAssetAiReview
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: asset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "201":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  responses:
+    Error:
+      description: error
+      content:
+        application/json:
+          schema:
+            type: object
+  schemas:
+    SuccessEnvelope:
+      type: object
+    ErrorEnvelope:
+      type: object
+YAML);
+
+        file_put_contents($routesPath, <<<'PHP'
+<?php
+
+use VertoAD\Http\Middleware\AuthenticateRequestMiddleware;
+
+$app->post('/api/v1/assets/upload-intents', CreateAssetUploadIntentAction::class)->add(AuthenticateRequestMiddleware::class);
+$app->post('/api/v1/assets/confirm', ConfirmAssetUploadAction::class)->add(AuthenticateRequestMiddleware::class);
+$app->post('/api/v1/reviews/assets/{asset_id}/ai-review', StartAiReviewAction::class)->add(AuthenticateRequestMiddleware::class);
+PHP);
+
+        exec(
+            sprintf(
+                '%s %s %s %s 2>&1',
+                escapeshellarg(PHP_BINARY),
+                escapeshellarg(dirname(__DIR__, 2) . '/scripts/openapi-check.php'),
+                escapeshellarg($openApiPath),
+                escapeshellarg($routesPath),
+            ),
+            $output,
+            $exitCode,
+        );
+
+        self::assertSame(1, $exitCode, implode(PHP_EOL, $output));
+        self::assertStringContainsString(
+            'OpenAPI operation POST /api/v1/assets/upload-intents is missing query parameter documented from frontend usage: organization_id',
+            implode(PHP_EOL, $output),
+        );
+        self::assertStringContainsString(
+            'OpenAPI operation POST /api/v1/assets/confirm is missing query parameter documented from frontend usage: organization_id',
+            implode(PHP_EOL, $output),
+        );
+        self::assertStringContainsString(
+            'OpenAPI operation POST /api/v1/reviews/assets/{asset_id}/ai-review is missing query parameter documented from frontend usage: organization_id',
+            implode(PHP_EOL, $output),
+        );
+    }
+
     public function testCheckerAcceptsDocumentedSecurityAndQueryParameterListsInStructuralFallback(): void
     {
         $workspace = sys_get_temp_dir() . '/vertoad-openapi-check-' . bin2hex(random_bytes(8));

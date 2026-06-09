@@ -593,6 +593,9 @@ function frontendUsedQueryParameters(): array
         'GET /api/v1/billing/ledger' => ['organization_id', 'limit'],
         'POST /api/v1/billing/recharge-keys/redeem' => ['organization_id'],
         'GET /api/v1/feature-flags' => ['environment'],
+        'POST /api/v1/assets/upload-intents' => ['organization_id'],
+        'POST /api/v1/assets/confirm' => ['organization_id'],
+        'POST /api/v1/reviews/assets/{asset_id}/ai-review' => ['organization_id'],
     ];
 }
 
