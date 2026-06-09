@@ -138,7 +138,14 @@ use VertoAD\Service\Operations\ConfigVersionService;
 use VertoAD\Service\Operations\OperationErrorCaptureService;
 use VertoAD\Service\Operations\OperationsSummaryService;
 use VertoAD\Service\Serving\AdServingService;
+use VertoAD\Service\Serving\AdSelectionPolicyInterface;
 use VertoAD\Service\Serving\CampaignSpendEligibilityInterface;
+use VertoAD\Service\Serving\DatabaseServingRiskAssessor;
+use VertoAD\Service\Serving\DefaultAdSelectionPolicy;
+use VertoAD\Service\Serving\InMemoryServingFrequencyCapStore;
+use VertoAD\Service\Serving\RedisServingFrequencyCapStore;
+use VertoAD\Service\Serving\ServingFrequencyCapStoreInterface;
+use VertoAD\Service\Serving\ServingRiskAssessorInterface;
 use VertoAD\Service\PasswordHasher;
 use VertoAD\Service\PermissionMatcher;
 use VertoAD\Service\PointsLedgerService;
@@ -284,6 +291,15 @@ final class AppFactory
                     new DatabaseReportAggregateRepository($connection),
                 DatabaseFraudRiskFeatureRepository::class => static fn (Connection $connection): DatabaseFraudRiskFeatureRepository =>
                     new DatabaseFraudRiskFeatureRepository($connection),
+                ServingFrequencyCapStoreInterface::class => static fn (): ServingFrequencyCapStoreInterface =>
+                    self::servingFrequencyCapStore($settings),
+                ServingRiskAssessorInterface::class => static fn (
+                    DatabaseFraudRiskFeatureRepository $features,
+                ): ServingRiskAssessorInterface => new DatabaseServingRiskAssessor($features),
+                AdSelectionPolicyInterface::class => static fn (
+                    ServingFrequencyCapStoreInterface $frequencyCaps,
+                    ServingRiskAssessorInterface $riskAssessor,
+                ): AdSelectionPolicyInterface => new DefaultAdSelectionPolicy($frequencyCaps, $riskAssessor),
                 ReportQueryService::class => static fn (
                     ReportAggregateRepositoryInterface $aggregates,
                 ): ReportQueryService => new ReportQueryService($aggregates),
@@ -384,7 +400,8 @@ final class AppFactory
                     AdDecisionRepositoryInterface $decisions,
                     AdEventRepositoryInterface $events,
                     CampaignSpendEligibilityInterface $spendEligibility,
-                ): AdServingService => new AdServingService($inventory, $candidates, $decisions, $events, $spendEligibility),
+                    AdSelectionPolicyInterface $selectionPolicy,
+                ): AdServingService => new AdServingService($inventory, $candidates, $decisions, $events, $spendEligibility, $selectionPolicy),
                 AuditLogRepositoryInterface::class => static fn (Connection $connection): AuditLogRepositoryInterface =>
                     new AuditLogRepository($connection),
                 AuditLogService::class => static fn (AuditLogRepositoryInterface $repository): AuditLogService =>
@@ -661,6 +678,24 @@ final class AppFactory
         }
 
         return RedisClientFactory::fromSettings($redis);
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function servingFrequencyCapStore(array $settings): ServingFrequencyCapStoreInterface
+    {
+        $redis = $settings['redis'] ?? [];
+        if (!is_array($redis) || (string) ($redis['password'] ?? '') === '') {
+            if (self::redisRequired($settings)) {
+                throw new \RuntimeException('REDIS_PASSWORD is required for serving frequency caps.');
+            }
+
+            return new InMemoryServingFrequencyCapStore();
+        }
+
+        return new RedisServingFrequencyCapStore(
+            RedisClientFactory::fromSettings($redis),
+            (string) ($redis['prefix'] ?? 'vertoad:'),
+        );
     }
 
     /** @param array<string, mixed> $settings */

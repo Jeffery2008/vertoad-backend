@@ -19,6 +19,10 @@ final readonly class AdCandidate
         public string $assetType = 'html_placeholder',
         public string $assetObjectKey = '',
         public string $assetContentType = '',
+        public int $qualityScore = 100,
+        public int $historicalCtrPerMille = 0,
+        public ?int $hourlyFrequencyCap = null,
+        public ?int $dailyFrequencyCap = null,
     ) {
     }
 }

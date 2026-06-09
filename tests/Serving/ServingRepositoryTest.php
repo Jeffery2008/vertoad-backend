@@ -53,6 +53,63 @@ final class ServingRepositoryTest extends TestCase
         self::assertSame('image/png', $candidates[0]->assetContentType);
     }
 
+    public function testDatabaseCandidateRepositoryHydratesServingQualityCtrAndCaps(): void
+    {
+        $connection = $this->createCampaignConnection();
+        $this->insertCandidateFixture($connection, campaignId: 100, assetId: 200, aiRiskScore: 0.25);
+        $connection->insert('report_aggregates', [
+            'granularity' => 'day',
+            'bucket_start' => '2026-06-08 00:00:00',
+            'organization_id' => 99,
+            'campaign_id' => 100,
+            'site_id' => 10,
+            'slot_id' => 20,
+            'geo' => null,
+            'device' => null,
+            'browser' => null,
+            'resolution' => null,
+            'risk_bucket' => null,
+            'impressions' => 400,
+            'clicks' => 20,
+            'spend_points' => 1000,
+            'revenue_points' => 500,
+            'refreshed_at' => '2026-06-08 12:00:00',
+        ]);
+        $connection->insert('campaign_serving_frequency_caps', [
+            'campaign_id' => 100,
+            'organization_id' => 99,
+            'hourly_impression_cap' => 2,
+            'daily_impression_cap' => 5,
+            'hourly_click_cap' => 3,
+            'daily_click_cap' => 7,
+            'updated_at' => '2026-06-08 12:00:00',
+        ]);
+
+        $candidates = (new DatabaseAdCandidateRepository($connection))
+            ->eligibleCandidatesForSlot(10, 20, ['width' => 300, 'height' => 250]);
+
+        self::assertCount(1, $candidates);
+        self::assertSame(75, $candidates[0]->qualityScore);
+        self::assertSame(50, $candidates[0]->historicalCtrPerMille);
+        self::assertSame(2, $candidates[0]->hourlyFrequencyCap);
+        self::assertSame(5, $candidates[0]->dailyFrequencyCap);
+    }
+
+    public function testDatabaseCandidateRepositoryDefaultsMissingQualityCtrAndCaps(): void
+    {
+        $connection = $this->createCampaignConnection();
+        $this->insertCandidateFixture($connection, campaignId: 100, assetId: 200, aiRiskScore: null);
+
+        $candidates = (new DatabaseAdCandidateRepository($connection))
+            ->eligibleCandidatesForSlot(10, 20, ['width' => 300, 'height' => 250]);
+
+        self::assertCount(1, $candidates);
+        self::assertSame(100, $candidates[0]->qualityScore);
+        self::assertSame(0, $candidates[0]->historicalCtrPerMille);
+        self::assertNull($candidates[0]->hourlyFrequencyCap);
+        self::assertNull($candidates[0]->dailyFrequencyCap);
+    }
+
     public function testDatabaseCandidateRepositoryExcludesIneligibleCampaignCreativeAndTargetingRows(): void
     {
         $connection = $this->createCampaignConnection();
@@ -197,6 +254,7 @@ final class ServingRepositoryTest extends TestCase
         string $landingUrl = 'https://advertiser.example/landing',
         ?array $targeting = ['site_ids' => [10], 'slot_ids' => [20]],
         ?string $targetingJson = null,
+        ?float $aiRiskScore = 0.01,
     ): void {
         $connection->insert('asset_upload_intents', [
             'id' => $assetId,
@@ -231,7 +289,7 @@ final class ServingRepositoryTest extends TestCase
             'status' => $reviewStatus,
             'ai_provider' => 'deterministic',
             'ai_model' => 'deterministic-v1',
-            'ai_risk_score' => 0.01,
+            'ai_risk_score' => $aiRiskScore,
             'ai_risk_labels' => '[]',
             'ai_reasons' => '[]',
             'ai_raw_result' => null,

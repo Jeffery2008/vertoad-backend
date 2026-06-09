@@ -40,6 +40,38 @@ final class CampaignSchema
             )',
         );
         $connection->executeStatement(
+            'CREATE TABLE campaign_serving_frequency_caps (
+                campaign_id INTEGER PRIMARY KEY,
+                organization_id INTEGER NOT NULL,
+                hourly_impression_cap INTEGER NULL,
+                daily_impression_cap INTEGER NULL,
+                hourly_click_cap INTEGER NULL,
+                daily_click_cap INTEGER NULL,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )',
+        );
+        $connection->executeStatement(
+            'CREATE TABLE report_aggregates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                granularity VARCHAR(12) NOT NULL,
+                bucket_start DATETIME NOT NULL,
+                organization_id INTEGER NULL,
+                campaign_id INTEGER NULL,
+                site_id INTEGER NOT NULL,
+                slot_id INTEGER NOT NULL,
+                geo VARCHAR(120) NULL,
+                device VARCHAR(120) NULL,
+                browser VARCHAR(120) NULL,
+                resolution VARCHAR(120) NULL,
+                risk_bucket VARCHAR(120) NULL,
+                impressions INTEGER NOT NULL,
+                clicks INTEGER NOT NULL,
+                spend_points INTEGER NOT NULL,
+                revenue_points INTEGER NOT NULL,
+                refreshed_at DATETIME NOT NULL
+            )',
+        );
+        $connection->executeStatement(
             'CREATE TABLE spend_reservations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 reservation_id VARCHAR(160) NOT NULL UNIQUE,

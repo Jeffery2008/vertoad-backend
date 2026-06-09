@@ -14,6 +14,10 @@ use VertoAD\Repository\Serving\StaticAdCandidateRepository;
 use VertoAD\Repository\Serving\StaticServingInventoryRepository;
 use VertoAD\Service\Serving\CampaignSpendEligibilityInterface;
 use VertoAD\Service\Serving\AdServingService;
+use VertoAD\Service\Serving\AdTrafficRiskDecision;
+use VertoAD\Service\Serving\DefaultAdSelectionPolicy;
+use VertoAD\Service\Serving\InMemoryServingFrequencyCapStore;
+use VertoAD\Service\Serving\ServingRiskAssessorInterface;
 
 final class AdServingServiceTest extends TestCase
 {
@@ -364,6 +368,144 @@ final class AdServingServiceTest extends TestCase
         self::assertSame('budget_daily_cap', $decision->reason);
     }
 
+    public function testServeRanksCandidatesByQualityWeightedBidAndHistoricalCtr(): void
+    {
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([
+                $this->candidate(
+                    adId: 'ad-high-bid-low-quality',
+                    campaignId: 30,
+                    advertiserOrganizationId: 40,
+                    landingUrl: 'https://advertiser.example/high-bid',
+                    impressionCostPoints: 120,
+                    clickCostPoints: 0,
+                    qualityScore: 20,
+                    historicalCtrPerMille: 20,
+                ),
+                $this->candidate(
+                    adId: 'ad-quality-winner',
+                    campaignId: 31,
+                    advertiserOrganizationId: 41,
+                    landingUrl: 'https://advertiser.example/quality',
+                    impressionCostPoints: 70,
+                    clickCostPoints: 0,
+                    qualityScore: 100,
+                    historicalCtrPerMille: 400,
+                ),
+            ]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+            null,
+            DefaultAdSelectionPolicy::inMemory(),
+        );
+
+        $decision = $service->serve(10, 20, 'viewer-quality', null, false, new DateTimeImmutable('2026-06-08 10:00:00'));
+
+        self::assertTrue($decision->filled);
+        self::assertSame('ad-quality-winner', $decision->adId);
+        self::assertSame(31, $decision->campaignId);
+    }
+
+    public function testSelectionPolicyUsesDeterministicTieBreakersAfterWeightedScoreTie(): void
+    {
+        $policy = DefaultAdSelectionPolicy::inMemory();
+        $now = new DateTimeImmutable('2026-06-08 10:00:00');
+
+        $qualityTie = $policy->rankCandidates([
+            $this->candidate('ad-low-quality', 30, 40, 'https://advertiser.example/low-quality', 100, 0, qualityScore: 10),
+            $this->candidate('ad-high-quality', 31, 41, 'https://advertiser.example/high-quality', 10, 0, qualityScore: 100),
+        ], 10, 20, 'viewer-tie', $now);
+        self::assertSame('ad-high-quality', $qualityTie[0]->adId);
+
+        $ctrTie = $policy->rankCandidates([
+            $this->candidate('ad-lower-ctr', 30, 40, 'https://advertiser.example/lower-ctr', 11, 0, qualityScore: 100),
+            $this->candidate('ad-higher-ctr', 31, 41, 'https://advertiser.example/higher-ctr', 10, 0, qualityScore: 100, historicalCtrPerMille: 100),
+        ], 10, 20, 'viewer-tie', $now);
+        self::assertSame('ad-higher-ctr', $ctrTie[0]->adId);
+
+        $bidTie = $policy->rankCandidates([
+            $this->candidate('ad-lower-bid', 30, 40, 'https://advertiser.example/lower-bid', 10, 0, qualityScore: 0),
+            $this->candidate('ad-higher-bid', 31, 41, 'https://advertiser.example/higher-bid', 20, 0, qualityScore: 0),
+        ], 10, 20, 'viewer-tie', $now);
+        self::assertSame('ad-higher-bid', $bidTie[0]->adId);
+    }
+
+    public function testServeSkipsFrequencyCappedCandidatesAndRecordsChosenServe(): void
+    {
+        $frequencyCaps = new InMemoryServingFrequencyCapStore();
+        $policy = new DefaultAdSelectionPolicy($frequencyCaps);
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([
+                $this->candidate(
+                    adId: 'ad-capped',
+                    campaignId: 30,
+                    advertiserOrganizationId: 40,
+                    landingUrl: 'https://advertiser.example/capped',
+                    impressionCostPoints: 100,
+                    clickCostPoints: 0,
+                    hourlyFrequencyCap: 1,
+                ),
+                $this->candidate(
+                    adId: 'ad-available',
+                    campaignId: 31,
+                    advertiserOrganizationId: 41,
+                    landingUrl: 'https://advertiser.example/available',
+                    impressionCostPoints: 40,
+                    clickCostPoints: 0,
+                    hourlyFrequencyCap: 2,
+                ),
+            ]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+            null,
+            $policy,
+        );
+        $now = new DateTimeImmutable('2026-06-08 10:00:00');
+
+        $first = $service->serve(10, 20, 'viewer-frequency', null, false, $now);
+        $second = $service->serve(10, 20, 'viewer-frequency', null, false, $now->modify('+5 minutes'));
+        $third = $service->serve(10, 20, 'viewer-frequency', null, false, $now->modify('+10 minutes'));
+        $fourth = $service->serve(10, 20, 'viewer-frequency', null, false, $now->modify('+15 minutes'));
+
+        self::assertSame('ad-capped', $first->adId);
+        self::assertSame('ad-available', $second->adId);
+        self::assertSame('ad-available', $third->adId);
+        self::assertFalse($fourth->filled);
+        self::assertSame('frequency_cap_exceeded', $fourth->reason);
+        self::assertSame(1, $frequencyCaps->servedCount(30, 20, 'viewer-frequency', 'hour', $now));
+        self::assertSame(2, $frequencyCaps->servedCount(31, 20, 'viewer-frequency', 'hour', $now));
+    }
+
+    public function testInMemoryFrequencyCapStoreRejectsUnsupportedWindow(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Serving frequency cap window is not supported.');
+
+        (new InMemoryServingFrequencyCapStore())
+            ->servedCount(30, 20, 'viewer-frequency', 'week', new DateTimeImmutable('2026-06-08 10:00:00'));
+    }
+
+    public function testServeBlocksHighRiskTrafficBeforeCandidateSelection(): void
+    {
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([$this->safeCandidate()]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+            null,
+            new DefaultAdSelectionPolicy(
+                riskAssessor: new FixedServingRiskAssessor(new AdTrafficRiskDecision(false, 'fraud_high_risk_viewer')),
+            ),
+        );
+
+        $decision = $service->serve(10, 20, 'viewer-risk', null, false, new DateTimeImmutable('2026-06-08 10:00:00'));
+
+        self::assertFalse($decision->filled);
+        self::assertSame('fraud_high_risk_viewer', $decision->reason);
+    }
+
     private function safeCandidate(): AdCandidate
     {
         return $this->candidate('ad-1', 30, 40, 'https://advertiser.example/landing', 10, 20);
@@ -376,6 +518,10 @@ final class AdServingServiceTest extends TestCase
         string $landingUrl,
         int $impressionCostPoints,
         int $clickCostPoints,
+        int $qualityScore = 100,
+        int $historicalCtrPerMille = 0,
+        ?int $hourlyFrequencyCap = null,
+        ?int $dailyFrequencyCap = null,
     ): AdCandidate
     {
         return new AdCandidate(
@@ -388,6 +534,10 @@ final class AdServingServiceTest extends TestCase
             height: 250,
             impressionCostPoints: $impressionCostPoints,
             clickCostPoints: $clickCostPoints,
+            qualityScore: $qualityScore,
+            historicalCtrPerMille: $historicalCtrPerMille,
+            hourlyFrequencyCap: $hourlyFrequencyCap,
+            dailyFrequencyCap: $dailyFrequencyCap,
         );
     }
 }
@@ -404,5 +554,17 @@ final readonly class FixedCampaignSpendEligibility implements CampaignSpendEligi
     public function rejectionReason(int $organizationId, int $campaignId, int $pointsAmount, DateTimeImmutable $at): ?SpendFailureReason
     {
         return $this->results[$campaignId] ?? null;
+    }
+}
+
+final readonly class FixedServingRiskAssessor implements ServingRiskAssessorInterface
+{
+    public function __construct(private AdTrafficRiskDecision $decision)
+    {
+    }
+
+    public function assess(int $siteId, int $slotId, string $viewerId): AdTrafficRiskDecision
+    {
+        return $this->decision;
     }
 }

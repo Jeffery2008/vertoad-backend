@@ -97,13 +97,13 @@ The current backend slice establishes the Slim application shell, environment-ba
 
 System configuration is currently loaded from `.env` into PHP settings for infrastructure integrations such as MySQL, Redis, S3-compatible storage, OAuth key paths, cron protection, Cloudflare real IP handling, Turnstile, and AI review. The product roadmap calls for business configuration to move into versioned, auditable admin-managed records; until that storage and API surface exists, docs should treat `.env` settings as runtime infrastructure config only.
 
-Serving events are Redis-first outside local/test environments. `serve`, `track`, and `click` event writes go to Redis, and the protected Cron job `redis-events-consume` leases events, persists them to MySQL, bills valid events, and only acknowledges the Redis lease after persistence and billing processing complete. A MySQL persistence failure must leave the event unacknowledged so the Redis visibility timeout can redeliver it.
+Serving events and serving frequency caps are Redis-first outside local/test environments. `serve`, `track`, and `click` event writes go to Redis, and the protected Cron job `redis-events-consume` leases events, persists them to MySQL, bills valid events, and only acknowledges the Redis lease after persistence and billing processing complete. A MySQL persistence failure must leave the event unacknowledged so the Redis visibility timeout can redeliver it. Frequency caps use `REDIS_PREFIX`-scoped hashed viewer buckets for campaign + ad slot hourly/daily serve counts, with local/test memory fallback only.
 
-Production must not fall back to DB-first serving event buffering. In `prod`/`staging`, missing Redis extension or missing `REDIS_PASSWORD` is a startup/configuration failure for the serving event buffer. Local and test environments may use in-memory fallback to keep unit tests independent from Redis.
+Production must not fall back to DB-first serving event buffering or in-memory serving frequency caps. In `prod`/`staging`, missing Redis extension or missing `REDIS_PASSWORD` is a startup/configuration failure for the serving event buffer, frequency caps, cron locks, rate limits, and config cache refresh. Local and test environments may use in-memory fallback to keep unit tests independent from Redis.
 
-Redis serving event settings:
+Redis serving settings:
 
-- `REDIS_PASSWORD`: required for production serving event buffering; use 32+ random characters at minimum.
+- `REDIS_PASSWORD`: required for production serving event buffering and frequency caps; use 32+ random characters at minimum.
 - `REDIS_PREFIX`: use an environment-specific prefix such as `vertoad:prod:` or `vertoad:staging:` to avoid shared Redis collisions.
 - `REDIS_SERVING_EVENT_VISIBILITY_TIMEOUT_SECONDS`: time before a leased but unacknowledged event becomes eligible for redelivery.
 - `REDIS_SERVING_EVENT_RETENTION_SECONDS`: payload and dedupe retention window.

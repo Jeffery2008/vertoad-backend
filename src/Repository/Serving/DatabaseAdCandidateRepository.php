@@ -36,10 +36,17 @@ final readonly class DatabaseAdCandidateRepository implements AdCandidateReposit
                 'a.content_type',
                 'a.width',
                 'a.height',
+                'r.ai_risk_score',
+                'COALESCE(SUM(ra.impressions), 0) AS historical_impressions',
+                'COALESCE(SUM(ra.clicks), 0) AS historical_clicks',
+                'fc.hourly_impression_cap',
+                'fc.daily_impression_cap',
             )
             ->from('campaigns', 'c')
             ->innerJoin('c', 'creative_assets', 'a', 'a.id = c.creative_asset_id AND a.organization_id = c.organization_id')
             ->innerJoin('c', 'creative_reviews', 'r', 'r.asset_id = c.creative_asset_id AND r.organization_id = c.organization_id')
+            ->leftJoin('c', 'report_aggregates', 'ra', "ra.campaign_id = c.id AND ra.organization_id = c.organization_id AND ra.granularity = 'day'")
+            ->leftJoin('c', 'campaign_serving_frequency_caps', 'fc', 'fc.campaign_id = c.id AND fc.organization_id = c.organization_id')
             ->where('c.status = :campaign_status')
             ->andWhere("a.status IN ('pending_review', 'confirmed')")
             ->andWhere('r.status = :review_status')
@@ -52,6 +59,22 @@ final readonly class DatabaseAdCandidateRepository implements AdCandidateReposit
             ->setParameter('final_decision', 'approved')
             ->setParameter('empty_landing_url', '')
             ->setParameter('now', $now->format('Y-m-d H:i:s'))
+            ->groupBy('c.id')
+            ->addGroupBy('c.organization_id')
+            ->addGroupBy('c.pricing_model')
+            ->addGroupBy('c.bid_points')
+            ->addGroupBy('c.landing_url')
+            ->addGroupBy('c.targeting_json')
+            ->addGroupBy('a.id')
+            ->addGroupBy('a.type')
+            ->addGroupBy('a.object_key')
+            ->addGroupBy('a.content_type')
+            ->addGroupBy('a.width')
+            ->addGroupBy('a.height')
+            ->addGroupBy('r.ai_risk_score')
+            ->addGroupBy('r.final_decided_at')
+            ->addGroupBy('fc.hourly_impression_cap')
+            ->addGroupBy('fc.daily_impression_cap')
             ->orderBy('c.bid_points', 'DESC')
             ->addOrderBy('r.final_decided_at', 'ASC')
             ->addOrderBy('c.id', 'ASC')
@@ -85,6 +108,10 @@ final readonly class DatabaseAdCandidateRepository implements AdCandidateReposit
                 assetType: (string) $row['asset_type'],
                 assetObjectKey: (string) $row['object_key'],
                 assetContentType: (string) $row['content_type'],
+                qualityScore: $this->qualityScore($row['ai_risk_score']),
+                historicalCtrPerMille: $this->historicalCtrPerMille((int) $row['historical_impressions'], (int) $row['historical_clicks']),
+                hourlyFrequencyCap: $row['hourly_impression_cap'] === null ? null : (int) $row['hourly_impression_cap'],
+                dailyFrequencyCap: $row['daily_impression_cap'] === null ? null : (int) $row['daily_impression_cap'],
             );
         }
 
@@ -114,5 +141,23 @@ final readonly class DatabaseAdCandidateRepository implements AdCandidateReposit
         $type = htmlspecialchars((string) $row['asset_type'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 
         return '<div data-vertoad-asset="' . $objectKey . '" data-vertoad-asset-type="' . $type . '"></div>';
+    }
+
+    private function qualityScore(mixed $aiRiskScore): int
+    {
+        if ($aiRiskScore === null) {
+            return 100;
+        }
+
+        return max(0, min(100, 100 - (int) round(((float) $aiRiskScore) * 100)));
+    }
+
+    private function historicalCtrPerMille(int $impressions, int $clicks): int
+    {
+        if ($impressions <= 0 || $clicks <= 0) {
+            return 0;
+        }
+
+        return max(0, min(10_000, (int) round(($clicks / $impressions) * 1000)));
     }
 }

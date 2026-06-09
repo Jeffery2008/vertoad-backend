@@ -26,11 +26,14 @@ final readonly class AdServingService
         private AdDecisionRepositoryInterface $decisions,
         private AdEventRepositoryInterface $events,
         ?CampaignSpendEligibilityInterface $spendEligibility = null,
+        ?AdSelectionPolicyInterface $selectionPolicy = null,
     ) {
         $this->spendEligibility = $spendEligibility ?? new AllowAllCampaignSpendEligibility();
+        $this->selectionPolicy = $selectionPolicy ?? new DefaultAdSelectionPolicy();
     }
 
     private CampaignSpendEligibilityInterface $spendEligibility;
+    private AdSelectionPolicyInterface $selectionPolicy;
 
     /**
      * @param array{width:int,height:int}|null $size
@@ -55,9 +58,21 @@ final readonly class AdServingService
             return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'no_eligible_ad', $now));
         }
 
+        $trafficRisk = $this->selectionPolicy->trafficRisk($siteId, $slotId, $viewerId);
+        if (!$trafficRisk->allowed) {
+            return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, $trafficRisk->reason ?? 'fraud_high_risk', $now));
+        }
+
+        $candidates = $this->selectionPolicy->rankCandidates($candidates, $siteId, $slotId, $viewerId, $now);
         $budgetRejection = null;
+        $frequencyCapped = false;
         foreach ($candidates as $candidate) {
             if (!$this->isSafeLandingUrl($candidate->landingUrl)) {
+                continue;
+            }
+
+            if (!$this->selectionPolicy->canServeCandidate($candidate, $siteId, $slotId, $viewerId, $now)) {
+                $frequencyCapped = true;
                 continue;
             }
 
@@ -66,11 +81,18 @@ final readonly class AdServingService
                 continue;
             }
 
-            return $this->save($this->filled($siteId, $slotId, $viewerId, $candidate, $now));
+            $decision = $this->filled($siteId, $slotId, $viewerId, $candidate, $now);
+            $this->selectionPolicy->recordServe($candidate, $siteId, $slotId, $viewerId, $now);
+
+            return $this->save($decision);
         }
 
         if ($budgetRejection !== null) {
             return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'budget_' . $budgetRejection->value, $now));
+        }
+
+        if ($frequencyCapped) {
+            return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'frequency_cap_exceeded', $now));
         }
 
         return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'unsafe_landing_url', $now));

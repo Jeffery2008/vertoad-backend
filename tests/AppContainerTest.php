@@ -76,8 +76,15 @@ use VertoAD\Service\RechargeKeyService;
 use VertoAD\Service\Review\CreativeReviewProviderInterface;
 use VertoAD\Service\Review\DeterministicCreativeReviewProvider;
 use VertoAD\Service\Review\OpenAiCompatibleCreativeReviewProvider;
+use VertoAD\Service\Serving\AdSelectionPolicyInterface;
 use VertoAD\Service\Serving\AdServingService;
 use VertoAD\Service\Serving\CampaignSpendEligibilityInterface;
+use VertoAD\Service\Serving\DatabaseServingRiskAssessor;
+use VertoAD\Service\Serving\DefaultAdSelectionPolicy;
+use VertoAD\Service\Serving\InMemoryServingFrequencyCapStore;
+use VertoAD\Service\Serving\RedisServingFrequencyCapStore;
+use VertoAD\Service\Serving\ServingFrequencyCapStoreInterface;
+use VertoAD\Service\Serving\ServingRiskAssessorInterface;
 use VertoAD\Service\SystemConfigService;
 use VertoAD\Service\TenantAccessService;
 use VertoAD\Service\Webhooks\WebhookDeliveryJob;
@@ -160,6 +167,12 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(ReportAggregateRepositoryInterface::class, $container->get(ReportAggregateRepositoryInterface::class));
             self::assertInstanceOf(DatabaseReportAggregateRepository::class, $container->get(ReportAggregateRepositoryInterface::class));
             self::assertInstanceOf(DatabaseFraudRiskFeatureRepository::class, $container->get(DatabaseFraudRiskFeatureRepository::class));
+            self::assertInstanceOf(ServingFrequencyCapStoreInterface::class, $container->get(ServingFrequencyCapStoreInterface::class));
+            self::assertInstanceOf(InMemoryServingFrequencyCapStore::class, $container->get(ServingFrequencyCapStoreInterface::class));
+            self::assertInstanceOf(ServingRiskAssessorInterface::class, $container->get(ServingRiskAssessorInterface::class));
+            self::assertInstanceOf(DatabaseServingRiskAssessor::class, $container->get(ServingRiskAssessorInterface::class));
+            self::assertInstanceOf(AdSelectionPolicyInterface::class, $container->get(AdSelectionPolicyInterface::class));
+            self::assertInstanceOf(DefaultAdSelectionPolicy::class, $container->get(AdSelectionPolicyInterface::class));
             self::assertInstanceOf(AttributionEventRepositoryInterface::class, $container->get(AttributionEventRepositoryInterface::class));
             self::assertInstanceOf(DatabaseAttributionEventRepository::class, $container->get(AttributionEventRepositoryInterface::class));
             self::assertInstanceOf(AttributionService::class, $container->get(AttributionService::class));
@@ -257,6 +270,48 @@ final class AppContainerTest extends TestCase
         }
     }
 
+    public function testProductionContainerRequiresRedisForServingFrequencyCaps(): void
+    {
+        $previousAppKey = getenv('APP_KEY');
+        $previousAppEnv = getenv('APP_ENV');
+        $previousRedisPassword = getenv('REDIS_PASSWORD');
+        $previousRedisDriver = getenv('REDIS_DRIVER');
+        putenv('APP_KEY=' . Key::createNewRandomKey()->saveToAsciiSafeString());
+        putenv('APP_ENV=prod');
+        putenv('REDIS_PASSWORD=');
+        putenv('REDIS_DRIVER=auto');
+
+        try {
+            $container = AppFactory::create()->getContainer();
+
+            $this->expectException(\RuntimeException::class);
+            $this->expectExceptionMessage('REDIS_PASSWORD is required for serving frequency caps.');
+
+            $container?->get(ServingFrequencyCapStoreInterface::class);
+        } finally {
+            if ($previousAppKey === false) {
+                putenv('APP_KEY');
+            } else {
+                putenv('APP_KEY=' . $previousAppKey);
+            }
+            if ($previousAppEnv === false) {
+                putenv('APP_ENV');
+            } else {
+                putenv('APP_ENV=' . $previousAppEnv);
+            }
+            if ($previousRedisPassword === false) {
+                putenv('REDIS_PASSWORD');
+            } else {
+                putenv('REDIS_PASSWORD=' . $previousRedisPassword);
+            }
+            if ($previousRedisDriver === false) {
+                putenv('REDIS_DRIVER');
+            } else {
+                putenv('REDIS_DRIVER=' . $previousRedisDriver);
+            }
+        }
+    }
+
     public function testContainerUsesRedisServingEventBufferWhenConfigured(): void
     {
         $this->defineFakeRedisIfMissing();
@@ -276,6 +331,7 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(InMemoryAdEventRepository::class, $container?->get(InMemoryAdEventRepository::class));
             self::assertNotInstanceOf(InMemoryAdEventRepository::class, $container?->get(AdEventRepositoryInterface::class));
             self::assertInstanceOf(ServingEventBufferInterface::class, $container?->get(AdEventRepositoryInterface::class));
+            self::assertInstanceOf(RedisServingFrequencyCapStore::class, $container?->get(ServingFrequencyCapStoreInterface::class));
             self::assertInstanceOf(RedisCronLockStore::class, $container?->get(CronLockStoreInterface::class));
             self::assertInstanceOf(RedisRateLimitStore::class, $container?->get(RateLimitStoreInterface::class));
             self::assertInstanceOf(ConfigCacheRefreshJob::class, $container?->get(ConfigCacheRefreshJob::class));
