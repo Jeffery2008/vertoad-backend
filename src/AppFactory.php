@@ -64,6 +64,7 @@ use VertoAD\Repository\Serving\ServingInventoryRepositoryInterface;
 use VertoAD\Repository\Cron\ServingEventBufferInterface;
 use VertoAD\Repository\FirstPartySessionRepository;
 use VertoAD\Repository\FirstPartySessionRepositoryInterface;
+use VertoAD\Repository\Fraud\DatabaseFraudRiskFeatureRepository;
 use VertoAD\Repository\OAuthClientRepository;
 use VertoAD\Repository\OAuthClientRepositoryInterface;
 use VertoAD\Repository\OAuthConsentRepository;
@@ -123,6 +124,7 @@ use VertoAD\Service\Cron\ConfigCacheRefreshJob;
 use VertoAD\Service\Cron\DuckDbColdQueryJob;
 use VertoAD\Service\Cron\EventConsumptionJob;
 use VertoAD\Service\Cron\ExpiredTokenCleanupJob;
+use VertoAD\Service\Cron\FraudFeatureComputeJob;
 use VertoAD\Service\Cron\InMemoryCronLockStore;
 use VertoAD\Service\Cron\NoOpCronJob;
 use VertoAD\Service\Cron\RedisCronLockStore;
@@ -276,6 +278,8 @@ final class AppFactory
                     $repository,
                 ReportAggregateRepositoryInterface::class => static fn (Connection $connection): ReportAggregateRepositoryInterface =>
                     new DatabaseReportAggregateRepository($connection),
+                DatabaseFraudRiskFeatureRepository::class => static fn (Connection $connection): DatabaseFraudRiskFeatureRepository =>
+                    new DatabaseFraudRiskFeatureRepository($connection),
                 ReportQueryService::class => static fn (
                     ReportAggregateRepositoryInterface $aggregates,
                 ): ReportQueryService => new ReportQueryService($aggregates),
@@ -457,6 +461,12 @@ final class AppFactory
                     $aggregates,
                     (int) ($settings['cron']['aggregate_statistics_lookback_hours'] ?? 24),
                 ),
+                FraudFeatureComputeJob::class => static fn (
+                    DatabaseFraudRiskFeatureRepository $features,
+                ): FraudFeatureComputeJob => self::fraudFeatureComputeJob(
+                    $features,
+                    (int) ($settings['cron']['fraud_feature_lookback_hours'] ?? 24),
+                ),
                 ArchiveParquetJob::class => static fn (ArchiveJob $archive): ArchiveParquetJob =>
                     new ArchiveParquetJob($archive),
                 DuckDbColdQueryJob::class => static fn (ColdQueryService $queries): DuckDbColdQueryJob =>
@@ -470,6 +480,7 @@ final class AppFactory
                     AiReviewQueueJob $aiReviewQueue,
                     ConfigCacheRefreshJob $configCacheRefresh,
                     AggregateStatisticsJob $aggregateStatistics,
+                    FraudFeatureComputeJob $fraudFeatureCompute,
                     ArchiveParquetJob $archiveParquet,
                     DuckDbColdQueryJob $duckDbColdQuery,
                     BackupCheckJob $backupCheck,
@@ -481,6 +492,7 @@ final class AppFactory
                         $aiReviewQueue,
                         $configCacheRefresh,
                         $aggregateStatistics,
+                        $fraudFeatureCompute,
                         $archiveParquet,
                         $duckDbColdQuery,
                         $backupCheck,
@@ -658,5 +670,16 @@ final class AppFactory
         $to = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
 
         return new AggregateStatisticsJob($aggregates, $to->modify('-' . $lookbackHours . ' hours'), $to);
+    }
+
+    private static function fraudFeatureComputeJob(DatabaseFraudRiskFeatureRepository $features, int $lookbackHours): FraudFeatureComputeJob
+    {
+        if ($lookbackHours <= 0) {
+            throw new \InvalidArgumentException('CRON_FRAUD_FEATURE_LOOKBACK_HOURS must be positive.');
+        }
+
+        $to = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+
+        return new FraudFeatureComputeJob($features, $to->modify('-' . $lookbackHours . ' hours'), $to);
     }
 }

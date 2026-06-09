@@ -23,6 +23,7 @@ use VertoAD\Repository\Serving\DatabaseAdEventRepository;
 use VertoAD\Repository\Serving\InMemoryAdEventRepository;
 use VertoAD\Repository\Cron\ServingEventBufferInterface;
 use VertoAD\Repository\FirstPartySessionRepositoryInterface;
+use VertoAD\Repository\Fraud\DatabaseFraudRiskFeatureRepository;
 use VertoAD\Repository\OrganizationMembershipRepositoryInterface;
 use VertoAD\Repository\Operations\DatabaseOperationErrorLogRepository;
 use VertoAD\Repository\Operations\DatabaseConfigVersionRepository;
@@ -58,6 +59,8 @@ use VertoAD\Service\Cron\ConfigCacheRefreshJob;
 use VertoAD\Service\Cron\DuckDbColdQueryJob;
 use VertoAD\Service\Cron\EventConsumptionJob;
 use VertoAD\Service\Cron\ExpiredTokenCleanupJob;
+use VertoAD\Service\Cron\FraudFeatureComputeJob;
+use VertoAD\Service\Cron\NoOpCronJob;
 use VertoAD\Service\PasswordHasher;
 use VertoAD\Service\Cron\RedisCronLockStore;
 use VertoAD\Service\PermissionMatcher;
@@ -147,6 +150,7 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(DatabaseAdEventRepository::class, $container->get(DatabaseAdEventRepository::class));
             self::assertInstanceOf(ReportAggregateRepositoryInterface::class, $container->get(ReportAggregateRepositoryInterface::class));
             self::assertInstanceOf(DatabaseReportAggregateRepository::class, $container->get(ReportAggregateRepositoryInterface::class));
+            self::assertInstanceOf(DatabaseFraudRiskFeatureRepository::class, $container->get(DatabaseFraudRiskFeatureRepository::class));
             self::assertInstanceOf(AttributionEventRepositoryInterface::class, $container->get(AttributionEventRepositoryInterface::class));
             self::assertInstanceOf(DatabaseAttributionEventRepository::class, $container->get(AttributionEventRepositoryInterface::class));
             self::assertInstanceOf(AttributionService::class, $container->get(AttributionService::class));
@@ -171,6 +175,7 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(ExpiredTokenCleanupJob::class, $container->get(CronJobRegistry::class)->get('expired-token-cleanup'));
             self::assertInstanceOf(AiReviewQueueJob::class, $container->get(CronJobRegistry::class)->get('ai-review-queue'));
             self::assertInstanceOf(AggregateStatisticsJob::class, $container->get(CronJobRegistry::class)->get('aggregate-statistics'));
+            self::assertInstanceOf(FraudFeatureComputeJob::class, $container->get(CronJobRegistry::class)->get('fraud-feature-compute'));
             self::assertInstanceOf(ConfigCacheRefreshJob::class, $container->get(CronJobRegistry::class)->get('config-cache-refresh'));
             self::assertInstanceOf(ArchiveParquetJob::class, $container->get(CronJobRegistry::class)->get('archive-parquet'));
             self::assertInstanceOf(DuckDbColdQueryJob::class, $container->get(CronJobRegistry::class)->get('duckdb-cold-query'));
@@ -383,6 +388,106 @@ PHP);
             $this->expectExceptionMessage('CRON_AGGREGATE_STATISTICS_LOOKBACK_HOURS must be positive.');
 
             $container?->get(AggregateStatisticsJob::class);
+        } finally {
+            @unlink($configPath . '/routes.php');
+            @unlink($configPath . '/settings.php');
+            @rmdir($configPath);
+            @rmdir($basePath);
+        }
+    }
+
+    public function testFraudFeatureLookbackMustBePositive(): void
+    {
+        $basePath = sys_get_temp_dir() . '/vertoad-appfactory-fraud-' . bin2hex(random_bytes(4));
+        $configPath = $basePath . '/config';
+        mkdir($configPath, recursive: true);
+        file_put_contents($configPath . '/settings.php', <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+return [
+    'app' => [
+        'debug' => false,
+    ],
+    'database' => [
+        'driver' => 'pdo_sqlite',
+        'memory' => true,
+    ],
+    'cron' => [
+        'token' => '',
+        'allowed_ips' => [],
+        'fraud_feature_lookback_hours' => 0,
+        'jobs' => ['fraud-feature-compute'],
+    ],
+];
+PHP);
+        file_put_contents($configPath . '/routes.php', <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+use Slim\App;
+
+return static function (App $app): void {
+};
+PHP);
+
+        try {
+            $container = AppFactory::create($basePath)->getContainer();
+
+            $this->expectException(\InvalidArgumentException::class);
+            $this->expectExceptionMessage('CRON_FRAUD_FEATURE_LOOKBACK_HOURS must be positive.');
+
+            $container?->get(FraudFeatureComputeJob::class);
+        } finally {
+            @unlink($configPath . '/routes.php');
+            @unlink($configPath . '/settings.php');
+            @rmdir($configPath);
+            @rmdir($basePath);
+        }
+    }
+
+    public function testUnknownConfiguredCronJobFallsBackToNoOp(): void
+    {
+        $basePath = sys_get_temp_dir() . '/vertoad-appfactory-noop-' . bin2hex(random_bytes(4));
+        $configPath = $basePath . '/config';
+        mkdir($configPath, recursive: true);
+        file_put_contents($configPath . '/settings.php', <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+return [
+    'app' => [
+        'debug' => false,
+    ],
+    'database' => [
+        'driver' => 'pdo_sqlite',
+        'memory' => true,
+    ],
+    'cron' => [
+        'token' => '',
+        'allowed_ips' => [],
+        'jobs' => ['legacy-custom-job'],
+    ],
+];
+PHP);
+        file_put_contents($configPath . '/routes.php', <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+use Slim\App;
+
+return static function (App $app): void {
+};
+PHP);
+
+        try {
+            $container = AppFactory::create($basePath)->getContainer();
+
+            self::assertInstanceOf(NoOpCronJob::class, $container?->get(CronJobRegistry::class)->get('legacy-custom-job'));
         } finally {
             @unlink($configPath . '/routes.php');
             @unlink($configPath . '/settings.php');
