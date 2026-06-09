@@ -28,6 +28,13 @@ final class DatabaseArchiveRepositoryTest extends TestCase
         self::assertSame(['imp-1', 'clk-1'], array_map(static fn ($event): string => $event->eventId, $events));
         self::assertSame(['campaign_id' => 123], $events[0]->payload);
         self::assertSame('2026-06-08T10:15:00+00:00', $events[0]->occurredAt->format(DATE_ATOM));
+        $repository->markEventsArchived(['imp-1', 'clk-1'], new DateTimeImmutable('2026-06-09T08:05:00+00:00'));
+        $repository->markEventsArchived([], new DateTimeImmutable('2026-06-09T08:10:00+00:00'));
+        self::assertSame([], $repository->pendingEvents());
+        self::assertSame(
+            '2026-06-09 08:05:00',
+            $connection->fetchOne('SELECT processed_at FROM raw_events WHERE event_uuid = ?', ['imp-1']),
+        );
 
         $manifest = new ArchiveManifest(
             manifestId: 'manifest_1',

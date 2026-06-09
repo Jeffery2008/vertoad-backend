@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace VertoAD\Repository\Archive;
 
+use DateTimeImmutable;
 use VertoAD\Domain\Archive\ArchiveEvent;
 use VertoAD\Domain\Archive\ArchiveManifest;
 use VertoAD\Domain\Archive\ColdQueryJob;
@@ -37,6 +38,15 @@ final class InMemoryArchiveRepository implements ArchiveRepositoryInterface
         $this->manifests[$manifest->manifestId] = $manifest;
 
         return $manifest;
+    }
+
+    public function markEventsArchived(array $eventIds, DateTimeImmutable $processedAt): void
+    {
+        $archived = array_flip($eventIds);
+        $this->events = array_values(array_filter(
+            $this->events,
+            static fn (ArchiveEvent $event): bool => !isset($archived[$event->eventId]),
+        ));
     }
 
     public function findManifest(string $manifestId): ?ArchiveManifest

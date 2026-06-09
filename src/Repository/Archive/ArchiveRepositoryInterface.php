@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace VertoAD\Repository\Archive;
 
+use DateTimeImmutable;
 use VertoAD\Domain\Archive\ArchiveEvent;
 use VertoAD\Domain\Archive\ArchiveManifest;
 use VertoAD\Domain\Archive\ColdQueryJob;
@@ -16,6 +17,11 @@ interface ArchiveRepositoryInterface
     public function pendingEvents(): array;
 
     public function saveManifest(ArchiveManifest $manifest): ArchiveManifest;
+
+    /**
+     * @param list<string> $eventIds
+     */
+    public function markEventsArchived(array $eventIds, DateTimeImmutable $processedAt): void;
 
     public function findManifest(string $manifestId): ?ArchiveManifest;
 

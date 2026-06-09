@@ -41,5 +41,10 @@ final class ArchiveJobTest extends TestCase
             's3://vertoad-archive/raw-events/event_type=click/date=2026-06-08/hour=10/part-20260608T101500Z-20260608T110500Z.parquet',
             $manifest->partitions[0]['object_key'],
         );
+
+        $repeat = $job->run();
+
+        self::assertSame(0, $repeat->metrics['events_archived'] ?? null);
+        self::assertSame([], $repository->pendingEvents());
     }
 }

@@ -20,11 +20,13 @@ final readonly class ArchiveJob
     public function run(): ArchiveJobResult
     {
         $events = $this->repository->pendingEvents();
+        $eventIds = [];
         $partitions = [];
         $first = null;
         $last = null;
 
         foreach ($events as $event) {
+            $eventIds[] = $event->eventId;
             $first = $first === null || $event->occurredAt < $first ? $event->occurredAt : $first;
             $last = $last === null || $event->occurredAt > $last ? $event->occurredAt : $last;
             $partition = $this->partition($event->eventType, $event->occurredAt);
@@ -49,6 +51,7 @@ final readonly class ArchiveJob
             partitions: array_values($partitions),
             createdAt: new DateTimeImmutable(),
         ));
+        $this->repository->markEventsArchived($eventIds, new DateTimeImmutable());
 
         return new ArchiveJobResult('parquet-archive', 'completed', [
             'manifest_id' => $manifest->manifestId,

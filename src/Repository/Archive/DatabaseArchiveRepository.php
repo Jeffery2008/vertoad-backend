@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace VertoAD\Repository\Archive;
 
+use Doctrine\DBAL\ArrayParameterType;
 use DateTimeImmutable;
 use DateTimeZone;
 use Doctrine\DBAL\Connection;
@@ -49,6 +50,24 @@ final readonly class DatabaseArchiveRepository implements ArchiveRepositoryInter
         $this->connection->update('archive_manifests', $row, ['manifest_id' => $manifest->manifestId]);
 
         return $manifest;
+    }
+
+    public function markEventsArchived(array $eventIds, DateTimeImmutable $processedAt): void
+    {
+        if ($eventIds === []) {
+            return;
+        }
+
+        $this->connection->executeStatement(
+            'UPDATE raw_events SET processed_at = :processed_at WHERE processed_at IS NULL AND event_uuid IN (:event_ids)',
+            [
+                'processed_at' => $this->formatDate($processedAt),
+                'event_ids' => array_values(array_unique($eventIds)),
+            ],
+            [
+                'event_ids' => ArrayParameterType::STRING,
+            ],
+        );
     }
 
     public function findManifest(string $manifestId): ?ArchiveManifest
