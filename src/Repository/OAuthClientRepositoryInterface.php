@@ -8,6 +8,8 @@ use VertoAD\Domain\Auth\OAuthClient;
 
 interface OAuthClientRepositoryInterface
 {
+    public function transactional(callable $operation): mixed;
+
     public function store(OAuthClient $client): OAuthClient;
 
     public function findActiveByIdentifier(string $clientIdentifier): ?OAuthClient;

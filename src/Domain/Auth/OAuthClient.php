@@ -92,7 +92,7 @@ final readonly class OAuthClient
         }
 
         foreach ($scopes as $scope) {
-            if (preg_match('/^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/', $scope) !== 1) {
+            if (preg_match('/^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)+$/', $scope) !== 1) {
                 throw new InvalidArgumentException('OAuth client scope must use dot-separated permission code format.');
             }
         }

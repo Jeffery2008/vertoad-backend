@@ -15,6 +15,11 @@ final class OAuthClientRepository implements OAuthClientRepositoryInterface
     {
     }
 
+    public function transactional(callable $operation): mixed
+    {
+        return $this->connection->transactional(static fn (): mixed => $operation());
+    }
+
     public function store(OAuthClient $client): OAuthClient
     {
         $client = $client->normalized();

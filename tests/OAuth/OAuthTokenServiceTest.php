@@ -459,6 +459,11 @@ final class OAuthTokenServiceTest extends TestCase
             {
             }
 
+            public function transactional(callable $operation): mixed
+            {
+                return $operation();
+            }
+
             public function store(OAuthClient $client): OAuthClient
             {
                 return $client;

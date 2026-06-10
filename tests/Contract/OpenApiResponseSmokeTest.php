@@ -234,6 +234,11 @@ final class OpenApiResponseSmokeTest extends TestCase
     private static function unconstructedTokenAction(): TokenAction
     {
         $clients = new class implements OAuthClientRepositoryInterface {
+            public function transactional(callable $operation): mixed
+            {
+                return $operation();
+            }
+
             public function store(OAuthClient $client): OAuthClient
             {
                 throw new \LogicException('Not used by this contract smoke.');

@@ -1856,6 +1856,8 @@ paths:
       description: Returns client metadata only; client secrets and secret hashes are never returned.
       security:
         - BearerAuth: []
+      x-permissions:
+        - sdk.oauth_client.read.own
       parameters:
         - name: organization_id
           in: query
@@ -1891,6 +1893,8 @@ paths:
       description: Creates a developer OAuth client and returns the plaintext client secret exactly once.
       security:
         - BearerAuth: []
+      x-permissions:
+        - sdk.oauth_client.write.own
       parameters:
         - name: organization_id
           in: query
@@ -1935,6 +1939,8 @@ paths:
       description: Replaces the stored secret hash and returns the new plaintext client secret exactly once.
       security:
         - BearerAuth: []
+      x-permissions:
+        - sdk.oauth_client.rotate_secret.own
       parameters:
         - name: client_id
           in: path
