@@ -367,6 +367,52 @@ function operationBlocksFromYaml(string $contents): array
 }
 
 /**
+ * @return array<string, string>
+ */
+function pathItemBlocksFromYaml(string $contents): array
+{
+    $blocks = [];
+    $lines = preg_split('/\R/', $contents);
+    if ($lines === false) {
+        return [];
+    }
+
+    $currentPath = null;
+    $currentBlock = [];
+
+    $flush = static function () use (&$blocks, &$currentPath, &$currentBlock): void {
+        if ($currentPath !== null) {
+            $blocks[$currentPath] = implode(PHP_EOL, $currentBlock);
+        }
+
+        $currentBlock = [];
+    };
+
+    foreach ($lines as $line) {
+        if (preg_match('/^\s{2}(\/api\/v1\/[^:]+):\s*$/', $line, $pathMatch) === 1) {
+            $flush();
+            $currentPath = $pathMatch[1];
+            $currentBlock = [$line];
+            continue;
+        }
+
+        if ($currentPath !== null) {
+            if (preg_match('/^\s{2}\S/', $line) === 1) {
+                $flush();
+                $currentPath = null;
+                continue;
+            }
+
+            $currentBlock[] = $line;
+        }
+    }
+
+    $flush();
+
+    return $blocks;
+}
+
+/**
  * @return list<string>
  */
 function implementedRoutesFromRoutesFile(string $routesPath): array
@@ -556,12 +602,7 @@ function queryParameterErrorsFromParsedOpenApi(array $parsed): array
             continue;
         }
 
-        $documented = [];
-        foreach (($operation['parameters'] ?? []) as $parameter) {
-            if (is_array($parameter) && ($parameter['in'] ?? null) === 'query' && isset($parameter['name'])) {
-                $documented[] = (string) $parameter['name'];
-            }
-        }
+        $documented = parsedQueryParameterNames($parsed, $path, strtolower($method));
 
         foreach ($requiredParameters as $parameter) {
             if (!in_array($parameter, $documented, true)) {
@@ -582,6 +623,7 @@ function queryParameterErrorsFromYaml(string $contents): array
     foreach (operationBlocksFromYaml($contents) as $operation) {
         $blocksByRoute[$operation['route']] = $operation['block'];
     }
+    $pathBlocks = pathItemBlocksFromYaml($contents);
 
     $errors = [];
     foreach (frontendUsedQueryParameters() as $route => $requiredParameters) {
@@ -590,14 +632,70 @@ function queryParameterErrorsFromYaml(string $contents): array
             continue;
         }
 
+        [, $path] = explode(' ', $route, 2);
         foreach ($requiredParameters as $parameter) {
-            if (!yamlQueryParameterExists($block, $parameter)) {
+            if (!yamlQueryParameterExists($contents, $block, $parameter, $pathBlocks[$path] ?? null)) {
                 $errors[] = "OpenAPI operation {$route} is missing query parameter documented from frontend usage: {$parameter}";
             }
         }
     }
 
     return $errors;
+}
+
+/**
+ * @return list<string>
+ */
+function parsedQueryParameterNames(array $parsed, string $path, string $method): array
+{
+    $pathItem = $parsed['paths'][$path] ?? null;
+    if (!is_array($pathItem)) {
+        return [];
+    }
+
+    $operation = $pathItem[$method] ?? null;
+    if (!is_array($operation)) {
+        return [];
+    }
+
+    $documented = [];
+    foreach (array_merge(parsedParameterList($pathItem), parsedParameterList($operation)) as $parameter) {
+        $parameter = parsedParameter($parsed, $parameter);
+        if (($parameter['in'] ?? null) !== 'query' || !isset($parameter['name'])) {
+            continue;
+        }
+
+        $documented[(string) $parameter['name']] = (string) $parameter['name'];
+    }
+
+    return array_values($documented);
+}
+
+/**
+ * @return list<array<string, mixed>>
+ */
+function parsedParameterList(array $owner): array
+{
+    $parameters = $owner['parameters'] ?? [];
+    if (!is_array($parameters)) {
+        return [];
+    }
+
+    return array_values(array_filter($parameters, 'is_array'));
+}
+
+/**
+ * @param array<string, mixed> $parameter
+ * @return array<string, mixed>
+ */
+function parsedParameter(array $parsed, array $parameter): array
+{
+    if (isset($parameter['$ref']) && is_string($parameter['$ref'])) {
+        $resolved = resolveLocalRef($parsed, $parameter['$ref']);
+        return is_array($resolved) ? $resolved : [];
+    }
+
+    return $parameter;
 }
 
 /**
@@ -876,28 +974,95 @@ function yamlSecurityIncludesAny(string $block, array $schemes): bool
     return false;
 }
 
-function yamlQueryParameterExists(string $operationBlock, string $parameterName): bool
+function yamlQueryParameterExists(string $contents, string $operationBlock, string $parameterName, ?string $pathItemBlock): bool
 {
-    $parametersBlock = yamlNestedBlock($operationBlock, 6, 'parameters');
-    if ($parametersBlock === null) {
-        return false;
-    }
-
-    if (preg_match_all('/^\s*-\s+name:\s*([^\s]+)\s*\R(?P<body>(?:^\s{10,}\S.*\R?)*)/m', $parametersBlock, $matches, PREG_SET_ORDER) === false) {
-        return false;
-    }
-
-    foreach ($matches as $match) {
-        if ($match[1] !== $parameterName) {
-            continue;
+    $parametersBlocks = [];
+    if ($pathItemBlock !== null) {
+        $pathParametersBlock = yamlNestedBlock($pathItemBlock, 4, 'parameters');
+        if ($pathParametersBlock !== null) {
+            $parametersBlocks[] = $pathParametersBlock;
         }
+    }
 
-        if (preg_match('/^\s*in:\s*query\s*$/m', normalizeYamlBlockIndent($match['body'])) === 1) {
+    $operationParametersBlock = yamlNestedBlock($operationBlock, 6, 'parameters');
+    if ($operationParametersBlock !== null) {
+        $parametersBlocks[] = $operationParametersBlock;
+    }
+
+    foreach ($parametersBlocks as $parametersBlock) {
+        if (yamlParameterListContainsQueryParameter($contents, $parametersBlock, $parameterName)) {
             return true;
         }
     }
 
     return false;
+}
+
+function yamlParameterListContainsQueryParameter(string $contents, string $parametersBlock, string $parameterName): bool
+{
+    foreach (yamlParameterItemBlocks($parametersBlock) as $parameterBlock) {
+        if (yamlParameterBlockContainsQueryParameter($contents, $parameterBlock, $parameterName)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * @return list<string>
+ */
+function yamlParameterItemBlocks(string $parametersBlock): array
+{
+    $lines = preg_split('/\R/', $parametersBlock);
+    if ($lines === false) {
+        return [];
+    }
+
+    $blocks = [];
+    $current = [];
+
+    $flush = static function () use (&$blocks, &$current): void {
+        if ($current !== []) {
+            $blocks[] = implode(PHP_EOL, $current);
+            $current = [];
+        }
+    };
+
+    foreach ($lines as $line) {
+        if (preg_match('/^\s*-\s+\S/', $line) === 1) {
+            $flush();
+            $current[] = $line;
+            continue;
+        }
+
+        if ($current !== []) {
+            $current[] = $line;
+        }
+    }
+
+    $flush();
+
+    return $blocks;
+}
+
+function yamlParameterBlockContainsQueryParameter(string $contents, string $parameterBlock, string $parameterName): bool
+{
+    $normalizedBlock = normalizeYamlBlockIndent($parameterBlock);
+    if (preg_match('/^-\s+\$ref:\s*[\'"]?#\/components\/parameters\/([^\'"\s]+)[\'"]?\s*$/m', $normalizedBlock, $refMatch) === 1) {
+        $referencedBlock = yamlNestedBlock($contents, 4, $refMatch[1]);
+        if ($referencedBlock === null) {
+            return false;
+        }
+
+        $normalizedBlock = normalizeYamlBlockIndent($referencedBlock);
+    }
+
+    if (preg_match('/^-?\s*name:\s*[\'"]?' . preg_quote($parameterName, '/') . '[\'"]?\s*$/m', $normalizedBlock) !== 1) {
+        return false;
+    }
+
+    return preg_match('/^\s*in:\s*query\s*$/m', $normalizedBlock) === 1;
 }
 
 function normalizeYamlBlockIndent(string $block): string

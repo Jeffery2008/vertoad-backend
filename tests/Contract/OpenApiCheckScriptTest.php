@@ -928,6 +928,239 @@ PHP);
         self::assertStringContainsString('OpenAPI contract check passed', implode(PHP_EOL, $output));
     }
 
+    public function testCheckerAcceptsOperationLevelQueryParameterRefsInStructuralFallback(): void
+    {
+        $result = self::runChecker(<<<'YAML'
+openapi: 3.1.0
+paths:
+  /api/v1/auth/me:
+    get:
+      tags:
+        - Auth
+      operationId: getCurrentUser
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  parameters:
+    OrganizationId:
+      name: organization_id
+      in: query
+      required: false
+      schema:
+        type: integer
+  responses:
+    Error:
+      description: error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    SuccessEnvelope:
+      type: object
+    ErrorEnvelope:
+      type: object
+YAML, <<<'PHP'
+<?php
+
+use VertoAD\Http\Middleware\AuthenticateRequestMiddleware;
+
+$app->get('/api/v1/auth/me', MeAction::class)->add(AuthenticateRequestMiddleware::class);
+PHP);
+
+        self::assertSame(0, $result['exitCode'], $result['output']);
+        self::assertStringContainsString('OpenAPI contract check passed', $result['output']);
+    }
+
+    public function testCheckerAcceptsPathItemQueryParametersInStructuralFallback(): void
+    {
+        $result = self::runChecker(<<<'YAML'
+openapi: 3.1.0
+paths:
+  /api/v1/auth/me:
+    parameters:
+      - name: organization_id
+        in: query
+        required: false
+        schema:
+          type: integer
+    get:
+      tags:
+        - Auth
+      operationId: getCurrentUser
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  responses:
+    Error:
+      description: error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    SuccessEnvelope:
+      type: object
+    ErrorEnvelope:
+      type: object
+YAML, <<<'PHP'
+<?php
+
+use VertoAD\Http\Middleware\AuthenticateRequestMiddleware;
+
+$app->get('/api/v1/auth/me', MeAction::class)->add(AuthenticateRequestMiddleware::class);
+PHP);
+
+        self::assertSame(0, $result['exitCode'], $result['output']);
+        self::assertStringContainsString('OpenAPI contract check passed', $result['output']);
+    }
+
+    public function testCheckerAcceptsPathItemQueryParameterRefsInParsedOpenApi(): void
+    {
+        $openApi = <<<'YAML'
+openapi: 3.1.0
+paths:
+  /api/v1/auth/me:
+    parameters:
+      - $ref: "#/components/parameters/OrganizationId"
+    get:
+      tags:
+        - Auth
+      operationId: getCurrentUser
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  parameters:
+    OrganizationId:
+      name: organization_id
+      in: query
+      required: false
+      schema:
+        type: integer
+  responses:
+    Error:
+      description: error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    SuccessEnvelope:
+      type: object
+    ErrorEnvelope:
+      type: object
+YAML;
+
+        $result = self::runChecker($openApi, <<<'PHP'
+<?php
+
+use VertoAD\Http\Middleware\AuthenticateRequestMiddleware;
+
+$app->get('/api/v1/auth/me', MeAction::class)->add(AuthenticateRequestMiddleware::class);
+PHP, [
+            'openapi' => '3.1.0',
+            'paths' => [
+                '/api/v1/auth/me' => [
+                    'parameters' => [
+                        ['$ref' => '#/components/parameters/OrganizationId'],
+                    ],
+                    'get' => [
+                        'tags' => ['Auth'],
+                        'operationId' => 'getCurrentUser',
+                        'security' => [['BearerAuth' => []]],
+                        'responses' => [
+                            '200' => [
+                                'description' => 'ok',
+                                'content' => [
+                                    'application/json' => [
+                                        'schema' => [
+                                            'allOf' => [
+                                                ['$ref' => '#/components/schemas/SuccessEnvelope'],
+                                                ['type' => 'object', 'properties' => ['data' => ['type' => 'object']]],
+                                            ],
+                                        ],
+                                    ],
+                                ],
+                            ],
+                            'default' => ['$ref' => '#/components/responses/Error'],
+                        ],
+                    ],
+                ],
+            ],
+            'components' => [
+                'parameters' => [
+                    'OrganizationId' => [
+                        'name' => 'organization_id',
+                        'in' => 'query',
+                        'required' => false,
+                        'schema' => ['type' => 'integer'],
+                    ],
+                ],
+                'responses' => [
+                    'Error' => [
+                        'description' => 'error',
+                        'content' => [
+                            'application/json' => [
+                                'schema' => ['$ref' => '#/components/schemas/ErrorEnvelope'],
+                            ],
+                        ],
+                    ],
+                ],
+                'schemas' => [
+                    'SuccessEnvelope' => ['type' => 'object'],
+                    'ErrorEnvelope' => ['type' => 'object'],
+                ],
+            ],
+        ]);
+
+        self::assertSame(0, $result['exitCode'], $result['output']);
+        self::assertStringContainsString('OpenAPI contract check passed', $result['output']);
+    }
+
     public function testCheckerFailsWhenOperationMetadataIsIncomplete(): void
     {
         $workspace = sys_get_temp_dir() . '/vertoad-openapi-check-' . bin2hex(random_bytes(8));
@@ -1147,5 +1380,48 @@ PHP);
 
         self::assertSame(1, $exitCode, implode(PHP_EOL, $output));
         self::assertStringContainsString('OpenAPI paths contain duplicate key: /api/v1/health', implode(PHP_EOL, $output));
+    }
+
+    /**
+     * @param array<string, mixed>|null $parsedOpenApi
+     * @return array{exitCode: int, output: string}
+     */
+    private static function runChecker(string $openApi, string $routes, ?array $parsedOpenApi = null): array
+    {
+        $workspace = sys_get_temp_dir() . '/vertoad-openapi-check-' . bin2hex(random_bytes(8));
+        self::assertTrue(mkdir($workspace));
+
+        $openApiPath = $workspace . '/openapi.yaml';
+        $routesPath = $workspace . '/routes.php';
+        file_put_contents($openApiPath, $openApi);
+        file_put_contents($routesPath, $routes);
+
+        $scriptPath = dirname(__DIR__, 2) . '/scripts/openapi-check.php';
+        $commandPath = $scriptPath;
+        if ($parsedOpenApi !== null) {
+            $commandPath = $workspace . '/run-openapi-check.php';
+            file_put_contents($commandPath, '<?php' . PHP_EOL
+                . 'if (!function_exists("yaml_parse_file")) {' . PHP_EOL
+                . '    function yaml_parse_file(string $path): array {' . PHP_EOL
+                . '        return ' . var_export($parsedOpenApi, true) . ';' . PHP_EOL
+                . '    }' . PHP_EOL
+                . '}' . PHP_EOL
+                . '$argv = [__FILE__, ' . var_export($openApiPath, true) . ', ' . var_export($routesPath, true) . '];' . PHP_EOL
+                . 'require ' . var_export($scriptPath, true) . ';' . PHP_EOL);
+        }
+
+        exec(
+            sprintf(
+                '%s %s %s %s 2>&1',
+                escapeshellarg(PHP_BINARY),
+                escapeshellarg($commandPath),
+                escapeshellarg($openApiPath),
+                escapeshellarg($routesPath),
+            ),
+            $output,
+            $exitCode,
+        );
+
+        return ['exitCode' => $exitCode, 'output' => implode(PHP_EOL, $output)];
     }
 }
