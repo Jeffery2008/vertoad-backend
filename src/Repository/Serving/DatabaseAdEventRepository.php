@@ -11,8 +11,9 @@ use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use VertoAD\Domain\Serving\AdDecision;
 use VertoAD\Domain\Serving\AdEvent;
 use VertoAD\Repository\Cron\ServingEventBufferInterface;
+use VertoAD\Repository\Cron\ServingEventPersistenceInterface;
 
-final readonly class DatabaseAdEventRepository implements AdEventRepositoryInterface, ServingEventBufferInterface
+final readonly class DatabaseAdEventRepository implements AdEventRepositoryInterface, ServingEventBufferInterface, ServingEventPersistenceInterface
 {
     public function __construct(private Connection $connection)
     {
@@ -137,6 +138,11 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
             ['processed_at' => $this->formatDate(new DateTimeImmutable())],
             ['event_type' => $event->eventType, 'event_id' => $event->eventId],
         );
+    }
+
+    public function fail(AdEvent $event, \Throwable $reason): void
+    {
+        $this->acknowledge($event);
     }
 
     /**

@@ -237,6 +237,36 @@ namespace VertoAD\Tests\Serving {
             self::assertTrue($repository->hasEvent('click', 'clk-lease'));
         }
 
+        public function testFailureRequeuesProcessingEventAndDeadLettersAfterMaxAttempts(): void
+        {
+            $redis = new \Redis();
+            $repository = new RedisAdEventRepository($redis, 'vertoad:test:', 60, 3600, 2);
+            $repository->recordClick($this->decision(), 'clk-poison', new DateTimeImmutable('2026-06-08T10:00:20Z'));
+            $event = $repository->lease(1)[0];
+
+            $repository->fail($event, new \RuntimeException('first failure'));
+
+            $failureKey = null;
+            foreach (array_keys($redis->counts) as $key) {
+                if (str_ends_with($key, ':failures')) {
+                    $failureKey = $key;
+                }
+            }
+            self::assertNotNull($failureKey);
+            self::assertSame(1, $redis->counts[$failureKey]);
+            self::assertSame(3600, $redis->ttl[$failureKey] ?? null);
+            self::assertSame([], $redis->zsets['vertoad:test:serving-events:processing'] ?? []);
+            self::assertCount(1, $redis->zsets['vertoad:test:serving-events:pending'] ?? []);
+
+            $event = $repository->lease(1)[0];
+            $repository->fail($event, new \RuntimeException('second failure'));
+
+            self::assertSame(2, $redis->counts[$failureKey]);
+            self::assertSame([], $redis->zsets['vertoad:test:serving-events:processing'] ?? []);
+            self::assertSame([], $redis->zsets['vertoad:test:serving-events:pending'] ?? []);
+            self::assertCount(1, $redis->zsets['vertoad:test:serving-events:dead-letter'] ?? []);
+        }
+
         public function testLeaseDropsProcessingMemberWhenPayloadIsMissing(): void
         {
             $redis = new \Redis();
@@ -321,6 +351,14 @@ namespace VertoAD\Tests\Serving {
             $this->expectExceptionMessage('Serving event retention seconds must be positive.');
 
             new RedisAdEventRepository(new \Redis(), 'vertoad:test:', 60, 0);
+        }
+
+        public function testRejectsInvalidMaxFailures(): void
+        {
+            $this->expectException(\InvalidArgumentException::class);
+            $this->expectExceptionMessage('Serving event max failures must be positive.');
+
+            new RedisAdEventRepository(new \Redis(), 'vertoad:test:', 60, 3600, 0);
         }
 
         private function decision(): AdDecision

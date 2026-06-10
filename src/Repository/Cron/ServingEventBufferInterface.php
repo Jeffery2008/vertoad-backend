@@ -14,4 +14,6 @@ interface ServingEventBufferInterface
     public function lease(int $limit): array;
 
     public function acknowledge(AdEvent $event): void;
+
+    public function fail(AdEvent $event, \Throwable $reason): void;
 }

@@ -5,8 +5,12 @@ declare(strict_types=1);
 namespace VertoAD\Tests\Billing;
 
 use DateTimeImmutable;
+use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\DriverManager;
+use Doctrine\DBAL\Platforms\MySQLPlatform;
+use Doctrine\DBAL\Result;
 use PHPUnit\Framework\TestCase;
+use VertoAD\Domain\Billing\WithdrawalStatus;
 use VertoAD\Repository\Billing\WithdrawalRepository;
 use VertoAD\Repository\PointsLedgerRepository;
 use VertoAD\Service\Billing\WithdrawalService;
@@ -137,6 +141,204 @@ final class WithdrawalTest extends TestCase
         );
 
         self::assertSame('insufficient_publisher_earnings', $insufficient->getMessage());
+    }
+
+    public function testRequestWithdrawalRollsBackLedgerDebitWhenWithdrawalInsertFails(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        BillingTask14Schema::create($connection);
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        $ledger = new PointsLedgerService($ledgerRepository);
+        $ledger->credit(42, 'publisher_earnings', null, 1000, 'earning:rollback-seed');
+        $service = new WithdrawalService(new WithdrawalRepository($connection), $ledger, $ledgerRepository);
+
+        $connection->executeStatement(
+            <<<'SQL'
+CREATE TRIGGER fail_withdrawal_request_insert
+BEFORE INSERT ON withdrawal_requests
+BEGIN
+    SELECT RAISE(ABORT, 'forced withdrawal insert failure');
+END
+SQL
+        );
+
+        try {
+            $service->requestWithdrawal(
+                organizationId: 42,
+                requestedByUserId: 7,
+                pointsAmount: 400,
+                payoutMethod: 'bank_transfer',
+                payoutAccount: ['account_no' => 'x'],
+                notes: null,
+                now: new DateTimeImmutable('2026-06-08 12:00:00'),
+            );
+        } catch (\Throwable) {
+            self::assertSame(1000, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+            self::assertSame(1, (int) $connection->fetchOne('SELECT COUNT(*) FROM ledger_entries'));
+            self::assertSame(0, (int) $connection->fetchOne('SELECT COUNT(*) FROM withdrawal_requests'));
+            return;
+        }
+
+        self::fail('Expected withdrawal insert failure.');
+    }
+
+    public function testRepeatedRejectAndRevokeReturnFinalStateWithoutDuplicateLedgerRestore(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        BillingTask14Schema::create($connection);
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        $ledger = new PointsLedgerService($ledgerRepository);
+        $ledger->credit(42, 'publisher_earnings', null, 1000, 'earning:idempotent-status');
+        $service = new WithdrawalService(new WithdrawalRepository($connection), $ledger, $ledgerRepository);
+
+        $rejectedRequest = $service->requestWithdrawal(42, 7, 400, 'bank_transfer', ['account_no' => 'x'], null, new DateTimeImmutable('2026-06-08 12:00:00'));
+        $firstReject = $service->reject($rejectedRequest->id ?? 0, 99, 'bad account', new DateTimeImmutable('2026-06-08 12:01:00'));
+        $secondReject = $service->reject($rejectedRequest->id ?? 0, 99, 'bad account', new DateTimeImmutable('2026-06-08 12:02:00'));
+
+        self::assertSame('rejected', $firstReject->status->value);
+        self::assertSame('rejected', $secondReject->status->value);
+        self::assertSame(1000, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+
+        $revokedRequest = $service->requestWithdrawal(42, 7, 300, 'bank_transfer', ['account_no' => 'y'], null, new DateTimeImmutable('2026-06-08 12:03:00'));
+        $firstRevoke = $service->revoke($revokedRequest->id ?? 0, 7, 'cancelled', new DateTimeImmutable('2026-06-08 12:04:00'));
+        $secondRevoke = $service->revoke($revokedRequest->id ?? 0, 7, 'cancelled', new DateTimeImmutable('2026-06-08 12:05:00'));
+
+        self::assertSame('revoked', $firstRevoke->status->value);
+        self::assertSame('revoked', $secondRevoke->status->value);
+        self::assertSame(1000, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+        self::assertSame(5, (int) $connection->fetchOne('SELECT COUNT(*) FROM ledger_entries'));
+        self::assertSame(1, (int) $connection->fetchOne("SELECT COUNT(*) FROM withdrawal_audit_events WHERE action = 'rejected'"));
+        self::assertSame(1, (int) $connection->fetchOne("SELECT COUNT(*) FROM withdrawal_audit_events WHERE action = 'revoked'"));
+    }
+
+    public function testRepeatedMarkPaidReturnsFinalStateWithoutDuplicateAudit(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        BillingTask14Schema::create($connection);
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        $ledger = new PointsLedgerService($ledgerRepository);
+        $ledger->credit(42, 'publisher_earnings', null, 1000, 'earning:idempotent-paid');
+        $service = new WithdrawalService(new WithdrawalRepository($connection), $ledger, $ledgerRepository);
+
+        $request = $service->requestWithdrawal(42, 7, 400, 'bank_transfer', ['account_no' => 'x'], null, new DateTimeImmutable('2026-06-08 12:00:00'));
+        $firstPaid = $service->markPaid($request->id ?? 0, 99, 'paid', new DateTimeImmutable('2026-06-08 12:01:00'));
+        $secondPaid = $service->markPaid($request->id ?? 0, 99, 'paid', new DateTimeImmutable('2026-06-08 12:02:00'));
+
+        self::assertSame('paid', $firstPaid->status->value);
+        self::assertSame('paid', $secondPaid->status->value);
+        self::assertSame(600, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+        self::assertSame(1, (int) $connection->fetchOne("SELECT COUNT(*) FROM withdrawal_audit_events WHERE action = 'paid'"));
+    }
+
+    public function testRepositoryStateUpdateRequiresExpectedOldStatus(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        BillingTask14Schema::create($connection);
+        $repository = new WithdrawalRepository($connection);
+
+        $request = $repository->createRequest(
+            organizationId: 42,
+            requestedByUserId: 7,
+            pointsAmount: 500,
+            payoutMethod: 'bank_transfer',
+            payoutAccount: ['account_no' => 'x'],
+            notes: null,
+            ledgerEntryId: 1,
+            now: new DateTimeImmutable('2026-06-08 12:00:00'),
+        );
+
+        $updated = $repository->updateRequestStateIfCurrent(
+            id: $request->id ?? 0,
+            expectedStatus: WithdrawalStatus::Requested,
+            status: WithdrawalStatus::Rejected,
+            reviewerUserId: 99,
+            reviewerNotes: 'bad account',
+            payoutAccount: null,
+            now: new DateTimeImmutable('2026-06-08 12:01:00'),
+        );
+        self::assertSame('rejected', $updated?->status->value);
+
+        $staleUpdate = $repository->updateRequestStateIfCurrent(
+            id: $request->id ?? 0,
+            expectedStatus: WithdrawalStatus::Requested,
+            status: WithdrawalStatus::Revoked,
+            reviewerUserId: null,
+            reviewerNotes: 'late cancel',
+            payoutAccount: null,
+            now: new DateTimeImmutable('2026-06-08 12:02:00'),
+        );
+
+        self::assertNull($staleUpdate);
+        self::assertSame('rejected', $repository->findRequest($request->id ?? 0)?->status->value);
+    }
+
+    public function testRepositoryLocksOrganizationRowsForUpdateOnSqlDatabases(): void
+    {
+        $result = $this->createMock(Result::class);
+        $result->expects(self::once())->method('fetchAllAssociative')->willReturn([['id' => 42]]);
+
+        $connection = $this->createMock(Connection::class);
+        $connection->expects(self::once())->method('getDatabasePlatform')->willReturn(new MySQLPlatform());
+        $connection->expects(self::once())
+            ->method('executeQuery')
+            ->with('SELECT id FROM organizations WHERE id = ? FOR UPDATE', [42])
+            ->willReturn($result);
+
+        (new WithdrawalRepository($connection))->lockOrganizationForUpdate(42);
+    }
+
+    public function testMarkPaidRejectsWhenCompareAndSwapMissSeesDifferentTerminalState(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        BillingTask14Schema::create($connection);
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        $ledger = new PointsLedgerService($ledgerRepository);
+        $ledger->credit(42, 'publisher_earnings', null, 1000, 'earning:stale-transition');
+        $service = new WithdrawalService(new WithdrawalRepository($connection), $ledger, $ledgerRepository);
+
+        $request = $service->requestWithdrawal(42, 7, 400, 'bank_transfer', ['account_no' => 'x'], null, new DateTimeImmutable('2026-06-08 12:00:00'));
+        $this->installWithdrawalStatusRaceTrigger($connection, 'paid', 'rejected');
+        $stale = $this->captureValidation(fn () => $service->markPaid($request->id ?? 0, 99, 'paid', new DateTimeImmutable('2026-06-08 12:01:00')));
+
+        self::assertSame('withdrawal_transition_not_allowed', $stale->getMessage());
+        self::assertSame(600, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+        self::assertSame('requested', (string) $connection->fetchOne('SELECT status FROM withdrawal_requests WHERE id = ?', [$request->id]));
+    }
+
+    public function testMarkPaidReturnsCurrentStateWhenCompareAndSwapMissAlreadyReachedTarget(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        BillingTask14Schema::create($connection);
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        $ledger = new PointsLedgerService($ledgerRepository);
+        $ledger->credit(42, 'publisher_earnings', null, 1000, 'earning:stale-target');
+        $service = new WithdrawalService(new WithdrawalRepository($connection), $ledger, $ledgerRepository);
+
+        $request = $service->requestWithdrawal(42, 7, 400, 'bank_transfer', ['account_no' => 'x'], null, new DateTimeImmutable('2026-06-08 12:00:00'));
+        $this->installWithdrawalStatusRaceTrigger($connection, 'paid', 'paid');
+        $paid = $service->markPaid($request->id ?? 0, 99, 'paid', new DateTimeImmutable('2026-06-08 12:01:00'));
+
+        self::assertSame('paid', $paid->status->value);
+        self::assertSame(600, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+        self::assertSame(1, (int) $connection->fetchOne("SELECT COUNT(*) FROM withdrawal_audit_events WHERE action = 'requested'"));
+        self::assertSame(0, (int) $connection->fetchOne("SELECT COUNT(*) FROM withdrawal_audit_events WHERE action = 'paid'"));
+    }
+
+    private function installWithdrawalStatusRaceTrigger(\Doctrine\DBAL\Connection $connection, string $attemptedStatus, string $concurrentStatus): void
+    {
+        $connection->executeStatement(sprintf(
+            <<<'SQL'
+CREATE TRIGGER withdrawal_status_race
+BEFORE UPDATE OF status ON withdrawal_requests
+WHEN OLD.status = 'requested' AND NEW.status = '%s'
+BEGIN
+    UPDATE withdrawal_requests SET status = '%s' WHERE id = OLD.id;
+    SELECT RAISE(IGNORE);
+END
+SQL,
+            $attemptedStatus,
+            $concurrentStatus,
+        ));
     }
 
     private function captureValidation(callable $operation): \RuntimeException

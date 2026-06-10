@@ -20,6 +20,22 @@ final readonly class NativeRedisClient implements RedisClientInterface
         return (int) $this->redis->del($key);
     }
 
+    public function deleteIfValue(string $key, string $expectedValue): bool
+    {
+        $deleted = $this->redis->eval(
+            <<<'LUA'
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+LUA,
+            [$key, $expectedValue],
+            1,
+        );
+
+        return (int) $deleted === 1;
+    }
+
     public function expire(string $key, int $seconds): bool
     {
         return (bool) $this->redis->expire($key, $seconds);

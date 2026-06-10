@@ -139,6 +139,18 @@ namespace {
 
             public function eval(string $script, array $args, int $numKeys): array
             {
+                if (str_contains($script, "redis.call('GET', KEYS[1])") && $numKeys === 1) {
+                    $key = (string) $args[0];
+                    $expectedValue = (string) ($args[1] ?? '');
+                    if (($this->values[$key] ?? null) === $expectedValue) {
+                        $this->del($key);
+
+                        return [1];
+                    }
+
+                    return [0];
+                }
+
                 $pending = $args[0];
                 $processing = $args[1];
                 $now = (float) $args[2];
@@ -174,6 +186,7 @@ namespace {
 
 namespace VertoAD\Tests\Cron {
     use PHPUnit\Framework\TestCase;
+    use VertoAD\Infrastructure\Redis\InMemoryRedisClient;
     use VertoAD\Service\Cron\InMemoryCronLockStore;
     use VertoAD\Service\Cron\RedisCronLockStore;
 
@@ -208,6 +221,33 @@ namespace VertoAD\Tests\Cron {
             self::assertSame(30, $redis->keys['vertoad:test:cron:lock:events'] ?? null);
             $store->release('cron:lock:events');
             self::assertFalse($store->isLocked('cron:lock:events'));
+        }
+
+        public function testRedisLockReleaseDoesNotDeleteLockReacquiredByAnotherOwner(): void
+        {
+            $redis = new InMemoryRedisClient();
+            $firstOwner = new RedisCronLockStore($redis, 'vertoad:test:');
+            $secondOwner = new RedisCronLockStore($redis, 'vertoad:test:');
+
+            self::assertTrue($firstOwner->acquire('cron:lock:events', 30));
+            $redis->delete('vertoad:test:cron:lock:events');
+            self::assertTrue($secondOwner->acquire('cron:lock:events', 30));
+
+            $firstOwner->release('cron:lock:events');
+
+            self::assertTrue($secondOwner->isLocked('cron:lock:events'));
+        }
+
+        public function testRedisLockReleaseWithoutOwnedTokenIsNoop(): void
+        {
+            $redis = new InMemoryRedisClient();
+            $redis->setNxEx('vertoad:test:cron:lock:events', 'external-owner', 30);
+            $store = new RedisCronLockStore($redis, 'vertoad:test:');
+
+            $store->release('cron:lock:events');
+
+            self::assertTrue($redis->exists('vertoad:test:cron:lock:events'));
+            self::assertSame('external-owner', $redis->get('vertoad:test:cron:lock:events'));
         }
 
         public function testRedisLockRejectsInvalidTtl(): void

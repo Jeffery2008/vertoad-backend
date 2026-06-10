@@ -6,14 +6,14 @@ namespace VertoAD\Service\Cron;
 
 use VertoAD\Domain\Cron\CronJobResult;
 use VertoAD\Repository\Cron\ServingEventBufferInterface;
-use VertoAD\Repository\Serving\DatabaseAdEventRepository;
+use VertoAD\Repository\Cron\ServingEventPersistenceInterface;
 use VertoAD\Service\Billing\AdEventBillingService;
 
 final readonly class EventConsumptionJob implements CronJobInterface
 {
     public function __construct(
         private ServingEventBufferInterface $events,
-        private DatabaseAdEventRepository $persistence,
+        private ServingEventPersistenceInterface $persistence,
         private AdEventBillingService $billing,
         private int $batchSize,
     ) {
@@ -30,23 +30,30 @@ final readonly class EventConsumptionJob implements CronJobInterface
         $billed = 0;
         $skipped = 0;
         $duplicates = 0;
+        $failed = 0;
 
         foreach ($this->events->lease($this->batchSize) as $event) {
             ++$consumed;
-            $this->persistence->persist($event);
 
-            $result = $this->billing->billServingEvent($event);
-            if ($result->billed) {
-                ++$billed;
-                if ($result->duplicate) {
-                    ++$duplicates;
+            try {
+                $this->persistence->persist($event);
+
+                $result = $this->billing->billServingEvent($event);
+                if ($result->billed) {
+                    ++$billed;
+                    if ($result->duplicate) {
+                        ++$duplicates;
+                    }
+                } else {
+                    ++$skipped;
                 }
-            } else {
-                ++$skipped;
-            }
 
-            $this->persistence->acknowledge($event);
-            $this->events->acknowledge($event);
+                $this->persistence->acknowledge($event);
+                $this->events->acknowledge($event);
+            } catch (\Throwable $exception) {
+                ++$failed;
+                $this->events->fail($event, $exception);
+            }
         }
 
         return CronJobResult::completed($this->name(), [
@@ -54,6 +61,7 @@ final readonly class EventConsumptionJob implements CronJobInterface
             'billed' => $billed,
             'skipped' => $skipped,
             'duplicates' => $duplicates,
+            'failed' => $failed,
         ]);
     }
 }

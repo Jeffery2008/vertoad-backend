@@ -41,6 +41,9 @@ final class SocketRedisClientTest extends TestCase
             "+OK\r\n",
             "+OK\r\n",
             "+OK\r\n",
+            ":1\r\n",
+            "+OK\r\n",
+            "+OK\r\n",
             "*2\r\n",
             "$7\r\nevent-a\r\n",
             ":9\r\n",
@@ -65,6 +68,7 @@ final class SocketRedisClientTest extends TestCase
         self::assertSame('value', $client->get('key'));
         self::assertSame(3, $client->increment('key'));
         self::assertTrue($client->setNxEx('key', 'value', 10));
+        self::assertTrue($client->deleteIfValue('key', 'value'));
         self::assertSame(['event-a', '9'], $client->zRangeByScore('z', '-inf', '+inf', 1, 2));
         self::assertSame(1, $client->zAdd('z', 1.5, 'member'));
         self::assertSame(1, $client->zRem('z', 'member'));
@@ -89,6 +93,9 @@ final class SocketRedisClientTest extends TestCase
             ['AUTH', ['secret']],
             ['SELECT', ['2']],
             ['SET', ['key', 'value', 'EX', '10', 'NX']],
+            ['AUTH', ['secret']],
+            ['SELECT', ['2']],
+            ['EVAL', [self::deleteIfValueLua(), '1', 'key', 'value']],
             ['AUTH', ['secret']],
             ['SELECT', ['2']],
             ['ZRANGEBYSCORE', ['z', '-inf', '+inf', 'LIMIT', '1', '2']],
@@ -116,6 +123,8 @@ final class SocketRedisClientTest extends TestCase
             "+OK\r\n",
             ":0\r\n",
             "+OK\r\n",
+            ":0\r\n",
+            "+OK\r\n",
             "*-1\r\n",
             "+OK\r\n",
             "-ERR denied\r\n",
@@ -126,6 +135,7 @@ final class SocketRedisClientTest extends TestCase
         self::assertFalse($client->expire('missing', 60));
         self::assertFalse($client->get('missing'));
         self::assertFalse($client->setNxEx('key', 'value', 10));
+        self::assertFalse($client->deleteIfValue('key', 'value'));
         self::assertSame([], $client->zRangeByScore('z', '-inf', '+inf', 0, 1));
 
         $this->expectException(\RuntimeException::class);
@@ -151,6 +161,16 @@ final class SocketRedisClientTest extends TestCase
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('Redis returned an unsupported response type.');
         $client->exists('key');
+    }
+
+    private static function deleteIfValueLua(): string
+    {
+        return <<<'LUA'
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+LUA;
     }
 }
 

@@ -21,9 +21,10 @@ final class InMemoryRedisClientTest extends TestCase
         self::assertTrue($client->exists('key'));
         self::assertTrue($client->expire('key', 60));
         self::assertSame('value', $client->get('key'));
-        self::assertSame(0, $client->delete('missing'));
-        self::assertSame(1, $client->delete('key'));
+        self::assertFalse($client->deleteIfValue('key', 'other'));
+        self::assertTrue($client->deleteIfValue('key', 'value'));
         self::assertFalse($client->exists('key'));
+        self::assertSame(0, $client->delete('missing'));
         self::assertSame(1, $client->increment('count'));
         self::assertSame(2, $client->increment('count'));
     }

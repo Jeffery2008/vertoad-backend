@@ -8,9 +8,11 @@ use VertoAD\Infrastructure\Redis\NativeRedisClient;
 use VertoAD\Infrastructure\Redis\RedisClientFactory;
 use VertoAD\Infrastructure\Redis\RedisClientInterface;
 
-final readonly class RedisCronLockStore implements CronLockStoreInterface
+final class RedisCronLockStore implements CronLockStoreInterface
 {
     private RedisClientInterface $client;
+    /** @var array<string, string> */
+    private array $ownedLocks = [];
 
     public function __construct(RedisClientInterface|\Redis $redis, private string $prefix)
     {
@@ -28,12 +30,26 @@ final readonly class RedisCronLockStore implements CronLockStoreInterface
             throw new \InvalidArgumentException('Cron lock TTL seconds must be positive.');
         }
 
-        return $this->client->setNxEx($this->prefix . $lockKey, '1', $ttlSeconds);
+        $token = bin2hex(random_bytes(16));
+        if (!$this->client->setNxEx($this->prefix . $lockKey, $token, $ttlSeconds)) {
+            return false;
+        }
+
+        $this->ownedLocks[$lockKey] = $token;
+
+        return true;
     }
 
     public function release(string $lockKey): void
     {
-        $this->client->delete($this->prefix . $lockKey);
+        $token = $this->ownedLocks[$lockKey] ?? null;
+        unset($this->ownedLocks[$lockKey]);
+
+        if ($token === null) {
+            return;
+        }
+
+        $this->client->deleteIfValue($this->prefix . $lockKey, $token);
     }
 
     public function isLocked(string $lockKey): bool

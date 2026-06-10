@@ -17,6 +17,7 @@ final readonly class RedisAdEventRepository implements AdEventRepositoryInterfac
 {
     private const DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 300;
     private const DEFAULT_EVENT_RETENTION_SECONDS = 604800;
+    private const DEFAULT_MAX_FAILURES = 3;
     private RedisClientInterface $client;
 
     public function __construct(
@@ -24,6 +25,7 @@ final readonly class RedisAdEventRepository implements AdEventRepositoryInterfac
         private string $prefix,
         private int $visibilityTimeoutSeconds = self::DEFAULT_VISIBILITY_TIMEOUT_SECONDS,
         private int $eventRetentionSeconds = self::DEFAULT_EVENT_RETENTION_SECONDS,
+        private int $maxFailures = self::DEFAULT_MAX_FAILURES,
     ) {
         $this->client = $redis instanceof RedisClientInterface ? $redis : new NativeRedisClient($redis);
 
@@ -33,6 +35,10 @@ final readonly class RedisAdEventRepository implements AdEventRepositoryInterfac
 
         if ($eventRetentionSeconds <= 0) {
             throw new \InvalidArgumentException('Serving event retention seconds must be positive.');
+        }
+
+        if ($maxFailures <= 0) {
+            throw new \InvalidArgumentException('Serving event max failures must be positive.');
         }
     }
 
@@ -49,6 +55,7 @@ final readonly class RedisAdEventRepository implements AdEventRepositoryInterfac
             (string) ($settings['prefix'] ?? 'vertoad:'),
             (int) ($settings['serving_event_visibility_timeout_seconds'] ?? self::DEFAULT_VISIBILITY_TIMEOUT_SECONDS),
             (int) ($settings['serving_event_retention_seconds'] ?? self::DEFAULT_EVENT_RETENTION_SECONDS),
+            (int) ($settings['serving_event_max_failures'] ?? self::DEFAULT_MAX_FAILURES),
         );
     }
 
@@ -141,7 +148,26 @@ LUA,
 
     public function acknowledge(AdEvent $event): void
     {
-        $this->client->zRem($this->processingKey(), $this->eventKey($event->eventType, $event->eventId));
+        $key = $this->eventKey($event->eventType, $event->eventId);
+        $this->client->zRem($this->processingKey(), $key);
+        $this->client->delete($this->failureKey($key));
+    }
+
+    public function fail(AdEvent $event, \Throwable $reason): void
+    {
+        $key = $this->eventKey($event->eventType, $event->eventId);
+        $failureKey = $this->failureKey($key);
+        $failures = $this->client->increment($failureKey);
+        $this->client->expire($failureKey, $this->eventRetentionSeconds);
+        $this->client->zRem($this->processingKey(), $key);
+
+        if ($failures >= $this->maxFailures) {
+            $this->client->zAdd($this->deadLetterKey(), time(), $key);
+
+            return;
+        }
+
+        $this->client->zAdd($this->pendingKey(), time() + min(60, $failures * 5), $key);
     }
 
     private function record(AdEvent $event): void
@@ -267,6 +293,16 @@ LUA,
     private function processingKey(): string
     {
         return $this->prefix . 'serving-events:processing';
+    }
+
+    private function deadLetterKey(): string
+    {
+        return $this->prefix . 'serving-events:dead-letter';
+    }
+
+    private function failureKey(string $eventKey): string
+    {
+        return $eventKey . ':failures';
     }
 
     private function validImpressionIndex(string $decisionId, string $viewerId): string

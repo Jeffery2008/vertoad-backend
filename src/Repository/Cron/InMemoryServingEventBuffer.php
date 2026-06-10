@@ -30,6 +30,16 @@ final class InMemoryServingEventBuffer implements ServingEventBufferInterface
 
     public function acknowledge(AdEvent $event): void
     {
+        $this->remove($event);
+    }
+
+    public function fail(AdEvent $event, \Throwable $reason): void
+    {
+        $this->remove($event);
+    }
+
+    private function remove(AdEvent $event): void
+    {
         $key = $event->eventType . ':' . $event->eventId;
         $this->events = array_values(array_filter(
             $this->events,

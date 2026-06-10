@@ -191,6 +191,40 @@ final class ServingRepositoryTest extends TestCase
         self::assertFalse($repository->hasEvent('impression', 'imp-buffer'));
     }
 
+    public function testInMemoryEventRepositoryFailRemovesPoisonEventFromCronLease(): void
+    {
+        $repository = new InMemoryAdEventRepository();
+        $repository->recordClick(
+            new AdDecision(
+                decisionId: 'decision-buffer',
+                siteId: 10,
+                slotId: 20,
+                viewerId: 'viewer-buffer',
+                filled: true,
+                reason: null,
+                iframeHtml: '<div>Ad</div>',
+                width: 300,
+                height: 250,
+                adId: 'ad-buffer',
+                campaignId: 30,
+                advertiserOrganizationId: 40,
+                publisherOrganizationId: 50,
+                impressionCostPoints: 60,
+                clickCostPoints: 70,
+                landingUrl: 'https://advertiser.example/landing',
+                decidedAt: new DateTimeImmutable('2026-06-08T09:59:00Z'),
+            ),
+            'clk-poison',
+            new DateTimeImmutable('2026-06-08T10:00:00Z'),
+        );
+
+        $event = $repository->lease(1)[0];
+        $repository->fail($event, new \RuntimeException('poison event'));
+
+        self::assertSame([], $repository->lease(1));
+        self::assertFalse($repository->hasEvent('click', 'clk-poison'));
+    }
+
     public function testInMemoryEventRepositoryRejectsInvalidCronLeaseLimit(): void
     {
         $this->expectException(\InvalidArgumentException::class);

@@ -12,6 +12,8 @@ use VertoAD\Domain\Serving\AdEvent;
 use VertoAD\Repository\Billing\RevenueShareRepository;
 use VertoAD\Repository\CampaignBudgetRepository;
 use VertoAD\Repository\Cron\InMemoryServingEventBuffer;
+use VertoAD\Repository\Cron\ServingEventBufferInterface;
+use VertoAD\Repository\Cron\ServingEventPersistenceInterface;
 use VertoAD\Repository\Serving\DatabaseAdEventRepository;
 use VertoAD\Repository\PointsLedgerRepository;
 use VertoAD\Service\Billing\AdEventBillingService;
@@ -135,20 +137,49 @@ final class EventConsumptionJobTest extends TestCase
         (new InMemoryServingEventBuffer())->lease(0);
     }
 
-    public function testPersistFailureLeavesLeasedEventUnacknowledged(): void
+    public function testPersistFailureIsMarkedFailedWithoutStoppingCron(): void
     {
         $connection = $this->createConnection();
         $connection->executeStatement('DROP TABLE ad_serving_events');
         $buffer = new InMemoryServingEventBuffer([$this->event('impression', 'imp-persist-fails', true, 40)]);
         $job = new EventConsumptionJob($buffer, new DatabaseAdEventRepository($connection), $this->billingService($connection), 100);
 
-        $this->expectException(\Throwable::class);
+        $result = $job->run();
 
-        try {
-            $job->run();
-        } finally {
-            self::assertCount(1, $buffer->pending());
-        }
+        self::assertSame('completed', $result->status);
+        self::assertSame(1, $result->metrics['consumed'] ?? null);
+        self::assertSame(1, $result->metrics['failed'] ?? null);
+        self::assertSame(0, $result->metrics['billed'] ?? null);
+        self::assertSame([], $buffer->pending());
+    }
+
+    public function testFailedEventIsRecordedAndDoesNotStopBatchConsumption(): void
+    {
+        $connection = $this->createConnection();
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        (new PointsLedgerService($ledgerRepository))->credit(99, 'advertiser_balance', null, 1_000, 'recharge:advertiser');
+        (new RevenueShareRepository($connection))->createRule('global', null, null, null, 5000, null, new DateTimeImmutable('2026-06-08 09:00:00'));
+        $buffer = new FailingAwareBuffer([
+            $this->event('impression', 'imp-poison', true, 40),
+            $this->event('impression', 'imp-good', true, 40),
+        ]);
+        $persistence = new ThrowingAdEventPersistence(
+            new DatabaseAdEventRepository($connection),
+            static fn (AdEvent $event): bool => $event->eventId === 'imp-poison',
+        );
+        $job = new EventConsumptionJob($buffer, $persistence, $this->billingService($connection), 100);
+
+        $result = $job->run();
+
+        self::assertSame('completed', $result->status);
+        self::assertSame(2, $result->metrics['consumed'] ?? null);
+        self::assertSame(1, $result->metrics['failed'] ?? null);
+        self::assertSame(1, $result->metrics['billed'] ?? null);
+        self::assertSame(['impression:imp-poison'], $buffer->failedKeys());
+        self::assertSame([], $buffer->pending());
+        self::assertNotNull((new DatabaseAdEventRepository($connection))->findEvent('impression', 'imp-good'));
+        self::assertNull((new DatabaseAdEventRepository($connection))->findEvent('impression', 'imp-poison'));
+        self::assertSame(960, $ledgerRepository->balanceForOrganization(99));
     }
 
     private function billingService(Connection $connection): AdEventBillingService
@@ -264,5 +295,85 @@ SQL
             valid: $valid,
             reason: $valid ? null : 'fraud_rejected',
         );
+    }
+}
+
+final class FailingAwareBuffer implements ServingEventBufferInterface
+{
+    /** @var list<AdEvent> */
+    private array $events;
+    /** @var list<string> */
+    private array $failed = [];
+
+    /** @param list<AdEvent> $events */
+    public function __construct(array $events)
+    {
+        $this->events = array_values($events);
+    }
+
+    public function lease(int $limit): array
+    {
+        if ($limit <= 0) {
+            throw new \InvalidArgumentException('Cron event consume batch size must be positive.');
+        }
+
+        return array_slice($this->events, 0, $limit);
+    }
+
+    public function acknowledge(AdEvent $event): void
+    {
+        $this->remove($event);
+    }
+
+    public function fail(AdEvent $event, \Throwable $reason): void
+    {
+        $this->failed[] = $event->eventType . ':' . $event->eventId;
+        $this->remove($event);
+    }
+
+    /** @return list<AdEvent> */
+    public function pending(): array
+    {
+        return $this->events;
+    }
+
+    /** @return list<string> */
+    public function failedKeys(): array
+    {
+        return $this->failed;
+    }
+
+    private function remove(AdEvent $event): void
+    {
+        $key = $event->eventType . ':' . $event->eventId;
+        $this->events = array_values(array_filter(
+            $this->events,
+            static fn (AdEvent $pending): bool => $pending->eventType . ':' . $pending->eventId !== $key,
+        ));
+    }
+}
+
+final readonly class ThrowingAdEventPersistence implements ServingEventPersistenceInterface
+{
+    /** @param callable(AdEvent): bool $shouldThrow */
+    public function __construct(
+        private DatabaseAdEventRepository $inner,
+        private \Closure $shouldThrow,
+    )
+    {
+    }
+
+    public function persist(AdEvent $event): void
+    {
+        if (($this->shouldThrow)($event)) {
+            throw new \RuntimeException('simulated poison event');
+        }
+
+        $this->inner->persist($event);
+    }
+
+    public function acknowledge(AdEvent $event): void
+    {
+        $this->inner->acknowledge($event);
     }
 }

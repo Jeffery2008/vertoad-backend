@@ -47,6 +47,26 @@ final class SocketRedisClient implements RedisClientInterface
         return (int) $this->command('DEL', [$key]);
     }
 
+    public function deleteIfValue(string $key, string $expectedValue): bool
+    {
+        $deleted = $this->command(
+            'EVAL',
+            [
+                <<<'LUA'
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+LUA,
+                '1',
+                $key,
+                $expectedValue,
+            ],
+        );
+
+        return (int) $deleted === 1;
+    }
+
     public function expire(string $key, int $seconds): bool
     {
         return (int) $this->command('EXPIRE', [$key, (string) $seconds]) === 1;

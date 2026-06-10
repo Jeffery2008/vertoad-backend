@@ -6,6 +6,7 @@ namespace VertoAD\Repository\Billing;
 
 use DateTimeImmutable;
 use Doctrine\DBAL\Connection;
+use Doctrine\DBAL\Platforms\SQLitePlatform;
 use VertoAD\Domain\Billing\WithdrawalProof;
 use VertoAD\Domain\Billing\WithdrawalRequest;
 use VertoAD\Domain\Billing\WithdrawalStatus;
@@ -14,6 +15,28 @@ final class WithdrawalRepository
 {
     public function __construct(private readonly Connection $connection)
     {
+    }
+
+    /**
+     * @template T
+     * @param callable(): T $operation
+     * @return T
+     */
+    public function transactional(callable $operation): mixed
+    {
+        return $this->connection->transactional($operation);
+    }
+
+    public function lockOrganizationForUpdate(int $organizationId): void
+    {
+        if ($organizationId <= 0 || $this->connection->getDatabasePlatform() instanceof SQLitePlatform) {
+            return;
+        }
+
+        $this->connection->executeQuery(
+            'SELECT id FROM organizations WHERE id = ? FOR UPDATE',
+            [$organizationId],
+        )->fetchAllAssociative();
     }
 
     /**
@@ -26,7 +49,7 @@ final class WithdrawalRepository
         string $payoutMethod,
         array $payoutAccount,
         ?string $notes,
-        int $ledgerEntryId,
+        ?int $ledgerEntryId,
         DateTimeImmutable $now,
     ): WithdrawalRequest {
         $this->connection->insert('withdrawal_requests', [
@@ -73,28 +96,34 @@ final class WithdrawalRepository
         ?array $payoutAccount,
         DateTimeImmutable $now,
     ): WithdrawalRequest {
-        $fields = [
-            'status' => $status->value,
-            'reviewer_user_id' => $reviewerUserId,
-            'reviewer_notes' => $reviewerNotes,
-        ];
+        $this->connection->update('withdrawal_requests', $this->stateFields($status, $reviewerUserId, $reviewerNotes, $payoutAccount, $now), ['id' => $id]);
+        $request = $this->findRequest($id);
+        assert($request instanceof WithdrawalRequest);
+        return $request;
+    }
 
-        if ($payoutAccount !== null) {
-            $fields['payout_account_json'] = json_encode($payoutAccount, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    /**
+     * @param array<string, mixed>|null $payoutAccount
+     */
+    public function updateRequestStateIfCurrent(
+        int $id,
+        WithdrawalStatus $expectedStatus,
+        WithdrawalStatus $status,
+        ?int $reviewerUserId,
+        ?string $reviewerNotes,
+        ?array $payoutAccount,
+        DateTimeImmutable $now,
+    ): ?WithdrawalRequest {
+        $affected = $this->connection->update(
+            'withdrawal_requests',
+            $this->stateFields($status, $reviewerUserId, $reviewerNotes, $payoutAccount, $now),
+            ['id' => $id, 'status' => $expectedStatus->value],
+        );
+
+        if ($affected < 1) {
+            return null;
         }
 
-        match ($status) {
-            WithdrawalStatus::Paid => $fields['paid_at'] = $now->format('Y-m-d H:i:s'),
-            WithdrawalStatus::Rejected => $fields['rejected_at'] = $now->format('Y-m-d H:i:s'),
-            WithdrawalStatus::Revoked => $fields['revoked_at'] = $now->format('Y-m-d H:i:s'),
-            WithdrawalStatus::Requested => $fields['resubmitted_at'] = $now->format('Y-m-d H:i:s'),
-        };
-
-        if ($status === WithdrawalStatus::Paid || $status === WithdrawalStatus::Rejected) {
-            $fields['reviewed_at'] = $now->format('Y-m-d H:i:s');
-        }
-
-        $this->connection->update('withdrawal_requests', $fields, ['id' => $id]);
         $request = $this->findRequest($id);
         assert($request instanceof WithdrawalRequest);
         return $request;
@@ -250,5 +279,40 @@ final class WithdrawalRepository
     private function nullableDate(mixed $value): ?DateTimeImmutable
     {
         return $value === null ? null : new DateTimeImmutable((string) $value);
+    }
+
+    /**
+     * @param array<string, mixed>|null $payoutAccount
+     * @return array<string, mixed>
+     */
+    private function stateFields(
+        WithdrawalStatus $status,
+        ?int $reviewerUserId,
+        ?string $reviewerNotes,
+        ?array $payoutAccount,
+        DateTimeImmutable $now,
+    ): array {
+        $fields = [
+            'status' => $status->value,
+            'reviewer_user_id' => $reviewerUserId,
+            'reviewer_notes' => $reviewerNotes,
+        ];
+
+        if ($payoutAccount !== null) {
+            $fields['payout_account_json'] = json_encode($payoutAccount, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        }
+
+        match ($status) {
+            WithdrawalStatus::Paid => $fields['paid_at'] = $now->format('Y-m-d H:i:s'),
+            WithdrawalStatus::Rejected => $fields['rejected_at'] = $now->format('Y-m-d H:i:s'),
+            WithdrawalStatus::Revoked => $fields['revoked_at'] = $now->format('Y-m-d H:i:s'),
+            WithdrawalStatus::Requested => $fields['resubmitted_at'] = $now->format('Y-m-d H:i:s'),
+        };
+
+        if ($status === WithdrawalStatus::Paid || $status === WithdrawalStatus::Rejected) {
+            $fields['reviewed_at'] = $now->format('Y-m-d H:i:s');
+        }
+
+        return $fields;
     }
 }

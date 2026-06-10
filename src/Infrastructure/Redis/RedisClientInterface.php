@@ -10,6 +10,8 @@ interface RedisClientInterface
 
     public function delete(string $key): int;
 
+    public function deleteIfValue(string $key, string $expectedValue): bool;
+
     public function expire(string $key, int $seconds): bool;
 
     public function get(string $key): string|false;

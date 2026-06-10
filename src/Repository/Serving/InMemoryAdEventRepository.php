@@ -113,6 +113,16 @@ final class InMemoryAdEventRepository implements AdEventRepositoryInterface, Ser
 
     public function acknowledge(AdEvent $event): void
     {
+        $this->remove($event);
+    }
+
+    public function fail(AdEvent $event, \Throwable $reason): void
+    {
+        $this->remove($event);
+    }
+
+    private function remove(AdEvent $event): void
+    {
         $key = $this->key($event->eventType, $event->eventId);
         unset($this->eventIds[$key]);
         $this->events = array_values(array_filter(

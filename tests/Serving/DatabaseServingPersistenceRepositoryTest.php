@@ -123,6 +123,23 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
         self::assertSame(20, $rows[0]->revenuePoints);
     }
 
+    public function testCronFailMarksDatabaseEventProcessedWithoutRemovingReportHistory(): void
+    {
+        $connection = $this->createConnection();
+        $decision = $this->decision();
+        (new DatabaseAdDecisionRepository($connection))->save($decision);
+        $events = new DatabaseAdEventRepository($connection);
+        $events->recordClick($decision, 'clk-poison', new DateTimeImmutable('2026-06-08T10:00:20+00:00'));
+
+        $leased = $events->lease(10);
+        self::assertSame(['clk-poison'], array_map(static fn ($event): string => $event->eventId, $leased));
+
+        $events->fail($leased[0], new \RuntimeException('poison event'));
+
+        self::assertSame([], $events->lease(10));
+        self::assertTrue($events->hasEvent('click', 'clk-poison'));
+    }
+
     public function testReportAggregateSupportsPublisherFilterAndHourGranularity(): void
     {
         $connection = $this->createConnection();
