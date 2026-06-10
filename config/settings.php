@@ -53,6 +53,12 @@ return [
             'public_base_url' => getenv('R2_PUBLIC_BASE_URL') ?: '',
         ],
     ],
+    'archive' => [
+        'raw_events_base_object_key' => getenv('ARCHIVE_RAW_EVENTS_BASE_OBJECT_KEY') ?: 's3://vertoad-archive/raw-events',
+        'query_results_base_object_key' => getenv('ARCHIVE_QUERY_RESULTS_BASE_OBJECT_KEY') ?: 's3://vertoad-archive/query-results',
+        'writer' => getenv('ARCHIVE_WRITER') ?: '',
+        'cold_query_runner' => getenv('ARCHIVE_COLD_QUERY_RUNNER') ?: '',
+    ],
     'assets' => [
         'upload_intent_ttl_seconds' => (int) (getenv('ASSET_UPLOAD_INTENT_TTL_SECONDS') ?: 900),
         'image_max_bytes' => (int) (getenv('ASSET_IMAGE_MAX_BYTES') ?: 10485760),
@@ -104,6 +110,8 @@ return [
         'signing_secret' => getenv('WEBHOOK_SIGNING_SECRET') ?: 'whsec_local_dev_secret',
         'retry_batch_size' => (int) (getenv('WEBHOOK_RETRY_BATCH_SIZE') ?: 50),
         'http_timeout_seconds' => (int) (getenv('WEBHOOK_HTTP_TIMEOUT_SECONDS') ?: 5),
+        'max_retry_count' => (int) (getenv('WEBHOOK_MAX_RETRY_COUNT') ?: 3),
+        'retry_base_backoff_seconds' => (int) (getenv('WEBHOOK_RETRY_BASE_BACKOFF_SECONDS') ?: 300),
     ],
     'cloudflare' => [
         'real_ip_header' => getenv('CLOUDFLARE_REAL_IP_HEADER') ?: 'CF-Connecting-IP',

@@ -35,6 +35,7 @@ use VertoAD\Repository\Operations\OperationErrorLogRepositoryInterface;
 use VertoAD\Repository\PasswordResetTokenRepositoryInterface;
 use VertoAD\Repository\PointsLedgerRepositoryInterface;
 use VertoAD\Repository\PublisherSiteRepositoryInterface;
+use VertoAD\Repository\PublisherSiteVerificationAttemptRepositoryInterface;
 use VertoAD\Repository\RechargeKeyRepositoryInterface;
 use VertoAD\Repository\Reporting\DatabaseReportAggregateRepository;
 use VertoAD\Repository\Reporting\ReportAggregateRepositoryInterface;
@@ -48,7 +49,11 @@ use VertoAD\Http\Error\OperationErrorHandler;
 use VertoAD\Service\AdSlotSetupService;
 use VertoAD\Service\Archive\ArchiveJob;
 use VertoAD\Service\Archive\ArchiveService;
+use VertoAD\Service\Archive\ArchiveWriterInterface;
+use VertoAD\Service\Archive\ColdQueryRunnerInterface;
 use VertoAD\Service\Archive\ColdQueryService;
+use VertoAD\Service\Archive\DeterministicArchiveWriter;
+use VertoAD\Service\Archive\FixtureColdQueryRunner;
 use VertoAD\Service\Attribution\AttributionService;
 use VertoAD\Service\AuditLogService;
 use VertoAD\Service\AuthService;
@@ -128,6 +133,7 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(PermissionMatcher::class, $container->get(PermissionMatcher::class));
             self::assertInstanceOf(TenantAccessService::class, $container->get(TenantAccessService::class));
             self::assertInstanceOf(PublisherSiteRepositoryInterface::class, $container->get(PublisherSiteRepositoryInterface::class));
+            self::assertInstanceOf(PublisherSiteVerificationAttemptRepositoryInterface::class, $container->get(PublisherSiteVerificationAttemptRepositoryInterface::class));
             self::assertInstanceOf(PublisherSiteVerificationService::class, $container->get(PublisherSiteVerificationService::class));
             self::assertInstanceOf(AdSlotRepositoryInterface::class, $container->get(AdSlotRepositoryInterface::class));
             self::assertInstanceOf(AdSlotSetupService::class, $container->get(AdSlotSetupService::class));
@@ -181,6 +187,10 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(AdServingService::class, $container->get(AdServingService::class));
             self::assertInstanceOf(ArchiveRepositoryInterface::class, $container->get(ArchiveRepositoryInterface::class));
             self::assertInstanceOf(DatabaseArchiveRepository::class, $container->get(ArchiveRepositoryInterface::class));
+            self::assertInstanceOf(ArchiveWriterInterface::class, $container->get(ArchiveWriterInterface::class));
+            self::assertInstanceOf(DeterministicArchiveWriter::class, $container->get(ArchiveWriterInterface::class));
+            self::assertInstanceOf(ColdQueryRunnerInterface::class, $container->get(ColdQueryRunnerInterface::class));
+            self::assertInstanceOf(FixtureColdQueryRunner::class, $container->get(ColdQueryRunnerInterface::class));
             self::assertInstanceOf(ArchiveJob::class, $container->get(ArchiveJob::class));
             self::assertInstanceOf(ArchiveService::class, $container->get(ArchiveService::class));
             self::assertInstanceOf(ColdQueryService::class, $container->get(ColdQueryService::class));
@@ -566,6 +576,156 @@ PHP);
         }
     }
 
+    public function testWebhookDeliveryJobUsesConfiguredRetryCapAndBackoff(): void
+    {
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'memory' => true,
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => ['webhook-retry'],
+            ],
+            'webhooks' => [
+                'signing_secret' => 'whsec_container_test',
+                'retry_batch_size' => 9,
+                'http_timeout_seconds' => 2,
+                'max_retry_count' => 6,
+                'retry_base_backoff_seconds' => 45,
+            ],
+        ], 'vertoad-appfactory-webhooks-');
+
+        try {
+            $container = AppFactory::create($basePath)->getContainer();
+            $job = $container?->get(WebhookDeliveryJob::class);
+
+            self::assertInstanceOf(WebhookDeliveryJob::class, $job);
+            self::assertSame(9, $this->privateIntProperty($job, 'batchSize'));
+            self::assertSame(6, $this->privateIntProperty($job, 'maxRetryCount'));
+            self::assertSame(45, $this->privateIntProperty($job, 'baseBackoffSeconds'));
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
+        }
+    }
+
+    public function testProductionRequiresExplicitArchiveRuntimeAdapters(): void
+    {
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'memory' => true,
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+            'archive' => [
+                'raw_events_base_object_key' => 's3://vertoad-archive/raw-events',
+                'query_results_base_object_key' => 's3://vertoad-archive/query-results',
+            ],
+        ]);
+
+        try {
+            $container = AppFactory::create($basePath)->getContainer();
+
+            try {
+                $container?->get(ArchiveWriterInterface::class);
+                self::fail('Expected production archive writer resolution to require an explicit adapter.');
+            } catch (\RuntimeException $exception) {
+                self::assertSame('ARCHIVE_WRITER must be configured outside local/testing.', $exception->getMessage());
+            }
+
+            try {
+                $container?->get(ColdQueryRunnerInterface::class);
+                self::fail('Expected production cold query runner resolution to require an explicit adapter.');
+            } catch (\RuntimeException $exception) {
+                self::assertSame('ARCHIVE_COLD_QUERY_RUNNER must be configured outside local/testing.', $exception->getMessage());
+            }
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
+        }
+    }
+
+    public function testArchiveRuntimeAdaptersAreExplicitlyLimitedToLocalAndTesting(): void
+    {
+        $localBasePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'testing',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'memory' => true,
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+            'archive' => [
+                'writer' => 'deterministic',
+                'cold_query_runner' => 'fixture',
+            ],
+        ]);
+        $prodBasePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'memory' => true,
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+            'archive' => [
+                'writer' => 'deterministic',
+                'cold_query_runner' => 'fixture',
+            ],
+        ]);
+
+        try {
+            $localContainer = AppFactory::create($localBasePath)->getContainer();
+            self::assertInstanceOf(DeterministicArchiveWriter::class, $localContainer?->get(ArchiveWriterInterface::class));
+            self::assertInstanceOf(FixtureColdQueryRunner::class, $localContainer?->get(ColdQueryRunnerInterface::class));
+
+            $prodContainer = AppFactory::create($prodBasePath)->getContainer();
+            try {
+                $prodContainer?->get(ArchiveWriterInterface::class);
+                self::fail('Expected deterministic archive writer to be forbidden outside local/testing.');
+            } catch (\RuntimeException $exception) {
+                self::assertSame('ARCHIVE_WRITER=deterministic is only allowed in local/testing.', $exception->getMessage());
+            }
+
+            try {
+                $prodContainer?->get(ColdQueryRunnerInterface::class);
+                self::fail('Expected fixture cold query runner to be forbidden outside local/testing.');
+            } catch (\RuntimeException $exception) {
+                self::assertSame('ARCHIVE_COLD_QUERY_RUNNER=fixture is only allowed in local/testing.', $exception->getMessage());
+            }
+        } finally {
+            $this->removeTemporaryAppBasePath($localBasePath);
+            $this->removeTemporaryAppBasePath($prodBasePath);
+        }
+    }
+
     public function testCreateLoadsEnvironmentFileWhenPresentInBasePath(): void
     {
         $basePath = sys_get_temp_dir() . '/vertoad-appfactory-env-' . bin2hex(random_bytes(4));
@@ -662,10 +822,7 @@ PHP);
     /** @param array<string, mixed> $aiReview */
     private function temporaryAppBasePath(array $aiReview): string
     {
-        $basePath = sys_get_temp_dir() . '/vertoad-appfactory-ai-' . bin2hex(random_bytes(4));
-        $configPath = $basePath . '/config';
-        mkdir($configPath, recursive: true);
-        file_put_contents($configPath . '/settings.php', '<?php return ' . var_export([
+        return $this->temporaryAppBasePathWithSettings([
             'app' => [
                 'debug' => false,
                 'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
@@ -680,7 +837,16 @@ PHP);
                 'jobs' => [],
             ],
             'ai_review' => $aiReview,
-        ], true) . ';');
+        ], 'vertoad-appfactory-ai-');
+    }
+
+    /** @param array<string, mixed> $settings */
+    private function temporaryAppBasePathWithSettings(array $settings, string $prefix = 'vertoad-appfactory-'): string
+    {
+        $basePath = sys_get_temp_dir() . '/' . $prefix . bin2hex(random_bytes(4));
+        $configPath = $basePath . '/config';
+        mkdir($configPath, recursive: true);
+        file_put_contents($configPath . '/settings.php', '<?php return ' . var_export($settings, true) . ';');
         file_put_contents($configPath . '/routes.php', <<<'PHP'
 <?php
 
@@ -693,6 +859,22 @@ return static function (App $app): void {
 PHP);
 
         return $basePath;
+    }
+
+    private function removeTemporaryAppBasePath(string $basePath): void
+    {
+        @unlink($basePath . '/config/routes.php');
+        @unlink($basePath . '/config/settings.php');
+        @rmdir($basePath . '/config');
+        @rmdir($basePath);
+    }
+
+    private function privateIntProperty(object $object, string $property): int
+    {
+        $reflection = new \ReflectionProperty($object, $property);
+        $reflection->setAccessible(true);
+
+        return (int) $reflection->getValue($object);
     }
 
     private function defineFakeRedisIfMissing(): void

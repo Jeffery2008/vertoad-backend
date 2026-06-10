@@ -39,6 +39,7 @@ final readonly class ArchiveSerializers
             'row_count' => $job->rowCount,
             'result_object_key' => $job->resultObjectKey,
             'scanned_object_keys' => $job->scannedObjectKeys,
+            'error_message' => $job->errorMessage,
             'created_at' => $job->createdAt->format(DATE_ATOM),
             'completed_at' => $job->completedAt?->format(DATE_ATOM),
         ];

@@ -95,6 +95,10 @@ final class AssetUploadService
             throw new AssetValidationException('asset_upload_intent_not_found', 'Upload intent was not found.', 404);
         }
 
+        if ($intent->expiresAt <= new DateTimeImmutable()) {
+            throw new AssetValidationException('asset_upload_intent_expired', 'Upload intent has expired.');
+        }
+
         $contentType = strtolower(trim($contentType));
         if ($objectKey !== $intent->objectKey || $contentType !== $intent->contentType || $byteSize !== $intent->byteSize) {
             throw new AssetValidationException('asset_upload_metadata_mismatch', 'Uploaded asset metadata does not match the upload intent.');

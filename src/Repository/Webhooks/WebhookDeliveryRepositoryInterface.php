@@ -27,7 +27,12 @@ interface WebhookDeliveryRepositoryInterface
     /**
      * @return list<WebhookDelivery>
      */
-    public function pendingRetry(int $limit, ?DateTimeImmutable $now = null): array;
+    public function pendingRetry(int $limit, ?DateTimeImmutable $now = null, int $maxRetryCount = 3): array;
+
+    /**
+     * @return list<WebhookDelivery>
+     */
+    public function markDueRetriesExhausted(int $limit, ?DateTimeImmutable $now = null, int $maxRetryCount = 3): array;
 
     /**
      * @return list<WebhookDelivery>

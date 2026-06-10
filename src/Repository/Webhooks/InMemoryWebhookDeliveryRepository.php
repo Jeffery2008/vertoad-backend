@@ -64,10 +64,13 @@ final class InMemoryWebhookDeliveryRepository implements WebhookDeliveryReposito
         return array_values($this->deliveries);
     }
 
-    public function pendingRetry(int $limit, ?DateTimeImmutable $now = null): array
+    public function pendingRetry(int $limit, ?DateTimeImmutable $now = null, int $maxRetryCount = 3): array
     {
         if ($limit <= 0) {
             return [];
+        }
+        if ($maxRetryCount <= 0) {
+            throw new \InvalidArgumentException('Webhook retry cap must be positive.');
         }
 
         $now ??= new DateTimeImmutable('now', new DateTimeZone('UTC'));
@@ -76,8 +79,53 @@ final class InMemoryWebhookDeliveryRepository implements WebhookDeliveryReposito
             $this->deliveries,
             static fn (WebhookDelivery $delivery): bool =>
                 in_array($delivery->status, ['queued', 'failed'], true)
-                && $delivery->next_attempt_at <= $now,
+                && $delivery->next_attempt_at <= $now
+            && $delivery->retry_count < $maxRetryCount,
         )), 0, $limit);
+    }
+
+    public function markDueRetriesExhausted(int $limit, ?DateTimeImmutable $now = null, int $maxRetryCount = 3): array
+    {
+        if ($limit <= 0) {
+            return [];
+        }
+        if ($maxRetryCount <= 0) {
+            throw new \InvalidArgumentException('Webhook retry cap must be positive.');
+        }
+
+        $now ??= new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $candidates = array_slice(array_values(array_filter(
+            $this->deliveries,
+            static fn (WebhookDelivery $delivery): bool =>
+                $delivery->status === 'failed'
+                && $delivery->next_attempt_at <= $now
+                && $delivery->retry_count >= $maxRetryCount,
+        )), 0, $limit);
+
+        $exhausted = [];
+        foreach ($candidates as $delivery) {
+            $terminalAt = $delivery->last_attempt_at ?? $now;
+            $exhausted[] = $this->save(new WebhookDelivery(
+                delivery_id: $delivery->delivery_id,
+                organization_id: $delivery->organization_id,
+                webhook_endpoint_id: $delivery->webhook_endpoint_id,
+                endpoint_id: $delivery->endpoint_id,
+                endpoint_url: $delivery->endpoint_url,
+                event_type: $delivery->event_type,
+                payload_json: $delivery->payload_json,
+                status: 'exhausted',
+                retry_count: $delivery->retry_count,
+                next_attempt_at: $terminalAt,
+                last_attempt_at: $delivery->last_attempt_at,
+                last_status_code: $delivery->last_status_code,
+                last_error: $delivery->last_error,
+                signature_header: $delivery->signature_header,
+                created_at: $delivery->created_at,
+                delivered_at: null,
+            ));
+        }
+
+        return $exhausted;
     }
 
     public function listForOrganization(int $organizationId, ?string $endpointId = null, ?string $status = null, int $limit = 50): array

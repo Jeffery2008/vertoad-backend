@@ -19,6 +19,7 @@ use VertoAD\Http\Action\Publisher\CreatePublisherSiteAction;
 use VertoAD\Http\Action\Publisher\GetPublisherSiteVerificationChallengeAction;
 use VertoAD\Http\Action\Publisher\ListPublisherAdSlotPresetsAction;
 use VertoAD\Http\Action\Publisher\ListPublisherAdSlotsAction;
+use VertoAD\Http\Action\Publisher\ListPublisherSiteVerificationAttemptsAction;
 use VertoAD\Http\Action\Publisher\ListPublisherSitesAction;
 use VertoAD\Http\Action\Publisher\VerifyPublisherSiteAction;
 use VertoAD\Http\Auth\BearerTokenAuthenticator;
@@ -32,6 +33,8 @@ use VertoAD\Repository\AdSlotRepositoryInterface;
 use VertoAD\Repository\FirstPartySessionRepositoryInterface;
 use VertoAD\Repository\OrganizationMembershipRepositoryInterface;
 use VertoAD\Repository\PublisherSiteRepository;
+use VertoAD\Repository\PublisherSiteVerificationAttemptRepository;
+use VertoAD\Repository\PublisherSiteVerificationAttemptRepositoryInterface;
 use VertoAD\Repository\PublisherSiteRepositoryInterface;
 use VertoAD\Service\AdSlotSetupService;
 use VertoAD\Service\PermissionMatcher;
@@ -53,6 +56,7 @@ final class PublisherRouteIntegrationTest extends TestCase
                 ['POST', '/api/v1/publisher/sites?organization_id=99'],
                 ['GET', '/api/v1/publisher/sites/1/verification-challenge?organization_id=99'],
                 ['POST', '/api/v1/publisher/sites/1/verify?organization_id=99'],
+                ['GET', '/api/v1/publisher/sites/1/verification-attempts?organization_id=99'],
                 ['GET', '/api/v1/publisher/ad-slot-presets?organization_id=99'],
                 ['GET', '/api/v1/publisher/sites/1/slots?organization_id=99'],
                 ['POST', '/api/v1/publisher/sites/1/slots?organization_id=99'],
@@ -88,6 +92,7 @@ final class PublisherRouteIntegrationTest extends TestCase
                 ['POST', '/api/v1/publisher/sites?organization_id=99', ['name' => 'Denied', 'domain' => 'denied.example'], 'publisher.site.write.own'],
                 ['GET', '/api/v1/publisher/sites/1/verification-challenge?organization_id=99', null, 'publisher.site.verify.own'],
                 ['POST', '/api/v1/publisher/sites/1/verify?organization_id=99', ['method' => 'html_meta', 'observed_value' => 'x'], 'publisher.site.verify.own'],
+                ['GET', '/api/v1/publisher/sites/1/verification-attempts?organization_id=99', null, 'publisher.site.verify.own'],
                 ['GET', '/api/v1/publisher/ad-slot-presets?organization_id=99', null, 'publisher.slot.read.own'],
                 ['GET', '/api/v1/publisher/sites/1/slots?organization_id=99', null, 'publisher.slot.read.own'],
                 ['POST', '/api/v1/publisher/sites/1/slots?organization_id=99', ['name' => 'Denied', 'slot_key' => 'denied', 'size_preset' => 'leaderboard'], 'publisher.slot.write.own'],
@@ -103,6 +108,7 @@ final class PublisherRouteIntegrationTest extends TestCase
     {
         $connection = $this->createConnection();
         $siteRepository = new PublisherSiteRepository($connection);
+        $attemptRepository = new PublisherSiteVerificationAttemptRepository($connection);
         $slotRepository = new AdSlotRepository($connection);
         $verification = new PublisherSiteVerificationService($siteRepository);
         $slotSetup = new AdSlotSetupService($siteRepository, $slotRepository);
@@ -115,6 +121,7 @@ final class PublisherRouteIntegrationTest extends TestCase
                 static fn () => (new CreatePublisherSiteAction($siteRepository))->__invoke($request, $responseFactory->createResponse()),
                 static fn () => (new GetPublisherSiteVerificationChallengeAction($siteRepository, $verification))->__invoke($request, $responseFactory->createResponse(), ['site_id' => '1']),
                 static fn () => (new VerifyPublisherSiteAction($siteRepository, $verification))->__invoke($request, $responseFactory->createResponse(), ['site_id' => '1']),
+                static fn () => (new ListPublisherSiteVerificationAttemptsAction($siteRepository, $attemptRepository))->__invoke($request, $responseFactory->createResponse(), ['site_id' => '1']),
                 static fn () => (new ListPublisherAdSlotPresetsAction($slotSetup))->__invoke($request, $responseFactory->createResponse()),
                 static fn () => (new ListPublisherAdSlotsAction($siteRepository, $slotRepository))->__invoke($request, $responseFactory->createResponse(), ['site_id' => '1']),
                 static fn () => (new CreatePublisherAdSlotAction($siteRepository, $slotSetup))->__invoke($request, $responseFactory->createResponse(), ['site_id' => '1']),
@@ -142,7 +149,12 @@ final class PublisherRouteIntegrationTest extends TestCase
     public function testCreateListVerifyAndCreateSlotThroughRoutes(): void
     {
         $connection = $this->createConnection();
-        $app = $this->createApp($connection);
+        $app = $this->createApp(
+            $connection,
+            dnsTxtResolver: static fn (string $host): array => [
+                'vertoad-site-verification=va-' . substr(hash('sha256', '1|example.com|' . (string) $connection->fetchOne('SELECT verification_token FROM sites WHERE id = 1')), 0, 40),
+            ],
+        );
 
         $created = $this->handleJson($app, 'POST', '/api/v1/publisher/sites?organization_id=99', [
             'name' => 'Publisher Home',
@@ -169,9 +181,21 @@ final class PublisherRouteIntegrationTest extends TestCase
 
         $verified = $this->handleJson($app, 'POST', '/api/v1/publisher/sites/' . $created['data']['id'] . '/verify?organization_id=99', [
             'method' => 'dns_txt',
-            'observed_value' => $challenge['data']['expected_value'],
         ], 'valid-token');
         self::assertSame('verified', $verified['data']['status']);
+        self::assertSame(1, (int) $connection->fetchOne('SELECT COUNT(*) FROM publisher_site_verification_attempts WHERE site_id = 1 AND organization_id = 99 AND status = "success"'));
+        $attempts = $this->handleJson(
+            $app,
+            'GET',
+            '/api/v1/publisher/sites/' . $created['data']['id'] . '/verification-attempts?organization_id=99',
+            null,
+            'valid-token',
+        );
+        self::assertCount(1, $attempts['data']);
+        self::assertSame('success', $attempts['data'][0]['status']);
+        self::assertSame('dns_txt', $attempts['data'][0]['method']);
+        self::assertArrayNotHasKey('expected_value', $attempts['data'][0]);
+        self::assertStringContainsString('sha256:', $attempts['data'][0]['observed_summary']);
 
         $presets = $this->handleJson($app, 'GET', '/api/v1/publisher/ad-slot-presets?organization_id=99', null, 'valid-token');
         self::assertSame(728, $presets['data']['leaderboard']['width']);
@@ -221,7 +245,11 @@ final class PublisherRouteIntegrationTest extends TestCase
             'verification_token' => 'secret',
             'verified_at' => null,
         ]);
-        $app = $this->createApp($connection);
+        $app = $this->createApp(
+            $connection,
+            httpFetcher: static fn (string $url): ?string => '<meta name="vertoad-site-verification" content="attacker-token">',
+            dnsTxtResolver: static fn (string $host): array => [],
+        );
 
         self::assertSame(
             'invalid_request',
@@ -230,6 +258,10 @@ final class PublisherRouteIntegrationTest extends TestCase
         self::assertSame(
             'publisher_site_not_found',
             $this->handleJson($app, 'GET', '/api/v1/publisher/sites/1/verification-challenge?organization_id=99', null, 'valid-token')['error']['code'],
+        );
+        self::assertSame(
+            'publisher_site_not_found',
+            $this->handleJson($app, 'GET', '/api/v1/publisher/sites/1/verification-attempts?organization_id=99', null, 'valid-token')['error']['code'],
         );
 
         self::assertSame(
@@ -241,7 +273,13 @@ final class PublisherRouteIntegrationTest extends TestCase
     public function testPublisherRoutesRejectBadBodiesMethodsEvidenceAndUnverifiedSlots(): void
     {
         $connection = $this->createConnection();
-        $app = $this->createApp($connection);
+        $htmlBody = '<meta name="vertoad-site-verification" content="attacker-token">';
+        $app = $this->createApp(
+            $connection,
+            httpFetcher: static function (string $url) use (&$htmlBody): ?string {
+                return $htmlBody;
+            },
+        );
 
         self::assertSame(
             'invalid_request',
@@ -287,9 +325,16 @@ final class PublisherRouteIntegrationTest extends TestCase
             'publisher_site_verification_failed',
             $this->handleJson($app, 'POST', '/api/v1/publisher/sites/' . $site['data']['id'] . '/verify?organization_id=99', [
                 'method' => 'html_meta',
-                'observed_value' => 'wrong',
             ], 'valid-token')['error']['code'],
         );
+        $failedPayload = $this->handleJson($app, 'POST', '/api/v1/publisher/sites/' . $site['data']['id'] . '/verify?organization_id=99', [
+            'method' => 'html_meta',
+            'observed_value' => 'client-supplied-secret',
+        ], 'valid-token');
+        self::assertSame('publisher_site_verification_failed', $failedPayload['error']['code']);
+        self::assertStringNotContainsString('client-supplied-secret', json_encode($failedPayload, JSON_THROW_ON_ERROR));
+        self::assertStringNotContainsString('attacker-token', json_encode($failedPayload, JSON_THROW_ON_ERROR));
+        self::assertSame(2, (int) $connection->fetchOne('SELECT COUNT(*) FROM publisher_site_verification_attempts WHERE site_id = 1 AND organization_id = 99 AND status = "failed"'));
 
         self::assertSame(
             'publisher_site_not_verified',
@@ -312,16 +357,10 @@ final class PublisherRouteIntegrationTest extends TestCase
             )['error']['code'],
         );
 
-        $challenge = $this->handleJson(
-            $app,
-            'GET',
-            '/api/v1/publisher/sites/' . $site['data']['id'] . '/verification-challenge?organization_id=99',
-            null,
-            'valid-token',
-        );
+        $expectedToken = 'va-' . substr(hash('sha256', '1|example.com|' . (string) $site['data']['verification_token']), 0, 40);
+        $htmlBody = '<meta name="vertoad-site-verification" content="' . $expectedToken . '">';
         $this->handleJson($app, 'POST', '/api/v1/publisher/sites/' . $site['data']['id'] . '/verify?organization_id=99', [
             'method' => 'html_meta',
-            'observed_value' => $challenge['data']['expected_value'],
         ], 'valid-token');
 
         self::assertSame(
@@ -409,8 +448,11 @@ final class PublisherRouteIntegrationTest extends TestCase
         'publisher.site.verify.own',
         'publisher.slot.read.own',
         'publisher.slot.write.own',
-    ]): \Slim\App
+    ], ?callable $httpFetcher = null, ?callable $dnsTxtResolver = null, ?callable $httpHostResolver = null): \Slim\App
     {
+        $httpFetcher ??= static fn (string $url): ?string => null;
+        $dnsTxtResolver ??= static fn (string $host): array => [];
+        $httpHostResolver ??= static fn (string $host): array => ['93.184.216.34'];
         $container = (new ContainerBuilder())->addDefinitions([
             FirstPartySessionRepositoryInterface::class => static fn (): FirstPartySessionRepositoryInterface =>
                 new class implements FirstPartySessionRepositoryInterface {
@@ -444,9 +486,18 @@ final class PublisherRouteIntegrationTest extends TestCase
                 PermissionMatcher $matcher,
             ): TenantAccessService => new TenantAccessService($memberships, $matcher),
             PublisherSiteRepositoryInterface::class => static fn (): PublisherSiteRepositoryInterface => new PublisherSiteRepository($connection),
+            PublisherSiteVerificationAttemptRepositoryInterface::class => static fn (): PublisherSiteVerificationAttemptRepositoryInterface =>
+                new PublisherSiteVerificationAttemptRepository($connection),
             PublisherSiteVerificationService::class => static fn (
                 PublisherSiteRepositoryInterface $sites,
-            ): PublisherSiteVerificationService => new PublisherSiteVerificationService($sites),
+                PublisherSiteVerificationAttemptRepositoryInterface $attempts,
+            ): PublisherSiteVerificationService => new PublisherSiteVerificationService(
+                $sites,
+                $attempts,
+                $httpFetcher,
+                $dnsTxtResolver,
+                $httpHostResolver,
+            ),
             AdSlotRepositoryInterface::class => static fn (): AdSlotRepositoryInterface => new AdSlotRepository($connection),
             AdSlotSetupService::class => static fn (
                 PublisherSiteRepositoryInterface $sites,
@@ -474,6 +525,9 @@ final class PublisherRouteIntegrationTest extends TestCase
             ->add($require('publisher.site.verify.own'))
             ->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/publisher/sites/{site_id}/verify', VerifyPublisherSiteAction::class)
+            ->add($require('publisher.site.verify.own'))
+            ->add(AuthenticateRequestMiddleware::class);
+        $app->get('/api/v1/publisher/sites/{site_id}/verification-attempts', ListPublisherSiteVerificationAttemptsAction::class)
             ->add($require('publisher.site.verify.own'))
             ->add(AuthenticateRequestMiddleware::class);
         $app->get('/api/v1/publisher/ad-slot-presets', ListPublisherAdSlotPresetsAction::class)
@@ -520,6 +574,20 @@ final class PublisherRouteIntegrationTest extends TestCase
                 is_responsive INTEGER NOT NULL DEFAULT 0,
                 responsive_rules_json TEXT NULL,
                 status TEXT NOT NULL
+            )',
+        );
+        $connection->executeStatement(
+            'CREATE TABLE publisher_site_verification_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                site_id INTEGER NOT NULL,
+                organization_id INTEGER NOT NULL,
+                method TEXT NOT NULL,
+                expected_value TEXT NOT NULL,
+                observed_summary TEXT NULL,
+                status TEXT NOT NULL,
+                failure_reason TEXT NULL,
+                created_at TEXT NOT NULL,
+                checked_at TEXT NOT NULL
             )',
         );
 

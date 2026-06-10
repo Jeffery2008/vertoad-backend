@@ -384,6 +384,14 @@ final class FakeAdSlotSetupPublisherSiteRepository implements PublisherSiteRepos
 
         return $verified;
     }
+
+    public function markVerificationFailed(PublisherSite $site): PublisherSite
+    {
+        $failed = $site->withVerification(PublisherSiteStatus::Failed, null);
+        $this->sitesById[$site->id] = $failed;
+
+        return $failed;
+    }
 }
 
 final class FakeAdSlotRepository implements AdSlotRepositoryInterface

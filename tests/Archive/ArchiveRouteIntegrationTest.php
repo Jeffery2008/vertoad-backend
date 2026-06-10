@@ -20,6 +20,8 @@ use VertoAD\Repository\Archive\ArchiveRepositoryInterface;
 use VertoAD\Service\Archive\ArchiveJob;
 use VertoAD\Service\Archive\ArchiveService;
 use VertoAD\Service\Archive\ColdQueryService;
+use VertoAD\Service\Archive\DeterministicArchiveWriter;
+use VertoAD\Service\Archive\FixtureColdQueryRunner;
 
 final class ArchiveRouteIntegrationTest extends TestCase
 {
@@ -108,9 +110,9 @@ final class ArchiveRouteIntegrationTest extends TestCase
         ]);
         $container = (new ContainerBuilder())->addDefinitions([
             ArchiveRepositoryInterface::class => static fn (): ArchiveRepositoryInterface => $repository,
-            ArchiveJob::class => static fn (): ArchiveJob => new ArchiveJob($repository, 's3://vertoad-archive/raw-events'),
+            ArchiveJob::class => static fn (): ArchiveJob => new ArchiveJob($repository, 's3://vertoad-archive/raw-events', new DeterministicArchiveWriter()),
             ArchiveService::class => static fn (): ArchiveService => new ArchiveService($repository),
-            ColdQueryService::class => static fn (): ColdQueryService => new ColdQueryService($repository, 's3://vertoad-archive/query-results'),
+            ColdQueryService::class => static fn (): ColdQueryService => new ColdQueryService($repository, 's3://vertoad-archive/query-results', new FixtureColdQueryRunner()),
         ])->build();
 
         SlimAppFactory::setContainer($container);

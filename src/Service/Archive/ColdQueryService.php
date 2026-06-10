@@ -6,6 +6,7 @@ namespace VertoAD\Service\Archive;
 
 use DateTimeImmutable;
 use InvalidArgumentException;
+use Throwable;
 use VertoAD\Domain\Archive\ColdQueryJob;
 use VertoAD\Repository\Archive\ArchiveRepositoryInterface;
 
@@ -14,6 +15,7 @@ final readonly class ColdQueryService
     public function __construct(
         private ArchiveRepositoryInterface $repository,
         private string $resultBaseObjectKey,
+        private ColdQueryRunnerInterface $runner,
     ) {
     }
 
@@ -41,6 +43,7 @@ final readonly class ColdQueryService
             scannedObjectKeys: [],
             createdAt: new DateTimeImmutable(),
             completedAt: null,
+            errorMessage: null,
         ));
     }
 
@@ -56,26 +59,84 @@ final readonly class ColdQueryService
             return null;
         }
 
-        $scanned = [];
-        foreach ($this->repository->manifests() as $manifest) {
-            foreach ($manifest->partitions as $partition) {
-                $scanned[] = $partition['object_key'];
-            }
-        }
-
-        return $this->repository->saveColdQuery(new ColdQueryJob(
+        $scanned = $this->scannableObjectKeys();
+        $resultObjectKey = rtrim($this->resultBaseObjectKey, '/') . '/' . $queued->jobId . '.json';
+        $running = $this->repository->saveColdQuery(new ColdQueryJob(
             jobId: $queued->jobId,
-            status: 'completed',
+            status: 'running',
             sql: $queued->sql,
             parameters: $queued->parameters,
             requestedBy: $queued->requestedBy,
-            resultFormat: 'json',
-            rowCount: count($scanned),
-            resultObjectKey: rtrim($this->resultBaseObjectKey, '/') . '/' . $queued->jobId . '.json',
+            resultFormat: $queued->resultFormat,
+            rowCount: 0,
+            resultObjectKey: null,
             scannedObjectKeys: $scanned,
             createdAt: $queued->createdAt,
-            completedAt: new DateTimeImmutable(),
+            completedAt: null,
+            errorMessage: null,
         ));
+
+        try {
+            $result = $this->runner->run(new ColdQueryExecutionRequest(
+                jobId: $running->jobId,
+                sql: $running->sql,
+                parameters: $running->parameters,
+                objectKeys: $scanned,
+                resultObjectKey: $resultObjectKey,
+                currentStatus: $running->status,
+            ));
+        } catch (Throwable $exception) {
+            return $this->repository->saveColdQuery(new ColdQueryJob(
+                jobId: $running->jobId,
+                status: 'failed',
+                sql: $running->sql,
+                parameters: $running->parameters,
+                requestedBy: $running->requestedBy,
+                resultFormat: $running->resultFormat,
+                rowCount: 0,
+                resultObjectKey: null,
+                scannedObjectKeys: $scanned,
+                createdAt: $running->createdAt,
+                completedAt: new DateTimeImmutable(),
+                errorMessage: $exception->getMessage(),
+            ));
+        }
+
+        return $this->repository->saveColdQuery(new ColdQueryJob(
+            jobId: $running->jobId,
+            status: 'completed',
+            sql: $running->sql,
+            parameters: $running->parameters,
+            requestedBy: $running->requestedBy,
+            resultFormat: $result->resultFormat,
+            rowCount: $result->rowCount,
+            resultObjectKey: $result->resultObjectKey,
+            scannedObjectKeys: $result->scannedObjectKeys,
+            createdAt: $running->createdAt,
+            completedAt: new DateTimeImmutable(),
+            errorMessage: null,
+        ));
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function scannableObjectKeys(): array
+    {
+        $scanned = [];
+        foreach ($this->repository->manifests() as $manifest) {
+            if ($manifest->status !== 'completed') {
+                continue;
+            }
+
+            foreach ($manifest->partitions as $partition) {
+                if (isset($partition['object_key']) && is_scalar($partition['object_key'])) {
+                    $scanned[] = (string) $partition['object_key'];
+                }
+            }
+        }
+
+        return array_values(array_unique($scanned));
     }
 
     /**

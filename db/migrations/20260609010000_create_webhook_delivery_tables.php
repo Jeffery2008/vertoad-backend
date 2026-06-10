@@ -30,7 +30,7 @@ CREATE TABLE webhook_deliveries (
     KEY idx_webhook_deliveries_endpoint_org (webhook_endpoint_id, organization_id),
     KEY idx_webhook_deliveries_retry (status, next_attempt_at, created_at, delivery_id),
     KEY idx_webhook_deliveries_event_time (event_type, created_at),
-    CONSTRAINT chk_webhook_deliveries_status CHECK (status IN ('queued', 'delivered', 'failed')),
+    CONSTRAINT chk_webhook_deliveries_status CHECK (status IN ('queued', 'delivered', 'failed', 'exhausted')),
     CONSTRAINT chk_webhook_deliveries_last_status_code CHECK (last_status_code IS NULL OR last_status_code BETWEEN 100 AND 599),
     CONSTRAINT fk_webhook_deliveries_organization
         FOREIGN KEY (organization_id) REFERENCES organizations (id)

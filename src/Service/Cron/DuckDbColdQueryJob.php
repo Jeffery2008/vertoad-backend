@@ -29,6 +29,20 @@ final readonly class DuckDbColdQueryJob implements CronJobInterface
             );
         }
 
+        if ($job->status === 'failed') {
+            return CronJobResult::failed(
+                $this->name(),
+                [
+                    'processed' => 1,
+                    'job_id' => $job->jobId,
+                    'row_count' => $job->rowCount,
+                    'scanned_objects' => count($job->scannedObjectKeys),
+                    'error_message' => $job->errorMessage,
+                ],
+                'A queued DuckDB cold query job failed.',
+            );
+        }
+
         return CronJobResult::completed(
             $this->name(),
             [

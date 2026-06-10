@@ -196,6 +196,43 @@ final class AssetUploadServiceTest extends TestCase
         self::assertSame('pending', $jobs[0]['status']);
     }
 
+    public function testConfirmRejectsExpiredUploadIntentWithoutCreatingAsset(): void
+    {
+        $connection = $this->createConnection();
+        $repository = new AssetRepository($connection);
+        $intent = $repository->createUploadIntent(new AssetUploadIntent(
+            id: null,
+            organizationId: 99,
+            uploaderUserId: 7,
+            type: AssetType::Image,
+            originalFilename: 'creative.png',
+            objectKey: 'organizations/99/assets/expired-token.png',
+            contentType: 'image/png',
+            byteSize: 1024,
+            status: AssetStatus::PendingUpload,
+            expiresAt: new \DateTimeImmutable('-1 minute'),
+        ));
+        $service = $this->createService($connection);
+
+        $expired = $this->captureValidation(fn () => $service->confirmUploadedAsset(
+            99,
+            7,
+            $intent->id,
+            $intent->objectKey,
+            'image/png',
+            1024,
+            800,
+            600,
+            null,
+            null,
+            base64_encode("\x89PNG\r\n\x1A\npayload"),
+        ));
+
+        self::assertSame('asset_upload_intent_expired', $expired->errorCode);
+        self::assertSame(0, (int) $connection->fetchOne('SELECT COUNT(*) FROM creative_assets'));
+        self::assertSame(0, (int) $connection->fetchOne('SELECT COUNT(*) FROM asset_snapshot_jobs'));
+    }
+
     public function testConfirmRejectsMetadataMismatchAndInvalidBase64Magic(): void
     {
         $connection = $this->createConnection();
@@ -308,7 +345,7 @@ final class AssetUploadServiceTest extends TestCase
                         contentType: 'application/octet-stream',
                         byteSize: 10,
                         status: AssetStatus::PendingUpload,
-                        expiresAt: new \DateTimeImmutable('2026-06-08 00:00:00 UTC'),
+                        expiresAt: new \DateTimeImmutable('+1 hour'),
                     );
                 }
 

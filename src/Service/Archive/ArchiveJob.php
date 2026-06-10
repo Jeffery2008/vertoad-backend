@@ -14,6 +14,7 @@ final readonly class ArchiveJob
     public function __construct(
         private ArchiveRepositoryInterface $repository,
         private string $baseObjectKey,
+        private ArchiveWriterInterface $writer,
     ) {
     }
 
@@ -22,6 +23,7 @@ final readonly class ArchiveJob
         $events = $this->repository->pendingEvents();
         $eventIds = [];
         $partitions = [];
+        $partitionEvents = [];
         $first = null;
         $last = null;
 
@@ -31,15 +33,23 @@ final readonly class ArchiveJob
             $last = $last === null || $event->occurredAt > $last ? $event->occurredAt : $last;
             $partition = $this->partition($event->eventType, $event->occurredAt);
             $partitions[$partition] ??= ['partition' => $partition, 'object_key' => '', 'event_count' => 0];
+            $partitionEvents[$partition] ??= [];
+            $partitionEvents[$partition][] = $event;
             ++$partitions[$partition]['event_count'];
         }
 
         ksort($partitions);
+        ksort($partitionEvents);
         $objectSuffix = 'part-' . ($first ?? new DateTimeImmutable())->format('Ymd\THis\Z')
             . '-' . ($last ?? new DateTimeImmutable())->format('Ymd\THis\Z') . '.parquet';
 
         foreach ($partitions as $partition => $metadata) {
-            $partitions[$partition]['object_key'] = rtrim($this->baseObjectKey, '/') . '/' . $partition . '/' . $objectSuffix;
+            $objectKey = rtrim($this->baseObjectKey, '/') . '/' . $partition . '/' . $objectSuffix;
+            $write = $this->writer->writePartition($partition, $objectKey, $partitionEvents[$partition]);
+            $partitions[$partition]['object_key'] = $write->objectKey;
+            $partitions[$partition]['checksum'] = $write->checksum;
+            $partitions[$partition]['byte_count'] = $write->byteCount;
+            $partitions[$partition]['row_count'] = $write->rowCount;
         }
 
         $manifestId = 'manifest_' . sha1(implode('|', array_keys($partitions)) . '|' . count($events));

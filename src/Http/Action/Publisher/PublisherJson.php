@@ -8,6 +8,7 @@ use Psr\Http\Message\ResponseInterface;
 use VertoAD\Domain\Publisher\AdSlot;
 use VertoAD\Domain\Publisher\AdSlotSize;
 use VertoAD\Domain\Publisher\PublisherSite;
+use VertoAD\Domain\Publisher\PublisherSiteVerificationAttempt;
 use VertoAD\Domain\Publisher\PublisherSiteVerificationChallenge;
 
 final class PublisherJson
@@ -45,6 +46,31 @@ final class PublisherJson
             'name' => $challenge->name,
             'expected_value' => $challenge->expectedValue,
         ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function attempt(PublisherSiteVerificationAttempt $attempt): array
+    {
+        return [
+            'id' => $attempt->id,
+            'site_id' => $attempt->siteId,
+            'organization_id' => $attempt->organizationId,
+            'method' => $attempt->method->value,
+            'observed_summary' => $attempt->observedSummary,
+            'status' => $attempt->status->value,
+            'failure_reason' => $attempt->failureReason,
+            'created_at' => $attempt->createdAt->format(DATE_ATOM),
+            'checked_at' => $attempt->checkedAt->format(DATE_ATOM),
+        ];
+    }
+
+    /**
+     * @param list<PublisherSiteVerificationAttempt> $attempts
+     * @return list<array<string, mixed>>
+     */
+    public static function attempts(array $attempts): array
+    {
+        return array_map(static fn (PublisherSiteVerificationAttempt $attempt): array => self::attempt($attempt), $attempts);
     }
 
     /** @return array<string, mixed> */

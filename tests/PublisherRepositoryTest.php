@@ -8,8 +8,12 @@ use Doctrine\DBAL\DriverManager;
 use PHPUnit\Framework\TestCase;
 use VertoAD\Domain\Publisher\AdSlot;
 use VertoAD\Domain\Publisher\AdSlotSize;
+use VertoAD\Domain\Publisher\PublisherSiteVerificationAttempt;
+use VertoAD\Domain\Publisher\PublisherSiteVerificationAttemptStatus;
+use VertoAD\Domain\Publisher\PublisherSiteVerificationMethod;
 use VertoAD\Domain\Publisher\PublisherSiteStatus;
 use VertoAD\Repository\AdSlotRepository;
+use VertoAD\Repository\PublisherSiteVerificationAttemptRepository;
 use VertoAD\Repository\PublisherSiteRepository;
 
 final class PublisherRepositoryTest extends TestCase
@@ -49,6 +53,83 @@ final class PublisherRepositoryTest extends TestCase
         self::assertSame(PublisherSiteStatus::Verified, $verified->status);
         self::assertSame('verified', $connection->fetchOne('SELECT status FROM sites WHERE id = 1'));
         self::assertSame('2026-06-07 08:00:00', $connection->fetchOne('SELECT verified_at FROM sites WHERE id = 1'));
+    }
+
+    public function testPublisherSiteRepositoryDoesNotSelfRestoreSuspendedSiteToVerified(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        $connection->executeStatement(
+            'CREATE TABLE sites (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                name TEXT NOT NULL DEFAULT "",
+                domain TEXT NOT NULL,
+                status TEXT NOT NULL,
+                verification_token TEXT NULL,
+                verified_at TEXT NULL
+            )'
+        );
+        $connection->insert('sites', [
+            'organization_id' => 7,
+            'name' => 'Suspended Publisher',
+            'domain' => 'example.com',
+            'status' => 'suspended',
+            'verification_token' => 'site-secret',
+            'verified_at' => null,
+        ]);
+
+        $repository = new PublisherSiteRepository($connection);
+        $site = $repository->findById(1);
+        self::assertNotNull($site);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('publisher_site_status_not_verifiable');
+
+        try {
+            $repository->markVerified($site, new \DateTimeImmutable('2026-06-07 08:00:00+00:00'));
+        } finally {
+            self::assertSame('suspended', $connection->fetchOne('SELECT status FROM sites WHERE id = 1'));
+            self::assertNull($connection->fetchOne('SELECT verified_at FROM sites WHERE id = 1'));
+        }
+    }
+
+    public function testPublisherSiteRepositoryRejectsStaleSiteWhenDatabaseStatusChanged(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        $connection->executeStatement(
+            'CREATE TABLE sites (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                name TEXT NOT NULL DEFAULT "",
+                domain TEXT NOT NULL,
+                status TEXT NOT NULL,
+                verification_token TEXT NULL,
+                verified_at TEXT NULL
+            )'
+        );
+        $connection->insert('sites', [
+            'organization_id' => 7,
+            'name' => 'Publisher Home',
+            'domain' => 'example.com',
+            'status' => 'pending',
+            'verification_token' => 'site-secret',
+            'verified_at' => null,
+        ]);
+
+        $repository = new PublisherSiteRepository($connection);
+        $site = $repository->findById(1);
+        self::assertNotNull($site);
+        $connection->update('sites', ['status' => 'suspended'], ['id' => 1]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('publisher_site_status_not_verifiable');
+
+        try {
+            $repository->markVerified($site, new \DateTimeImmutable('2026-06-07 08:00:00+00:00'));
+        } finally {
+            self::assertSame('suspended', $connection->fetchOne('SELECT status FROM sites WHERE id = 1'));
+            self::assertNull($connection->fetchOne('SELECT verified_at FROM sites WHERE id = 1'));
+        }
     }
 
     public function testPublisherSiteRepositoryReturnsNullForMissingSiteAndHydratesVerifiedAt(): void
@@ -114,6 +195,64 @@ final class PublisherRepositoryTest extends TestCase
         $sites = $repository->listForOrganization(7);
         self::assertCount(1, $sites);
         self::assertSame('Publisher Home', $sites[0]->name);
+    }
+
+    public function testPublisherSiteVerificationAttemptRepositoryRecordsAndListsAttemptsForOwnedSite(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        $connection->executeStatement(
+            'CREATE TABLE publisher_site_verification_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                site_id INTEGER NOT NULL,
+                organization_id INTEGER NOT NULL,
+                method TEXT NOT NULL,
+                expected_value TEXT NOT NULL,
+                observed_summary TEXT NULL,
+                status TEXT NOT NULL,
+                failure_reason TEXT NULL,
+                created_at TEXT NOT NULL,
+                checked_at TEXT NOT NULL
+            )'
+        );
+
+        $repository = new PublisherSiteVerificationAttemptRepository($connection);
+        $checkedAt = new \DateTimeImmutable('2026-06-10 08:30:00+00:00');
+        $recorded = $repository->record(new PublisherSiteVerificationAttempt(
+            id: null,
+            siteId: 12,
+            organizationId: 7,
+            method: PublisherSiteVerificationMethod::DnsTxt,
+            expectedValue: 'vertoad-site-verification=va-token',
+            observedSummary: 'count:1 length:25 sha256:' . hash('sha256', 'wrong-token'),
+            status: PublisherSiteVerificationAttemptStatus::Failed,
+            failureReason: 'expected_value_not_found',
+            createdAt: $checkedAt,
+            checkedAt: $checkedAt,
+        ));
+        $repository->record(new PublisherSiteVerificationAttempt(
+            id: null,
+            siteId: 12,
+            organizationId: 8,
+            method: PublisherSiteVerificationMethod::DnsTxt,
+            expectedValue: 'vertoad-site-verification=va-other',
+            observedSummary: null,
+            status: PublisherSiteVerificationAttemptStatus::Failed,
+            failureReason: 'probe_unavailable',
+            createdAt: $checkedAt,
+            checkedAt: $checkedAt,
+        ));
+
+        self::assertSame(1, $recorded->id);
+        self::assertSame(PublisherSiteVerificationAttemptStatus::Failed, $recorded->status);
+
+        $listed = $repository->listForSite(12, 7);
+        self::assertCount(1, $listed);
+        self::assertSame(12, $listed[0]->siteId);
+        self::assertSame(7, $listed[0]->organizationId);
+        self::assertSame(PublisherSiteVerificationMethod::DnsTxt, $listed[0]->method);
+        self::assertSame('expected_value_not_found', $listed[0]->failureReason);
+        self::assertStringContainsString('sha256:', $listed[0]->observedSummary ?? '');
+        self::assertSame('2026-06-10 08:30:00', $listed[0]->checkedAt->format('Y-m-d H:i:s'));
     }
 
     public function testAdSlotRepositoryStoresPresetAndResponsiveMetadata(): void

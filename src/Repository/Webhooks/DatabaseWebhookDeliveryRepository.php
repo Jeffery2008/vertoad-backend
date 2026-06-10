@@ -81,19 +81,24 @@ final readonly class DatabaseWebhookDeliveryRepository implements WebhookDeliver
         return array_map(fn (array $row): WebhookDelivery => $this->hydrate($row), $rows);
     }
 
-    public function pendingRetry(int $limit, ?DateTimeImmutable $now = null): array
+    public function pendingRetry(int $limit, ?DateTimeImmutable $now = null, int $maxRetryCount = 3): array
     {
         if ($limit <= 0) {
             throw new \InvalidArgumentException('Webhook retry batch size must be positive.');
+        }
+        if ($maxRetryCount <= 0) {
+            throw new \InvalidArgumentException('Webhook retry cap must be positive.');
         }
 
         $now ??= new DateTimeImmutable('now', new DateTimeZone('UTC'));
         $rows = $this->baseQuery()
             ->where('wd.status IN (:queued, :failed)')
             ->andWhere('wd.next_attempt_at <= :now')
+            ->andWhere('wd.retry_count < :max_retry_count')
             ->setParameter('queued', 'queued')
             ->setParameter('failed', 'failed')
             ->setParameter('now', $this->formatDate($now))
+            ->setParameter('max_retry_count', $maxRetryCount, ParameterType::INTEGER)
             ->orderBy('wd.next_attempt_at', 'ASC')
             ->addOrderBy('wd.created_at', 'ASC')
             ->addOrderBy('wd.delivery_id', 'ASC')
@@ -101,6 +106,55 @@ final readonly class DatabaseWebhookDeliveryRepository implements WebhookDeliver
             ->fetchAllAssociative();
 
         return array_map(fn (array $row): WebhookDelivery => $this->hydrate($row), $rows);
+    }
+
+    public function markDueRetriesExhausted(int $limit, ?DateTimeImmutable $now = null, int $maxRetryCount = 3): array
+    {
+        if ($limit <= 0) {
+            throw new \InvalidArgumentException('Webhook retry batch size must be positive.');
+        }
+        if ($maxRetryCount <= 0) {
+            throw new \InvalidArgumentException('Webhook retry cap must be positive.');
+        }
+
+        $now ??= new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $rows = $this->baseQuery()
+            ->where('wd.status = :failed')
+            ->andWhere('wd.next_attempt_at <= :now')
+            ->andWhere('wd.retry_count >= :max_retry_count')
+            ->setParameter('failed', 'failed')
+            ->setParameter('now', $this->formatDate($now))
+            ->setParameter('max_retry_count', $maxRetryCount, ParameterType::INTEGER)
+            ->orderBy('wd.next_attempt_at', 'ASC')
+            ->addOrderBy('wd.created_at', 'ASC')
+            ->addOrderBy('wd.delivery_id', 'ASC')
+            ->setMaxResults($limit)
+            ->fetchAllAssociative();
+
+        $exhausted = [];
+        foreach (array_map(fn (array $row): WebhookDelivery => $this->hydrate($row), $rows) as $delivery) {
+            $terminalAt = $delivery->last_attempt_at ?? $now;
+            $exhausted[] = $this->save(new WebhookDelivery(
+                delivery_id: $delivery->delivery_id,
+                organization_id: $delivery->organization_id,
+                webhook_endpoint_id: $delivery->webhook_endpoint_id,
+                endpoint_id: $delivery->endpoint_id,
+                endpoint_url: $delivery->endpoint_url,
+                event_type: $delivery->event_type,
+                payload_json: $delivery->payload_json,
+                status: 'exhausted',
+                retry_count: $delivery->retry_count,
+                next_attempt_at: $terminalAt,
+                last_attempt_at: $delivery->last_attempt_at,
+                last_status_code: $delivery->last_status_code,
+                last_error: $delivery->last_error,
+                signature_header: $delivery->signature_header,
+                created_at: $delivery->created_at,
+                delivered_at: null,
+            ));
+        }
+
+        return $exhausted;
     }
 
     public function listForOrganization(int $organizationId, ?string $endpointId = null, ?string $status = null, int $limit = 50): array

@@ -66,7 +66,7 @@ final class WebhookEndpointMigrationTest extends TestCase
             'signature_header varchar(255) null',
             'delivered_at datetime(6) null',
             'idx_webhook_deliveries_org_endpoint_status',
-            'constraint chk_webhook_deliveries_status check (status in (\'queued\', \'delivered\', \'failed\'))',
+            'constraint chk_webhook_deliveries_status check (status in (\'queued\', \'delivered\', \'failed\', \'exhausted\'))',
             'constraint chk_webhook_deliveries_last_status_code check (last_status_code is null or last_status_code between 100 and 599)',
             'constraint fk_webhook_deliveries_organization foreign key (organization_id) references organizations (id) on delete cascade',
             'create table webhook_delivery_attempts',
@@ -81,6 +81,43 @@ final class WebhookEndpointMigrationTest extends TestCase
 
         self::assertStringNotContainsString('subscription_id', $sql);
         self::assertStringNotContainsString('webhook_subscriptions', $sql);
+    }
+
+    public function testOpenApiDocumentsExhaustedWebhookDeliveryStatus(): void
+    {
+        $openApi = (string) file_get_contents(dirname(__DIR__, 2) . '/docs/openapi.yaml');
+        $webhookDeliverySchema = strstr($openApi, '    WebhookDelivery:') ?: '';
+
+        self::assertStringContainsString('- queued', $webhookDeliverySchema);
+        self::assertStringContainsString('- delivered', $webhookDeliverySchema);
+        self::assertStringContainsString('- failed', $webhookDeliverySchema);
+        self::assertStringContainsString('- exhausted', $webhookDeliverySchema);
+    }
+
+    public function testWebhookSettingsExposeRetryCapAndBackoffEnvironmentOverrides(): void
+    {
+        $previousMaxRetryCount = getenv('WEBHOOK_MAX_RETRY_COUNT');
+        $previousBackoffSeconds = getenv('WEBHOOK_RETRY_BASE_BACKOFF_SECONDS');
+        putenv('WEBHOOK_MAX_RETRY_COUNT=7');
+        putenv('WEBHOOK_RETRY_BASE_BACKOFF_SECONDS=42');
+
+        try {
+            $settings = require dirname(__DIR__, 2) . '/config/settings.php';
+
+            self::assertSame(7, $settings['webhooks']['max_retry_count'] ?? null);
+            self::assertSame(42, $settings['webhooks']['retry_base_backoff_seconds'] ?? null);
+        } finally {
+            if ($previousMaxRetryCount === false) {
+                putenv('WEBHOOK_MAX_RETRY_COUNT');
+            } else {
+                putenv('WEBHOOK_MAX_RETRY_COUNT=' . $previousMaxRetryCount);
+            }
+            if ($previousBackoffSeconds === false) {
+                putenv('WEBHOOK_RETRY_BASE_BACKOFF_SECONDS');
+            } else {
+                putenv('WEBHOOK_RETRY_BASE_BACKOFF_SECONDS=' . $previousBackoffSeconds);
+            }
+        }
     }
 
     private function normalizedSql(string $path): string

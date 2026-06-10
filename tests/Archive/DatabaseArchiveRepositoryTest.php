@@ -103,8 +103,22 @@ final class DatabaseArchiveRepositoryTest extends TestCase
         self::assertSame('completed', $stored->status);
         self::assertSame(['slot-1'], $stored->parameters);
         self::assertSame(['s3://archive/a.parquet', 's3://archive/b.parquet'], $stored->scannedObjectKeys);
+        self::assertNull($stored->errorMessage);
         self::assertSame('query_2', $fresh->nextQueuedColdQuery()?->jobId);
         self::assertNull($fresh->findColdQuery('missing'));
+
+        $failed = $this->coldQuery(
+            'query_2',
+            status: 'failed',
+            scannedObjectKeys: ['s3://archive/a.parquet'],
+            completedAt: '2026-06-09T08:45:00+00:00',
+            errorMessage: 'duckdb fixture rejected query',
+        );
+        $repository->saveColdQuery($failed);
+
+        self::assertSame('failed', $fresh->findColdQuery('query_2')?->status);
+        self::assertSame('duckdb fixture rejected query', $fresh->findColdQuery('query_2')?->errorMessage);
+        self::assertNull($fresh->nextQueuedColdQuery());
     }
 
     public function testNextQueuedColdQueryReturnsNullWhenQueueIsEmpty(): void
@@ -117,7 +131,7 @@ final class DatabaseArchiveRepositoryTest extends TestCase
         $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
         $connection->executeStatement('CREATE TABLE raw_events (event_uuid VARCHAR(64), event_type VARCHAR(64), occurred_at VARCHAR(32), payload_json TEXT, processed_at VARCHAR(32) NULL)');
         $connection->executeStatement('CREATE TABLE archive_manifests (manifest_id VARCHAR(80) PRIMARY KEY, status VARCHAR(32), format VARCHAR(32), event_count INTEGER, partitions_json TEXT, created_at VARCHAR(32))');
-        $connection->executeStatement('CREATE TABLE archive_cold_query_jobs (job_id VARCHAR(80) PRIMARY KEY, status VARCHAR(32), sql_text TEXT, parameters_json TEXT, requested_by VARCHAR(160), result_format VARCHAR(32), row_count INTEGER, result_object_key VARCHAR(1024) NULL, scanned_object_keys_json TEXT, created_at VARCHAR(32), completed_at VARCHAR(32) NULL)');
+        $connection->executeStatement('CREATE TABLE archive_cold_query_jobs (job_id VARCHAR(80) PRIMARY KEY, status VARCHAR(32), sql_text TEXT, parameters_json TEXT, requested_by VARCHAR(160), result_format VARCHAR(32), row_count INTEGER, result_object_key VARCHAR(1024) NULL, scanned_object_keys_json TEXT, error_message TEXT NULL, created_at VARCHAR(32), completed_at VARCHAR(32) NULL)');
 
         return $connection;
     }
@@ -142,6 +156,7 @@ final class DatabaseArchiveRepositoryTest extends TestCase
         array $scannedObjectKeys = [],
         string $createdAt = '2026-06-09T08:00:00+00:00',
         ?string $completedAt = null,
+        ?string $errorMessage = null,
     ): ColdQueryJob {
         return new ColdQueryJob(
             jobId: $jobId,
@@ -155,6 +170,7 @@ final class DatabaseArchiveRepositoryTest extends TestCase
             scannedObjectKeys: $scannedObjectKeys,
             createdAt: new DateTimeImmutable($createdAt, new DateTimeZone('UTC')),
             completedAt: $completedAt === null ? null : new DateTimeImmutable($completedAt, new DateTimeZone('UTC')),
+            errorMessage: $errorMessage,
         );
     }
 }

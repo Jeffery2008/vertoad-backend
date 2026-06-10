@@ -106,6 +106,7 @@ final readonly class DatabaseArchiveRepository implements ArchiveRepositoryInter
             'row_count' => $job->rowCount,
             'result_object_key' => $job->resultObjectKey,
             'scanned_object_keys_json' => json_encode($job->scannedObjectKeys, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            'error_message' => $job->errorMessage,
             'created_at' => $this->formatDate($job->createdAt),
             'completed_at' => $job->completedAt === null ? null : $this->formatDate($job->completedAt),
         ];
@@ -150,7 +151,7 @@ final readonly class DatabaseArchiveRepository implements ArchiveRepositoryInter
     /** @return list<string> */
     private function coldQueryColumns(): array
     {
-        return ['job_id', 'status', 'sql_text', 'parameters_json', 'requested_by', 'result_format', 'row_count', 'result_object_key', 'scanned_object_keys_json', 'created_at', 'completed_at'];
+        return ['job_id', 'status', 'sql_text', 'parameters_json', 'requested_by', 'result_format', 'row_count', 'result_object_key', 'scanned_object_keys_json', 'error_message', 'created_at', 'completed_at'];
     }
 
     /** @param array<string, mixed> $row */
@@ -199,6 +200,7 @@ final readonly class DatabaseArchiveRepository implements ArchiveRepositoryInter
             scannedObjectKeys: is_array($scanned) ? array_values(array_map('strval', $scanned)) : [],
             createdAt: new DateTimeImmutable((string) $row['created_at'], new DateTimeZone('UTC')),
             completedAt: $row['completed_at'] === null ? null : new DateTimeImmutable((string) $row['completed_at'], new DateTimeZone('UTC')),
+            errorMessage: $row['error_message'] === null ? null : (string) $row['error_message'],
         );
     }
 

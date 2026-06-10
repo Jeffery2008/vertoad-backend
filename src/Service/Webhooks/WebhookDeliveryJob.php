@@ -16,6 +16,9 @@ use VertoAD\Service\Cron\CronJobInterface;
 
 final readonly class WebhookDeliveryJob implements CronJobInterface
 {
+    private const DEFAULT_MAX_RETRY_COUNT = 3;
+    private const DEFAULT_BACKOFF_SECONDS = 300;
+
     private Closure $transport;
 
     /**
@@ -27,9 +30,17 @@ final readonly class WebhookDeliveryJob implements CronJobInterface
         private WebhookEndpointSecretCipherInterface $secrets,
         ?callable $transport = null,
         private int $batchSize = 50,
+        private int $maxRetryCount = self::DEFAULT_MAX_RETRY_COUNT,
+        private int $baseBackoffSeconds = self::DEFAULT_BACKOFF_SECONDS,
     ) {
         if ($batchSize <= 0) {
             throw new \InvalidArgumentException('Webhook retry batch size must be positive.');
+        }
+        if ($maxRetryCount <= 0) {
+            throw new \InvalidArgumentException('Webhook retry cap must be positive.');
+        }
+        if ($baseBackoffSeconds <= 0) {
+            throw new \InvalidArgumentException('Webhook retry backoff seconds must be positive.');
         }
 
         $this->transport = Closure::fromCallable($transport ?? self::httpTransport(5));
@@ -85,12 +96,18 @@ final readonly class WebhookDeliveryJob implements CronJobInterface
         $processed = 0;
         $delivered = 0;
         $failed = 0;
+        $exhausted = count($this->deliveries->markDueRetriesExhausted(
+            $this->batchSize,
+            maxRetryCount: $this->maxRetryCount,
+        ));
 
-        foreach ($this->deliveries->pendingRetry($this->batchSize) as $delivery) {
+        foreach ($this->deliveries->pendingRetry($this->batchSize, maxRetryCount: $this->maxRetryCount) as $delivery) {
             ++$processed;
             $result = $this->retry($delivery->delivery_id, $this->transport);
             if ($result->status === 'delivered') {
                 ++$delivered;
+            } elseif ($result->status === 'exhausted') {
+                ++$exhausted;
             } else {
                 ++$failed;
             }
@@ -100,7 +117,8 @@ final readonly class WebhookDeliveryJob implements CronJobInterface
             'processed' => $processed,
             'delivered' => $delivered,
             'failed' => $failed,
-        ], $processed === 0 ? 'No pending webhook deliveries.' : 'Webhook retry batch completed.');
+            'exhausted' => $exhausted,
+        ], $processed === 0 && $exhausted === 0 ? 'No pending webhook deliveries.' : 'Webhook retry batch completed.');
     }
 
     /**
@@ -109,8 +127,11 @@ final readonly class WebhookDeliveryJob implements CronJobInterface
     public function deliver(string $deliveryId, callable $transport): WebhookDelivery
     {
         $delivery = $this->requiredDelivery($deliveryId);
-        if ($delivery->status === 'delivered') {
+        if (in_array($delivery->status, ['delivered', 'exhausted'], true)) {
             return $delivery;
+        }
+        if ($delivery->status === 'failed' && $delivery->retry_count >= $this->maxRetryCount) {
+            return $this->markDeliveryExhausted($delivery, new DateTimeImmutable('now', new DateTimeZone('UTC')));
         }
 
         $endpoint = $this->endpoints->findById($delivery->webhook_endpoint_id);
@@ -126,6 +147,7 @@ final readonly class WebhookDeliveryJob implements CronJobInterface
         $durationMs = max(0, (int) round((microtime(true) - $started) * 1000));
         $delivered = $statusCode >= 200 && $statusCode < 300;
         $retryCount = $delivery->retry_count + 1;
+        $exhausted = !$delivered && $retryCount >= $this->maxRetryCount;
 
         $updated = $this->deliveries->save(new WebhookDelivery(
             delivery_id: $delivery->delivery_id,
@@ -135,9 +157,9 @@ final readonly class WebhookDeliveryJob implements CronJobInterface
             endpoint_url: $delivery->endpoint_url,
             event_type: $delivery->event_type,
             payload_json: $delivery->payload_json,
-            status: $delivered ? 'delivered' : 'failed',
+            status: $delivered ? 'delivered' : ($exhausted ? 'exhausted' : 'failed'),
             retry_count: $retryCount,
-            next_attempt_at: $delivered ? $attemptedAt : $attemptedAt->modify('+5 minutes'),
+            next_attempt_at: $delivered || $exhausted ? $attemptedAt : $this->nextRetryAt($attemptedAt, $retryCount),
             last_attempt_at: $attemptedAt,
             last_status_code: $statusCode > 0 ? $statusCode : null,
             last_error: $delivered ? null : 'HTTP ' . $statusCode,
@@ -165,6 +187,37 @@ final readonly class WebhookDeliveryJob implements CronJobInterface
     public function retry(string $deliveryId, ?callable $transport = null): WebhookDelivery
     {
         return $this->deliver($deliveryId, $transport ?? $this->transport);
+    }
+
+    private function nextRetryAt(DateTimeImmutable $attemptedAt, int $retryCount): DateTimeImmutable
+    {
+        $delaySeconds = $this->baseBackoffSeconds * (2 ** max(0, $retryCount - 1));
+
+        return $attemptedAt->modify('+' . $delaySeconds . ' seconds');
+    }
+
+    private function markDeliveryExhausted(WebhookDelivery $delivery, DateTimeImmutable $now): WebhookDelivery
+    {
+        $terminalAt = $delivery->last_attempt_at ?? $now;
+
+        return $this->deliveries->save(new WebhookDelivery(
+            delivery_id: $delivery->delivery_id,
+            organization_id: $delivery->organization_id,
+            webhook_endpoint_id: $delivery->webhook_endpoint_id,
+            endpoint_id: $delivery->endpoint_id,
+            endpoint_url: $delivery->endpoint_url,
+            event_type: $delivery->event_type,
+            payload_json: $delivery->payload_json,
+            status: 'exhausted',
+            retry_count: $delivery->retry_count,
+            next_attempt_at: $terminalAt,
+            last_attempt_at: $delivery->last_attempt_at,
+            last_status_code: $delivery->last_status_code,
+            last_error: $delivery->last_error,
+            signature_header: $delivery->signature_header,
+            created_at: $delivery->created_at,
+            delivered_at: null,
+        ));
     }
 
     private function requiredDelivery(string $deliveryId): WebhookDelivery

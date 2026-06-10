@@ -38,7 +38,7 @@ final readonly class VerifyPublisherSiteAction
         try {
             $site = PublisherRequestGuards::requireOwnedSite($this->sites, $args['site_id'] ?? null, (int) $context->organizationId);
             $method = PublisherSiteVerificationMethod::from((string) ($body['method'] ?? 'html_meta'));
-            $verified = $this->verification->verify($site->id, $method, (string) ($body['observed_value'] ?? ''), new DateTimeImmutable());
+            $verified = $this->verification->verify($site->id, $method, new DateTimeImmutable());
         } catch (\ValueError) {
             return PublisherJson::write($response, ['code' => 'invalid_request', 'message' => 'Unsupported verification method.'], 422);
         } catch (RuntimeException $exception) {
@@ -53,6 +53,6 @@ final readonly class VerifyPublisherSiteAction
         $code = $exception->getMessage() === 'publisher_site_not_found' ? 'publisher_site_not_found' : 'publisher_site_verification_failed';
         $status = $code === 'publisher_site_not_found' ? 404 : 422;
 
-        return PublisherJson::write($response, ['code' => $code, 'message' => $exception->getMessage()], $status);
+        return PublisherJson::write($response, ['code' => $code, 'message' => $code], $status);
     }
 }

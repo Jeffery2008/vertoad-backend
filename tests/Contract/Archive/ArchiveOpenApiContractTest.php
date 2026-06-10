@@ -32,6 +32,12 @@ final class ArchiveOpenApiContractTest extends TestCase
 
         self::assertStringContainsString('event_type/date/hour', $openApi);
         self::assertStringContainsString('queued', $openApi);
+        self::assertStringContainsString('running', $openApi);
+        self::assertStringContainsString('failed', $openApi);
         self::assertStringContainsString('result_object_key', $openApi);
+        self::assertStringContainsString('error_message', $openApi);
+        self::assertStringContainsString('checksum', $openApi);
+        self::assertStringContainsString('byte_count', $openApi);
+        self::assertStringContainsString('row_count', $openApi);
     }
 }

@@ -26,6 +26,14 @@ final readonly class CronJobResult
         return new self($jobName, 'completed', true, $metrics, $message);
     }
 
+    /**
+     * @param array<string, int|string|bool|null> $metrics
+     */
+    public static function failed(string $jobName, array $metrics = [], ?string $message = null): self
+    {
+        return new self($jobName, 'failed', true, $metrics, $message);
+    }
+
     public static function locked(string $jobName): self
     {
         return new self($jobName, 'locked', false, [], 'Job lock is already held.');

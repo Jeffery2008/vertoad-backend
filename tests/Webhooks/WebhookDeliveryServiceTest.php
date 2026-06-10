@@ -76,6 +76,94 @@ final class WebhookDeliveryServiceTest extends TestCase
         self::assertSame('delivered', $retry->toArray()['status']);
     }
 
+    public function testDeliveryJobSchedulesFailedRetriesWithExponentialBackoff(): void
+    {
+        [$deliveries, $endpoints, $cipher, $endpoint] = $this->deliveryFixture();
+        $delivery = $deliveries->queueForEndpoint($endpoint, 'operations.error.created', ['error_id' => 'err_backoff']);
+        $job = new WebhookDeliveryJob($deliveries, $endpoints, $cipher);
+
+        $firstFailure = $job->deliver($delivery->delivery_id, static fn (): int => 503);
+        $secondFailure = $job->retry($delivery->delivery_id, static fn (): int => 503);
+
+        self::assertNotNull($firstFailure->last_attempt_at);
+        self::assertSame(1, $firstFailure->retry_count);
+        self::assertSame(
+            300,
+            $firstFailure->next_attempt_at->getTimestamp() - $firstFailure->last_attempt_at->getTimestamp(),
+        );
+        self::assertNotNull($secondFailure->last_attempt_at);
+        self::assertSame(2, $secondFailure->retry_count);
+        self::assertSame(
+            600,
+            $secondFailure->next_attempt_at->getTimestamp() - $secondFailure->last_attempt_at->getTimestamp(),
+        );
+    }
+
+    public function testDeliveryJobMarksFinalFailureExhaustedAtRetryCap(): void
+    {
+        [$deliveries, $endpoints, $cipher, $endpoint] = $this->deliveryFixture();
+        $delivery = $deliveries->queueForEndpoint($endpoint, 'operations.error.created', ['error_id' => 'err_exhausted']);
+        $job = new WebhookDeliveryJob(
+            $deliveries,
+            $endpoints,
+            $cipher,
+            static fn (): int => 503,
+            batchSize: 50,
+            maxRetryCount: 2,
+            baseBackoffSeconds: 60,
+        );
+
+        $firstFailure = $job->retry($delivery->delivery_id);
+        $finalFailure = $job->retry($delivery->delivery_id);
+
+        self::assertSame('failed', $firstFailure->status);
+        self::assertSame(1, $firstFailure->retry_count);
+        self::assertSame('exhausted', $finalFailure->status);
+        self::assertSame(2, $finalFailure->retry_count);
+        self::assertSame('HTTP 503', $finalFailure->last_error);
+        self::assertNotNull($finalFailure->last_attempt_at);
+        self::assertSame(
+            $finalFailure->last_attempt_at->getTimestamp(),
+            $finalFailure->next_attempt_at->getTimestamp(),
+        );
+        self::assertSame([], $deliveries->pendingRetry(10, maxRetryCount: 2));
+        self::assertSame('exhausted', $finalFailure->toArray()['status']);
+        self::assertCount(2, $deliveries->attemptsForDelivery($delivery->delivery_id));
+    }
+
+    public function testDeliveryJobMarksAlreadyCappedFailureExhaustedWithoutRedelivery(): void
+    {
+        [$deliveries, $endpoints, $cipher, $endpoint] = $this->deliveryFixture();
+        $due = new DateTimeImmutable('2026-06-10T00:00:00+00:00');
+        $delivery = $deliveries->queueForEndpoint($endpoint, 'operations.error.created', ['error_id' => 'err_pre_capped']);
+        $deliveries->save($this->deliveryWithRetryState($delivery, retryCount: 3, nextAttemptAt: $due));
+        $transportCalls = 0;
+        $job = new WebhookDeliveryJob(
+            $deliveries,
+            $endpoints,
+            $cipher,
+            static function () use (&$transportCalls): int {
+                ++$transportCalls;
+
+                return 200;
+            },
+            batchSize: 50,
+            maxRetryCount: 3,
+            baseBackoffSeconds: 60,
+        );
+
+        $exhausted = $job->retry($delivery->delivery_id);
+
+        self::assertSame(0, $transportCalls);
+        self::assertSame('exhausted', $exhausted->status);
+        self::assertSame(3, $exhausted->retry_count);
+        self::assertSame(
+            $due->modify('-5 minutes')->getTimestamp(),
+            $exhausted->next_attempt_at->getTimestamp(),
+        );
+        self::assertSame([], $deliveries->attemptsForDelivery($delivery->delivery_id));
+    }
+
     public function testDeliveryJobDoesNotRedeliverAlreadyDeliveredWebhook(): void
     {
         [$deliveries, $endpoints, $cipher, $endpoint] = $this->deliveryFixture();
@@ -139,12 +227,72 @@ final class WebhookDeliveryServiceTest extends TestCase
         self::assertSame(2, $result->metrics['processed'] ?? null);
         self::assertSame(1, $result->metrics['delivered'] ?? null);
         self::assertSame(1, $result->metrics['failed'] ?? null);
+        self::assertSame(0, $result->metrics['exhausted'] ?? null);
         self::assertSame('delivered', $deliveries->find($queued->delivery_id)?->status);
         self::assertSame('failed', $deliveries->find($failed->delivery_id)?->status);
         self::assertSame('HTTP 503', $deliveries->find($failed->delivery_id)?->last_error);
         self::assertSame(1, $deliveries->find($queued->delivery_id)?->retry_count);
         self::assertSame(1, $deliveries->find($failed->delivery_id)?->retry_count);
         self::assertSame(1, $deliveries->find($delivered->delivery_id)?->retry_count);
+    }
+
+    public function testWebhookRetryCronReportsDeliveriesThatBecomeExhausted(): void
+    {
+        [$deliveries, $endpoints, $cipher, $endpoint] = $this->deliveryFixture(endpointUrl: 'https://example.test/exhausted');
+        $due = new DateTimeImmutable('2026-06-10T00:00:00+00:00');
+        $delivery = $deliveries->queueForEndpoint($endpoint, 'operations.error.created', ['error_id' => 'err_cron_exhausted']);
+        $deliveries->save($this->deliveryWithRetryState($delivery, retryCount: 1, nextAttemptAt: $due));
+        $job = new WebhookDeliveryJob(
+            $deliveries,
+            $endpoints,
+            $cipher,
+            static fn (): int => 503,
+            batchSize: 50,
+            maxRetryCount: 2,
+            baseBackoffSeconds: 60,
+        );
+
+        $result = $job->run();
+
+        self::assertSame('completed', $result->status);
+        self::assertSame('Webhook retry batch completed.', $result->message);
+        self::assertSame(1, $result->metrics['processed'] ?? null);
+        self::assertSame(0, $result->metrics['delivered'] ?? null);
+        self::assertSame(0, $result->metrics['failed'] ?? null);
+        self::assertSame(1, $result->metrics['exhausted'] ?? null);
+        self::assertSame('exhausted', $deliveries->find($delivery->delivery_id)?->status);
+    }
+
+    public function testWebhookRetryCronReportsPreviouslyFailedDeliveriesAlreadyAtRetryCap(): void
+    {
+        [$deliveries, $endpoints, $cipher, $endpoint] = $this->deliveryFixture(endpointUrl: 'https://example.test/already-capped');
+        $due = new DateTimeImmutable('2026-06-10T00:00:00+00:00');
+        $delivery = $deliveries->queueForEndpoint($endpoint, 'operations.error.created', ['error_id' => 'err_already_capped']);
+        $deliveries->save($this->deliveryWithRetryState($delivery, retryCount: 2, nextAttemptAt: $due));
+        $transportCalls = 0;
+        $job = new WebhookDeliveryJob(
+            $deliveries,
+            $endpoints,
+            $cipher,
+            static function () use (&$transportCalls): int {
+                ++$transportCalls;
+
+                return 200;
+            },
+            batchSize: 50,
+            maxRetryCount: 2,
+            baseBackoffSeconds: 60,
+        );
+
+        $result = $job->run();
+
+        self::assertSame(0, $transportCalls);
+        self::assertSame(0, $result->metrics['processed'] ?? null);
+        self::assertSame(0, $result->metrics['delivered'] ?? null);
+        self::assertSame(0, $result->metrics['failed'] ?? null);
+        self::assertSame(1, $result->metrics['exhausted'] ?? null);
+        self::assertSame('Webhook retry batch completed.', $result->message);
+        self::assertSame('exhausted', $deliveries->find($delivery->delivery_id)?->status);
     }
 
     public function testWebhookRetryCronReportsEmptyPendingQueue(): void
@@ -156,6 +304,7 @@ final class WebhookDeliveryServiceTest extends TestCase
 
         self::assertSame('webhook-retry', $result->jobName);
         self::assertSame(0, $result->metrics['processed'] ?? null);
+        self::assertSame(0, $result->metrics['exhausted'] ?? null);
         self::assertSame('No pending webhook deliveries.', $result->message);
     }
 
@@ -176,6 +325,85 @@ final class WebhookDeliveryServiceTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Webhook retry batch size must be positive.');
         new WebhookDeliveryJob($deliveries, $endpoints, $cipher, static fn (): int => 200, 0);
+    }
+
+    public function testWebhookRetryCronRejectsInvalidRetryCapConfiguration(): void
+    {
+        [$deliveries, $endpoints, $cipher] = $this->deliveryFixture();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Webhook retry cap must be positive.');
+
+        new WebhookDeliveryJob(
+            $deliveries,
+            $endpoints,
+            $cipher,
+            static fn (): int => 200,
+            batchSize: 50,
+            maxRetryCount: 0,
+        );
+    }
+
+    public function testWebhookRetryCronRejectsInvalidBackoffConfiguration(): void
+    {
+        [$deliveries, $endpoints, $cipher] = $this->deliveryFixture();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Webhook retry backoff seconds must be positive.');
+
+        new WebhookDeliveryJob(
+            $deliveries,
+            $endpoints,
+            $cipher,
+            static fn (): int => 200,
+            batchSize: 50,
+            maxRetryCount: 3,
+            baseBackoffSeconds: 0,
+        );
+    }
+
+    public function testInMemoryPendingRetryFiltersDeliveriesAtRetryCap(): void
+    {
+        [$deliveries, , , $endpoint] = $this->deliveryFixture();
+        $due = new DateTimeImmutable('2026-06-10T00:00:00+00:00');
+        $belowCap = $deliveries->queueForEndpoint($endpoint, 'review.approved', ['asset_id' => 'ast_below_cap']);
+        $atCap = $deliveries->queueForEndpoint($endpoint, 'review.approved', ['asset_id' => 'ast_at_cap']);
+
+        $deliveries->save($this->deliveryWithRetryState($belowCap, retryCount: 2, nextAttemptAt: $due));
+        $deliveries->save($this->deliveryWithRetryState($atCap, retryCount: 3, nextAttemptAt: $due));
+        $deliveries->save($this->deliveryWithRetryState(
+            $deliveries->queueForEndpoint($endpoint, 'review.approved', ['asset_id' => 'ast_exhausted']),
+            retryCount: 2,
+            nextAttemptAt: $due,
+            status: 'exhausted',
+        ));
+
+        self::assertSame([$belowCap->delivery_id], array_map(
+            static fn (WebhookDelivery $delivery): string => $delivery->delivery_id,
+            $deliveries->pendingRetry(10, $due),
+        ));
+    }
+
+    public function testInMemoryPendingRetryRejectsInvalidRetryCap(): void
+    {
+        [$deliveries] = $this->deliveryFixture();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Webhook retry cap must be positive.');
+
+        $deliveries->pendingRetry(10, maxRetryCount: 0);
+    }
+
+    public function testInMemoryMarkDueRetriesExhaustedHandlesInvalidLimits(): void
+    {
+        [$deliveries] = $this->deliveryFixture();
+
+        self::assertSame([], $deliveries->markDueRetriesExhausted(0));
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Webhook retry cap must be positive.');
+
+        $deliveries->markDueRetriesExhausted(10, maxRetryCount: 0);
     }
 
     public function testInMemoryDeliveryRepositoryFiltersOrganizationDeliveriesAndRejectsMissingEndpointInternalId(): void
@@ -308,6 +536,32 @@ final class WebhookDeliveryServiceTest extends TestCase
             secretRotatedAt: $now,
             createdAt: $now,
             updatedAt: $now,
+        );
+    }
+
+    private function deliveryWithRetryState(
+        WebhookDelivery $delivery,
+        int $retryCount,
+        DateTimeImmutable $nextAttemptAt,
+        string $status = 'failed',
+    ): WebhookDelivery {
+        return new WebhookDelivery(
+            delivery_id: $delivery->delivery_id,
+            organization_id: $delivery->organization_id,
+            webhook_endpoint_id: $delivery->webhook_endpoint_id,
+            endpoint_id: $delivery->endpoint_id,
+            endpoint_url: $delivery->endpoint_url,
+            event_type: $delivery->event_type,
+            payload_json: $delivery->payload_json,
+            status: $status,
+            retry_count: $retryCount,
+            next_attempt_at: $nextAttemptAt,
+            last_attempt_at: $nextAttemptAt->modify('-5 minutes'),
+            last_status_code: 503,
+            last_error: 'HTTP 503',
+            signature_header: $delivery->signature_header,
+            created_at: $delivery->created_at,
+            delivered_at: null,
         );
     }
 

@@ -24,6 +24,7 @@ final readonly class ColdQueryJob
         public array $scannedObjectKeys,
         public DateTimeImmutable $createdAt,
         public ?DateTimeImmutable $completedAt,
+        public ?string $errorMessage = null,
     ) {
     }
 }

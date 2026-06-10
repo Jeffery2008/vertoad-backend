@@ -1413,7 +1413,12 @@ paths:
       tags:
         - Publisher
       operationId: verifyPublisherSite
-      summary: Verify a publisher site from observed evidence.
+      summary: Verify a publisher site by server-side probing.
+      description: |
+        Starts a server-side ownership check for the selected verification method.
+        The API never trusts client-supplied evidence; it probes the publisher
+        domain, DNS TXT record, or well-known verification file and stores a
+        redacted attempt summary.
       security:
         - BearerAuth: []
       parameters:
@@ -1449,6 +1454,45 @@ paths:
         "404":
           $ref: "#/components/responses/Error"
         "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/publisher/sites/{site_id}/verification-attempts:
+    get:
+      tags:
+        - Publisher
+      operationId: listPublisherSiteVerificationAttempts
+      summary: List server-side publisher site verification attempts.
+      description: Returns redacted verification attempt history for an owned publisher site.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - name: site_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Verification attempts returned.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/PublisherSiteVerificationAttempt"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
@@ -2083,6 +2127,7 @@ paths:
               - queued
               - delivered
               - failed
+              - exhausted
         - name: limit
           in: query
           required: false
@@ -3285,7 +3330,6 @@ components:
       type: object
       required:
         - method
-        - observed_value
       properties:
         method:
           type: string
@@ -3293,10 +3337,6 @@ components:
             - html_meta
             - dns_txt
             - verification_file
-        observed_value:
-          type: string
-          minLength: 1
-          description: Verification value observed from DNS, HTML meta, or the verification file.
       additionalProperties: false
     PublisherSite:
       type: object
@@ -3324,6 +3364,7 @@ components:
           enum:
             - pending
             - verified
+            - failed
             - suspended
         verification_token:
           type: string
@@ -3337,32 +3378,18 @@ components:
     PublisherSiteVerificationChallenge:
       type: object
       required:
-        - organization_id
-        - site_id
         - method
-        - verification_token
         - token
         - placement
         - name
         - expected_value
-        - observed_value
       properties:
-        organization_id:
-          type: integer
-          minimum: 1
-        site_id:
-          type: integer
-          minimum: 1
         method:
           type: string
           enum:
             - html_meta
             - dns_txt
             - verification_file
-        verification_token:
-          type: string
-          minLength: 1
-          description: Opaque server-generated token expected in publisher-controlled verification evidence.
         token:
           type: string
         placement:
@@ -3375,11 +3402,62 @@ components:
           type: string
         expected_value:
           type: string
-        observed_value:
+      additionalProperties: false
+    PublisherSiteVerificationAttempt:
+      type: object
+      required:
+        - id
+        - site_id
+        - organization_id
+        - method
+        - observed_summary
+        - status
+        - failure_reason
+        - created_at
+        - checked_at
+      properties:
+        id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        site_id:
+          type: integer
+          minimum: 1
+        organization_id:
+          type: integer
+          minimum: 1
+        method:
+          type: string
+          enum:
+            - html_meta
+            - dns_txt
+            - verification_file
+        observed_summary:
           type:
             - string
             - "null"
-          minLength: 1
+          description: Redacted count, byte length, and hash summary of observed evidence.
+        status:
+          type: string
+          enum:
+            - success
+            - failed
+        failure_reason:
+          type:
+            - string
+            - "null"
+          enum:
+            - expected_value_not_found
+            - probe_unavailable
+            - unsafe_verification_host
+            - null
+        created_at:
+          type: string
+          format: date-time
+        checked_at:
+          type: string
+          format: date-time
       additionalProperties: false
     PublisherAdSlotResponsiveRule:
       type: object
@@ -5332,6 +5410,9 @@ components:
         - partition
         - object_key
         - event_count
+        - checksum
+        - byte_count
+        - row_count
       properties:
         partition:
           type: string
@@ -5341,6 +5422,16 @@ components:
           type: string
           minLength: 1
         event_count:
+          type: integer
+          minimum: 0
+        checksum:
+          type: string
+          minLength: 1
+          description: Content checksum for the written Parquet partition object.
+        byte_count:
+          type: integer
+          minimum: 0
+        row_count:
           type: integer
           minimum: 0
       additionalProperties: false
@@ -5373,6 +5464,7 @@ components:
         - row_count
         - result_object_key
         - scanned_object_keys
+        - error_message
         - created_at
         - completed_at
       properties:
@@ -5383,7 +5475,9 @@ components:
           type: string
           enum:
             - queued
+            - running
             - completed
+            - failed
         sql:
           type: string
           minLength: 1
@@ -5408,6 +5502,10 @@ components:
           type: array
           items:
             type: string
+        error_message:
+          type:
+            - string
+            - "null"
         created_at:
           type: string
           format: date-time
@@ -5777,6 +5875,7 @@ components:
             - queued
             - delivered
             - failed
+            - exhausted
         retry_count:
           type: integer
           minimum: 0

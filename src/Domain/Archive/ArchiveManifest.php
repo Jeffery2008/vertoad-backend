@@ -9,7 +9,14 @@ use DateTimeImmutable;
 final readonly class ArchiveManifest
 {
     /**
-     * @param list<array{partition:string,object_key:string,event_count:int}> $partitions
+     * @param list<array{
+     *     partition:string,
+     *     object_key:string,
+     *     event_count:int,
+     *     checksum?:string,
+     *     byte_count?:int,
+     *     row_count?:int
+     * }> $partitions
      */
     public function __construct(
         public string $manifestId,

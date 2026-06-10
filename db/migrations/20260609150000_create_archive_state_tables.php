@@ -33,6 +33,7 @@ CREATE TABLE archive_cold_query_jobs (
     row_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
     result_object_key VARCHAR(1024) NULL,
     scanned_object_keys_json JSON NOT NULL,
+    error_message TEXT NULL,
     created_at DATETIME NOT NULL,
     completed_at DATETIME NULL,
     PRIMARY KEY (job_id),

@@ -52,6 +52,7 @@ use VertoAD\Http\Action\Permissions\PermissionInventoryAction;
 use VertoAD\Http\Action\Publisher\CreatePublisherAdSlotAction;
 use VertoAD\Http\Action\Publisher\CreatePublisherSiteAction;
 use VertoAD\Http\Action\Publisher\GetPublisherSiteVerificationChallengeAction;
+use VertoAD\Http\Action\Publisher\ListPublisherSiteVerificationAttemptsAction;
 use VertoAD\Http\Action\Publisher\ListPublisherAdSlotPresetsAction;
 use VertoAD\Http\Action\Publisher\ListPublisherAdSlotsAction;
 use VertoAD\Http\Action\Publisher\ListPublisherSitesAction;
@@ -188,6 +189,9 @@ return static function (App $app): void {
         ->add($permission('publisher.site.verify.own'))
         ->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/publisher/sites/{site_id}/verify', VerifyPublisherSiteAction::class)
+        ->add($permission('publisher.site.verify.own'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->get('/api/v1/publisher/sites/{site_id}/verification-attempts', ListPublisherSiteVerificationAttemptsAction::class)
         ->add($permission('publisher.site.verify.own'))
         ->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/publisher/ad-slot-presets', ListPublisherAdSlotPresetsAction::class)

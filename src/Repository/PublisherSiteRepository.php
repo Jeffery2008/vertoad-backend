@@ -67,12 +67,38 @@ final class PublisherSiteRepository implements PublisherSiteRepositoryInterface
 
     public function markVerified(PublisherSite $site, DateTimeImmutable $verifiedAt): PublisherSite
     {
-        $this->connection->update('sites', [
-            'status' => PublisherSiteStatus::Verified->value,
-            'verified_at' => $verifiedAt->format('Y-m-d H:i:s'),
-        ], ['id' => $site->id]);
+        if (!in_array($site->status, [PublisherSiteStatus::Pending, PublisherSiteStatus::Failed], true)) {
+            throw new \RuntimeException('publisher_site_status_not_verifiable');
+        }
+
+        $updatedRows = $this->connection->createQueryBuilder()
+            ->update('sites')
+            ->set('status', ':verified_status')
+            ->set('verified_at', ':verified_at')
+            ->where('id = :id')
+            ->andWhere('status IN (:pending_status, :failed_status)')
+            ->setParameter('verified_status', PublisherSiteStatus::Verified->value)
+            ->setParameter('verified_at', $verifiedAt->format('Y-m-d H:i:s'))
+            ->setParameter('id', $site->id)
+            ->setParameter('pending_status', PublisherSiteStatus::Pending->value)
+            ->setParameter('failed_status', PublisherSiteStatus::Failed->value)
+            ->executeStatement();
+
+        if ($updatedRows !== 1) {
+            throw new \RuntimeException('publisher_site_status_not_verifiable');
+        }
 
         return $site->withVerification(PublisherSiteStatus::Verified, $verifiedAt);
+    }
+
+    public function markVerificationFailed(PublisherSite $site): PublisherSite
+    {
+        $this->connection->update('sites', [
+            'status' => PublisherSiteStatus::Failed->value,
+            'verified_at' => null,
+        ], ['id' => $site->id]);
+
+        return $site->withVerification(PublisherSiteStatus::Failed, null);
     }
 
     /**

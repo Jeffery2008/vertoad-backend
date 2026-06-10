@@ -83,6 +83,8 @@ use VertoAD\Repository\PointsLedgerRepository;
 use VertoAD\Repository\PointsLedgerRepositoryInterface;
 use VertoAD\Repository\PublisherSiteRepository;
 use VertoAD\Repository\PublisherSiteRepositoryInterface;
+use VertoAD\Repository\PublisherSiteVerificationAttemptRepository;
+use VertoAD\Repository\PublisherSiteVerificationAttemptRepositoryInterface;
 use VertoAD\Repository\RechargeKeyRepository;
 use VertoAD\Repository\RechargeKeyRepositoryInterface;
 use VertoAD\Repository\Review\ReviewRepository;
@@ -104,7 +106,11 @@ use VertoAD\Service\AdSlotSetupService;
 use VertoAD\Service\Assets\AssetUploadService;
 use VertoAD\Service\Archive\ArchiveJob;
 use VertoAD\Service\Archive\ArchiveService;
+use VertoAD\Service\Archive\ArchiveWriterInterface;
+use VertoAD\Service\Archive\ColdQueryRunnerInterface;
 use VertoAD\Service\Archive\ColdQueryService;
+use VertoAD\Service\Archive\DeterministicArchiveWriter;
+use VertoAD\Service\Archive\FixtureColdQueryRunner;
 use VertoAD\Service\Cron\ArchiveParquetJob;
 use VertoAD\Service\Cron\AiReviewQueueJob;
 use VertoAD\Service\Cron\AggregateStatisticsJob;
@@ -230,9 +236,12 @@ final class AppFactory
                 ): TenantAccessService => new TenantAccessService($memberships, $permissions),
                 PublisherSiteRepositoryInterface::class => static fn (Connection $connection): PublisherSiteRepositoryInterface =>
                     new PublisherSiteRepository($connection),
+                PublisherSiteVerificationAttemptRepositoryInterface::class => static fn (Connection $connection): PublisherSiteVerificationAttemptRepositoryInterface =>
+                    new PublisherSiteVerificationAttemptRepository($connection),
                 PublisherSiteVerificationService::class => static fn (
                     PublisherSiteRepositoryInterface $repository,
-                ): PublisherSiteVerificationService => new PublisherSiteVerificationService($repository),
+                    PublisherSiteVerificationAttemptRepositoryInterface $attempts,
+                ): PublisherSiteVerificationService => new PublisherSiteVerificationService($repository, $attempts),
                 AdSlotRepositoryInterface::class => static fn (Connection $connection): AdSlotRepositoryInterface =>
                     new AdSlotRepository($connection),
                 AdSlotSetupService::class => static fn (
@@ -313,20 +322,28 @@ final class AppFactory
                 ),
                 ArchiveRepositoryInterface::class => static fn (Connection $connection): ArchiveRepositoryInterface =>
                     new DatabaseArchiveRepository($connection),
+                ArchiveWriterInterface::class => static fn (): ArchiveWriterInterface =>
+                    self::archiveWriter($settings),
+                ColdQueryRunnerInterface::class => static fn (): ColdQueryRunnerInterface =>
+                    self::coldQueryRunner($settings),
                 ArchiveJob::class => static fn (
                     ArchiveRepositoryInterface $repository,
+                    ArchiveWriterInterface $writer,
                 ): ArchiveJob => new ArchiveJob(
                     $repository,
                     (string) ($settings['archive']['raw_events_base_object_key'] ?? 's3://vertoad-archive/raw-events'),
+                    $writer,
                 ),
                 ArchiveService::class => static fn (
                     ArchiveRepositoryInterface $repository,
                 ): ArchiveService => new ArchiveService($repository),
                 ColdQueryService::class => static fn (
                     ArchiveRepositoryInterface $repository,
+                    ColdQueryRunnerInterface $runner,
                 ): ColdQueryService => new ColdQueryService(
                     $repository,
                     (string) ($settings['archive']['query_results_base_object_key'] ?? 's3://vertoad-archive/query-results'),
+                    $runner,
                 ),
                 OperationErrorLogRepositoryInterface::class => static fn (Connection $connection): OperationErrorLogRepositoryInterface =>
                     new DatabaseOperationErrorLogRepository($connection),
@@ -381,6 +398,8 @@ final class AppFactory
                     $secrets,
                     WebhookDeliveryJob::httpTransport((int) ($settings['webhooks']['http_timeout_seconds'] ?? 5)),
                     (int) ($settings['webhooks']['retry_batch_size'] ?? 50),
+                    (int) ($settings['webhooks']['max_retry_count'] ?? 3),
+                    (int) ($settings['webhooks']['retry_base_backoff_seconds'] ?? 300),
                 ),
                 SupportTicketRepositoryInterface::class => static fn (Connection $connection): SupportTicketRepositoryInterface =>
                     new DatabaseSupportTicketRepository($connection),
@@ -603,7 +622,7 @@ final class AppFactory
     private static function servingEventRepository(array $settings): AdEventRepositoryInterface
     {
         $env = (string) ($settings['app']['env'] ?? 'local');
-        $localFallbackAllowed = in_array($env, ['local', 'test', 'testing'], true);
+        $localFallbackAllowed = self::localFallbackAllowed($settings);
 
         $redis = $settings['redis'] ?? [];
         if ((string) ($redis['password'] ?? '') === '') {
@@ -615,6 +634,46 @@ final class AppFactory
         }
 
         return RedisAdEventRepository::fromSettings(is_array($redis) ? $redis : []);
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function archiveWriter(array $settings): ArchiveWriterInterface
+    {
+        $archive = $settings['archive'] ?? [];
+        $adapter = is_array($archive) ? (string) ($archive['writer'] ?? '') : '';
+        if ($adapter === 'deterministic') {
+            if (!self::localFallbackAllowed($settings)) {
+                throw new \RuntimeException('ARCHIVE_WRITER=deterministic is only allowed in local/testing.');
+            }
+
+            return new DeterministicArchiveWriter();
+        }
+
+        if ($adapter === '' && self::localFallbackAllowed($settings)) {
+            return new DeterministicArchiveWriter();
+        }
+
+        throw new \RuntimeException('ARCHIVE_WRITER must be configured outside local/testing.');
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function coldQueryRunner(array $settings): ColdQueryRunnerInterface
+    {
+        $archive = $settings['archive'] ?? [];
+        $adapter = is_array($archive) ? (string) ($archive['cold_query_runner'] ?? '') : '';
+        if ($adapter === 'fixture') {
+            if (!self::localFallbackAllowed($settings)) {
+                throw new \RuntimeException('ARCHIVE_COLD_QUERY_RUNNER=fixture is only allowed in local/testing.');
+            }
+
+            return new FixtureColdQueryRunner();
+        }
+
+        if ($adapter === '' && self::localFallbackAllowed($settings)) {
+            return new FixtureColdQueryRunner();
+        }
+
+        throw new \RuntimeException('ARCHIVE_COLD_QUERY_RUNNER must be configured outside local/testing.');
     }
 
     /** @param array<string, mixed> $settings */
@@ -701,9 +760,15 @@ final class AppFactory
     /** @param array<string, mixed> $settings */
     private static function redisRequired(array $settings): bool
     {
+        return !self::localFallbackAllowed($settings);
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function localFallbackAllowed(array $settings): bool
+    {
         $env = (string) ($settings['app']['env'] ?? 'local');
 
-        return !in_array($env, ['local', 'test', 'testing'], true);
+        return in_array($env, ['local', 'test', 'testing'], true);
     }
 
     private static function aggregateStatisticsJob(DatabaseReportAggregateRepository $aggregates, int $lookbackHours): AggregateStatisticsJob

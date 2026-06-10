@@ -90,11 +90,31 @@ final class DatabaseWebhookDeliveryRepositoryTest extends TestCase
         self::assertSame(202, $stored->last_status_code);
         self::assertNull($stored->last_error);
         self::assertSame($delivered->signature_header, $stored->signature_header);
+        $exhausted = new WebhookDelivery(
+            delivery_id: $second->delivery_id,
+            organization_id: $second->organization_id,
+            webhook_endpoint_id: $second->webhook_endpoint_id,
+            endpoint_id: $second->endpoint_id,
+            endpoint_url: $second->endpoint_url,
+            event_type: $second->event_type,
+            payload_json: $second->payload_json,
+            status: 'exhausted',
+            retry_count: 3,
+            next_attempt_at: new DateTimeImmutable('2026-06-09T02:05:00+00:00'),
+            last_attempt_at: new DateTimeImmutable('2026-06-09T02:05:00+00:00'),
+            last_status_code: 503,
+            last_error: 'HTTP 503',
+            signature_header: 't=1,v1=' . str_repeat('b', 64),
+            created_at: $second->created_at,
+            delivered_at: null,
+        );
+        $fresh->save($exhausted);
         self::assertSame([$second->delivery_id], array_map(
             static fn (WebhookDelivery $delivery): string => $delivery->delivery_id,
-            $fresh->listForOrganization(99, endpointId: 'whe_billing_delivery', status: 'queued', limit: 10),
+            $fresh->listForOrganization(99, endpointId: 'whe_billing_delivery', status: 'exhausted', limit: 10),
         ));
-        self::assertSame([], $fresh->listForOrganization(100, endpointId: 'whe_billing_delivery', status: 'queued', limit: 10));
+        self::assertSame([], $fresh->pendingRetry(10, new DateTimeImmutable('2026-06-09T03:00:00+00:00')));
+        self::assertSame([], $fresh->listForOrganization(100, endpointId: 'whe_billing_delivery', status: 'exhausted', limit: 10));
         self::assertSame([
             [
                 'delivery_id' => $first->delivery_id,
@@ -124,6 +144,95 @@ final class DatabaseWebhookDeliveryRepositoryTest extends TestCase
         $this->expectExceptionMessage('Webhook retry batch size must be positive.');
 
         (new DatabaseWebhookDeliveryRepository($this->createConnection()))->pendingRetry(0);
+    }
+
+    public function testPendingRetryRejectsInvalidRetryCap(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Webhook retry cap must be positive.');
+
+        (new DatabaseWebhookDeliveryRepository($this->createConnection()))->pendingRetry(10, maxRetryCount: 0);
+    }
+
+    public function testPendingRetryFiltersDeliveriesAtRetryCap(): void
+    {
+        $connection = $this->createConnection();
+        $endpointRepository = new DatabaseWebhookEndpointRepository($connection);
+        $repository = new DatabaseWebhookDeliveryRepository($connection);
+        $endpoint = $this->storeEndpoint(
+            $endpointRepository,
+            endpointId: 'whe_retry_cap',
+            endpointUrl: 'https://hooks.example/retry-cap',
+            events: ['review.approved'],
+        );
+        $due = new DateTimeImmutable('2026-06-10T00:00:00+00:00');
+        $belowCap = $repository->queueForEndpoint($endpoint, 'review.approved', ['asset_id' => 'ast_below_cap']);
+        $atCap = $repository->queueForEndpoint($endpoint, 'review.approved', ['asset_id' => 'ast_at_cap']);
+
+        $repository->save($this->deliveryWithRetryState($belowCap, retryCount: 2, nextAttemptAt: $due));
+        $repository->save($this->deliveryWithRetryState($atCap, retryCount: 3, nextAttemptAt: $due));
+        $repository->save($this->deliveryWithRetryState(
+            $repository->queueForEndpoint($endpoint, 'review.approved', ['asset_id' => 'ast_exhausted']),
+            retryCount: 2,
+            nextAttemptAt: $due,
+            status: 'exhausted',
+        ));
+
+        self::assertSame([$belowCap->delivery_id], array_map(
+            static fn (WebhookDelivery $delivery): string => $delivery->delivery_id,
+            $repository->pendingRetry(10, $due),
+        ));
+    }
+
+    public function testMarkDueRetriesExhaustedTransitionsOnlyDueCappedFailuresAndRejectsInvalidInputs(): void
+    {
+        $connection = $this->createConnection();
+        $endpointRepository = new DatabaseWebhookEndpointRepository($connection);
+        $repository = new DatabaseWebhookDeliveryRepository($connection);
+        $endpoint = $this->storeEndpoint(
+            $endpointRepository,
+            endpointId: 'whe_exhaust_due',
+            endpointUrl: 'https://hooks.example/exhaust-due',
+            events: ['review.approved'],
+        );
+        $due = new DateTimeImmutable('2026-06-10T00:00:00+00:00');
+        $cappedDue = $repository->queueForEndpoint($endpoint, 'review.approved', ['asset_id' => 'ast_capped_due']);
+        $belowCap = $repository->queueForEndpoint($endpoint, 'review.approved', ['asset_id' => 'ast_below_cap']);
+        $futureCapped = $repository->queueForEndpoint($endpoint, 'review.approved', ['asset_id' => 'ast_future_capped']);
+
+        $repository->save($this->deliveryWithRetryState($cappedDue, retryCount: 3, nextAttemptAt: $due));
+        $repository->save($this->deliveryWithRetryState($belowCap, retryCount: 2, nextAttemptAt: $due));
+        $repository->save($this->deliveryWithRetryState(
+            $futureCapped,
+            retryCount: 3,
+            nextAttemptAt: $due->modify('+1 hour'),
+        ));
+
+        $exhausted = $repository->markDueRetriesExhausted(10, $due, maxRetryCount: 3);
+
+        self::assertSame([$cappedDue->delivery_id], array_map(
+            static fn (WebhookDelivery $delivery): string => $delivery->delivery_id,
+            $exhausted,
+        ));
+        self::assertSame('exhausted', $repository->find($cappedDue->delivery_id)?->status);
+        self::assertSame(
+            $due->modify('-5 minutes')->format('Y-m-d H:i:s'),
+            $repository->find($cappedDue->delivery_id)?->next_attempt_at->format('Y-m-d H:i:s'),
+        );
+        self::assertSame('failed', $repository->find($belowCap->delivery_id)?->status);
+        self::assertSame('failed', $repository->find($futureCapped->delivery_id)?->status);
+
+        try {
+            $repository->markDueRetriesExhausted(0, $due);
+            self::fail('Expected exhausted batch size validation to reject zero.');
+        } catch (\InvalidArgumentException $exception) {
+            self::assertSame('Webhook retry batch size must be positive.', $exception->getMessage());
+        }
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Webhook retry cap must be positive.');
+
+        $repository->markDueRetriesExhausted(10, $due, maxRetryCount: 0);
     }
 
     public function testBoundaryInputsRejectMissingEndpointIdAndInvalidListLimit(): void
@@ -182,6 +291,7 @@ final class DatabaseWebhookDeliveryRepositoryTest extends TestCase
             'signature_header varchar(255) null',
             'delivered_at datetime(6) null',
             'idx_webhook_deliveries_retry',
+            'constraint chk_webhook_deliveries_status check (status in (\'queued\', \'delivered\', \'failed\', \'exhausted\'))',
             'create table webhook_delivery_attempts',
             'attempt_number int unsigned not null',
             'duration_ms int unsigned not null',
@@ -217,6 +327,32 @@ final class DatabaseWebhookDeliveryRepositoryTest extends TestCase
             createdAt: $time,
             updatedAt: $time,
         ));
+    }
+
+    private function deliveryWithRetryState(
+        WebhookDelivery $delivery,
+        int $retryCount,
+        DateTimeImmutable $nextAttemptAt,
+        string $status = 'failed',
+    ): WebhookDelivery {
+        return new WebhookDelivery(
+            delivery_id: $delivery->delivery_id,
+            organization_id: $delivery->organization_id,
+            webhook_endpoint_id: $delivery->webhook_endpoint_id,
+            endpoint_id: $delivery->endpoint_id,
+            endpoint_url: $delivery->endpoint_url,
+            event_type: $delivery->event_type,
+            payload_json: $delivery->payload_json,
+            status: $status,
+            retry_count: $retryCount,
+            next_attempt_at: $nextAttemptAt,
+            last_attempt_at: $nextAttemptAt->modify('-5 minutes'),
+            last_status_code: 503,
+            last_error: 'HTTP 503',
+            signature_header: $delivery->signature_header,
+            created_at: $delivery->created_at,
+            delivered_at: null,
+        );
     }
 
     private function createConnection(): Connection

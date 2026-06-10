@@ -19,4 +19,6 @@ interface PublisherSiteRepositoryInterface
     public function findById(int $id): ?PublisherSite;
 
     public function markVerified(PublisherSite $site, DateTimeImmutable $verifiedAt): PublisherSite;
+
+    public function markVerificationFailed(PublisherSite $site): PublisherSite;
 }
