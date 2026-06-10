@@ -458,6 +458,122 @@ paths:
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/billing/ledger/adjustments:
+    post:
+      tags:
+        - Billing
+      operationId: createLedgerAdjustment
+      summary: Create a platform ledger adjustment.
+      description: Appends an audited manual credit or debit for a target organization ledger account. A repeated idempotency key returns the existing ledger entry.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - billing.ledger.adjust.platform
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LedgerAdjustmentRequest"
+      responses:
+        "200":
+          description: Existing ledger adjustment returned for a repeated idempotency key.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/LedgerEntryData"
+        "201":
+          description: Ledger adjustment created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/LedgerEntryData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/billing/ledger/{entry_id}/reversals:
+    post:
+      tags:
+        - Billing
+      operationId: reverseLedgerEntry
+      summary: Reverse an existing ledger entry.
+      description: Appends an audited opposite-direction ledger entry in the same account as the original entry. A repeated idempotency key returns the existing reversal entry.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - billing.ledger.adjust.platform
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - name: entry_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LedgerReversalRequest"
+      responses:
+        "200":
+          description: Existing ledger reversal returned for a repeated idempotency key.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/LedgerEntryData"
+        "201":
+          description: Ledger reversal created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/LedgerEntryData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/billing/recharge-keys/redeem:
     post:
       tags:
@@ -4131,6 +4247,65 @@ components:
         account_type:
           type: string
           minLength: 1
+      additionalProperties: false
+    LedgerAdjustmentRequest:
+      type: object
+      required:
+        - account_type
+        - points_amount
+        - direction
+        - idempotency_key
+        - reason
+      properties:
+        account_type:
+          type: string
+          enum:
+            - advertiser_balance
+            - publisher_earnings
+        account_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        points_amount:
+          type: integer
+          minimum: 1
+        direction:
+          type: string
+          enum:
+            - credit
+            - debit
+        idempotency_key:
+          type: string
+          minLength: 1
+          maxLength: 160
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 240
+      additionalProperties: false
+    LedgerReversalRequest:
+      type: object
+      required:
+        - idempotency_key
+        - reason
+      properties:
+        idempotency_key:
+          type: string
+          minLength: 1
+          maxLength: 160
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 240
+      additionalProperties: false
+    LedgerEntryData:
+      type: object
+      required:
+        - ledger_entry
+      properties:
+        ledger_entry:
+          $ref: "#/components/schemas/PointsLedgerEntry"
       additionalProperties: false
     PointsLedgerEntry:
       type: object

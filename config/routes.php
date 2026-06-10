@@ -40,6 +40,7 @@ use VertoAD\Http\Action\Attribution\ServerConversionAction;
 use VertoAD\Http\Action\Billing\BillingBalanceAction;
 use VertoAD\Http\Action\Billing\BillingLedgerListAction;
 use VertoAD\Http\Action\Billing\GenerateRechargeKeyBatchAction;
+use VertoAD\Http\Action\Billing\LedgerAdjustmentAction;
 use VertoAD\Http\Action\Billing\RechargeKeyRedeemAction;
 use VertoAD\Http\Action\Billing\RevealRechargeKeyPlaintextAction;
 use VertoAD\Http\Action\Billing\WithdrawalAction;
@@ -133,6 +134,12 @@ return static function (App $app): void {
         ->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/billing/balance', BillingBalanceAction::class)->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/billing/ledger', BillingLedgerListAction::class)->add(AuthenticateRequestMiddleware::class);
+    $app->post('/api/v1/billing/ledger/adjustments', [LedgerAdjustmentAction::class, 'createAdjustment'])
+        ->add($platformPermission('billing.ledger.adjust.platform'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->post('/api/v1/billing/ledger/{entry_id}/reversals', [LedgerAdjustmentAction::class, 'reverseEntry'])
+        ->add($platformPermission('billing.ledger.adjust.platform'))
+        ->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/billing/recharge-keys/generate', GenerateRechargeKeyBatchAction::class)
         ->add($platformPermission('billing.recharge_key.generate.platform'))
         ->add(AuthenticateRequestMiddleware::class);

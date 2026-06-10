@@ -126,6 +126,45 @@ final class PointsLedgerRepository implements PointsLedgerRepositoryInterface
         return $row === false ? null : $this->hydrate($row);
     }
 
+    public function findReversalForEntry(int $entryId): ?PointsLedgerEntry
+    {
+        if ($entryId <= 0) {
+            return null;
+        }
+
+        $rows = $this->connection->createQueryBuilder()
+            ->select(
+                'id',
+                'organization_id',
+                'account_type',
+                'account_id',
+                'points_amount',
+                'direction',
+                'balance_after_points',
+                'reference_type',
+                'reference_id',
+                'idempotency_key',
+                'memo',
+                'metadata_json',
+            )
+            ->from('ledger_entries')
+            ->where('reference_type = :reference_type')
+            ->andWhere('reference_id = :reference_id')
+            ->orderBy('id', 'DESC')
+            ->setParameter('reference_type', 'ledger_entry')
+            ->setParameter('reference_id', $entryId)
+            ->fetchAllAssociative();
+
+        foreach ($rows as $row) {
+            $entry = $this->hydrate($row);
+            if (($entry->metadata['entry_kind'] ?? null) === 'reversal') {
+                return $entry;
+            }
+        }
+
+        return null;
+    }
+
     /**
      * @return list<PointsLedgerEntry>
      */

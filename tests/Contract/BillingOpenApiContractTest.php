@@ -58,6 +58,59 @@ final class BillingOpenApiContractTest extends TestCase
         self::assertStringNotContainsString('key_hash', $adminSchema);
     }
 
+    public function testAdminLedgerAdjustmentAndReversalContractsAreDocumented(): void
+    {
+        $openApi = (string) file_get_contents(dirname(__DIR__, 2) . '/docs/openapi.yaml');
+        $adjustmentPath = $this->block($openApi, '  /api/v1/billing/ledger/adjustments:', '  /api/v1/billing/ledger/{entry_id}/reversals:');
+        $reversalPath = $this->block($openApi, '  /api/v1/billing/ledger/{entry_id}/reversals:', '  /api/v1/billing/recharge-keys/redeem:');
+        $adjustmentSchema = $this->block($openApi, '    LedgerAdjustmentRequest:', '    LedgerReversalRequest:');
+        $reversalSchema = $this->block($openApi, '    LedgerReversalRequest:', '    LedgerEntryData:');
+        $entryDataSchema = $this->block($openApi, '    LedgerEntryData:', '    PointsLedgerEntry:');
+
+        foreach ([
+            'operationId: createLedgerAdjustment',
+            'billing.ledger.adjust.platform',
+            'OrganizationId',
+            'LedgerAdjustmentRequest',
+            'LedgerEntryData',
+            '"200":',
+            '"201":',
+            '"403":',
+            '"409":',
+            '"422":',
+        ] as $fragment) {
+            self::assertStringContainsString($fragment, $adjustmentPath);
+        }
+
+        foreach ([
+            'operationId: reverseLedgerEntry',
+            'billing.ledger.adjust.platform',
+            'name: entry_id',
+            'LedgerReversalRequest',
+            'LedgerEntryData',
+            '"200":',
+            '"201":',
+            '"404":',
+            '"409":',
+            '"422":',
+        ] as $fragment) {
+            self::assertStringContainsString($fragment, $reversalPath);
+        }
+
+        foreach (['account_type', 'account_id', 'points_amount', 'direction', 'idempotency_key', 'reason'] as $field) {
+            self::assertStringContainsString($field . ':', $adjustmentSchema);
+        }
+
+        foreach (['idempotency_key', 'reason'] as $field) {
+            self::assertStringContainsString($field . ':', $reversalSchema);
+        }
+
+        self::assertStringContainsString('enum:', $adjustmentSchema);
+        self::assertStringContainsString('credit', $adjustmentSchema);
+        self::assertStringContainsString('debit', $adjustmentSchema);
+        self::assertStringContainsString('$ref: "#/components/schemas/PointsLedgerEntry"', $entryDataSchema);
+    }
+
     private function block(string $document, string $start, string $end): string
     {
         $startOffset = strpos($document, $start);

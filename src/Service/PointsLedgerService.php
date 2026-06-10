@@ -87,6 +87,15 @@ final class PointsLedgerService
             throw new InvalidArgumentException('Ledger reversal reason is required.');
         }
 
+        $existing = $this->repository->findByIdempotencyKey(trim($idempotencyKey));
+        if ($existing !== null) {
+            return $existing;
+        }
+
+        if ($this->repository->findReversalForEntry($originalEntryId) !== null) {
+            throw new InvalidArgumentException('Original ledger entry has already been reversed.');
+        }
+
         return $this->append(
             organizationId: $original->organizationId,
             accountType: $original->accountType,

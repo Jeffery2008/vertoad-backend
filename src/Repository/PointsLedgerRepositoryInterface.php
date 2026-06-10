@@ -14,6 +14,8 @@ interface PointsLedgerRepositoryInterface
 
     public function findByIdempotencyKey(string $idempotencyKey): ?PointsLedgerEntry;
 
+    public function findReversalForEntry(int $entryId): ?PointsLedgerEntry;
+
     /**
      * @return list<PointsLedgerEntry>
      */

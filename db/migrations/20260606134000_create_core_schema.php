@@ -160,12 +160,22 @@ CREATE TABLE ledger_entries (
     idempotency_key VARCHAR(160) NOT NULL,
     memo VARCHAR(255) NULL,
     metadata_json JSON NULL,
+    reversal_of_ledger_entry_id BIGINT UNSIGNED GENERATED ALWAYS AS (
+        CASE
+            WHEN reference_type = 'ledger_entry'
+                AND JSON_UNQUOTE(JSON_EXTRACT(metadata_json, '$.entry_kind')) = 'reversal'
+            THEN reference_id
+            ELSE NULL
+        END
+    ) STORED,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     UNIQUE KEY uq_ledger_entries_idempotency (idempotency_key),
+    UNIQUE KEY uq_ledger_entries_single_reversal (reversal_of_ledger_entry_id),
     KEY idx_ledger_entries_organization_created (organization_id, created_at),
     KEY idx_ledger_entries_reference (reference_type, reference_id),
     CONSTRAINT fk_ledger_entries_organization FOREIGN KEY (organization_id) REFERENCES organizations (id) ON DELETE RESTRICT,
+    CONSTRAINT chk_ledger_entries_account_type CHECK (account_type IN ('advertiser_balance', 'publisher_earnings')),
     CONSTRAINT chk_ledger_entries_points_amount_positive CHECK (points_amount > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Append-only ledger: corrections are recorded as new entries; update/delete are blocked by triggers.'
 SQL);

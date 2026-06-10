@@ -42,6 +42,8 @@ final class SensitiveRoutePermissionContractTest extends TestCase
         return [
             ['POST', '/api/v1/billing/recharge-keys/generate', 'billing.recharge_key.generate.platform', 'platformPermission'],
             ['POST', '/api/v1/billing/recharge-keys/{key_id}/reveal', 'billing.recharge_key.view_plaintext.platform', 'platformPermission'],
+            ['POST', '/api/v1/billing/ledger/adjustments', 'billing.ledger.adjust.platform', 'platformPermission'],
+            ['POST', '/api/v1/billing/ledger/{entry_id}/reversals', 'billing.ledger.adjust.platform', 'platformPermission'],
             ['POST', '/api/v1/billing/withdrawals', 'billing.withdrawal.request.own', 'permission'],
             ['POST', '/api/v1/billing/withdrawals/{withdrawal_id}/paid', 'billing.withdrawal.mark_paid.platform', 'platformPermission'],
             ['POST', '/api/v1/billing/withdrawals/{withdrawal_id}/reject', 'billing.withdrawal.review.platform', 'platformPermission'],

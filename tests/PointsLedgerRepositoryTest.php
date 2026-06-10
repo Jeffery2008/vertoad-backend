@@ -129,6 +129,14 @@ final class PointsLedgerRepositoryTest extends TestCase
         self::assertNull($repository->findById(999));
     }
 
+    public function testFindReversalForEntryReturnsNullForNonPositiveIds(): void
+    {
+        $repository = new PointsLedgerRepository($this->createConnection());
+
+        self::assertNull($repository->findReversalForEntry(0));
+        self::assertNull($repository->findReversalForEntry(-5));
+    }
+
     public function testFindByIdempotencyKeyReturnsNullForBlankAndMissingRows(): void
     {
         $repository = new PointsLedgerRepository($this->createConnection());

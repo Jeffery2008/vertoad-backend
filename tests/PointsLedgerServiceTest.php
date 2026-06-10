@@ -159,6 +159,20 @@ final class PointsLedgerServiceTest extends TestCase
         $service->reverse((int) $original->id, 'original:reverse', ' ');
     }
 
+    public function testReverseIdempotencyKeyReturnsExistingEntryWithoutAppendingAgain(): void
+    {
+        $repository = new FakePointsLedgerRepository();
+        $service = new PointsLedgerService($repository);
+        $original = $service->credit(10, 'advertiser_balance', null, 100, 'original:reverse-replay');
+        $first = $service->reverse((int) $original->id, 'original:reverse-replay:key', 'first request');
+
+        $second = $service->reverse((int) $original->id, ' original:reverse-replay:key ', 'replayed request');
+
+        self::assertSame($first, $second);
+        self::assertSame('Reversal: first request', $second->memo);
+        self::assertCount(2, $repository->entries);
+    }
+
     public function testAdjustmentRejectsBlankReason(): void
     {
         $service = new PointsLedgerService(new FakePointsLedgerRepository());
@@ -223,6 +237,19 @@ final class PointsLedgerServiceTest extends TestCase
             reason: 'missing',
         );
     }
+
+    public function testReverseRejectsOriginalEntryThatAlreadyHasAReversal(): void
+    {
+        $repository = new FakePointsLedgerRepository();
+        $service = new PointsLedgerService($repository);
+        $original = $service->debit(10, 'advertiser_balance', null, 100, 'original:double-reversal');
+        $service->reverse((int) $original->id, 'original:double-reversal:first', 'first reversal');
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Original ledger entry has already been reversed.');
+
+        $service->reverse((int) $original->id, 'original:double-reversal:second', 'second reversal');
+    }
 }
 
 final class FakePointsLedgerRepository implements PointsLedgerRepositoryInterface
@@ -267,6 +294,21 @@ final class FakePointsLedgerRepository implements PointsLedgerRepositoryInterfac
     {
         foreach ($this->entries as $entry) {
             if ($entry->idempotencyKey === trim($idempotencyKey)) {
+                return $entry;
+            }
+        }
+
+        return null;
+    }
+
+    public function findReversalForEntry(int $entryId): ?PointsLedgerEntry
+    {
+        foreach (array_reverse($this->entries) as $entry) {
+            if (
+                $entry->referenceType === 'ledger_entry'
+                && $entry->referenceId === $entryId
+                && ($entry->metadata['entry_kind'] ?? null) === 'reversal'
+            ) {
                 return $entry;
             }
         }

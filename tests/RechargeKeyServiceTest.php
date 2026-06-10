@@ -829,6 +829,21 @@ final class FakeRechargeLedgerRepository implements PointsLedgerRepositoryInterf
         return null;
     }
 
+    public function findReversalForEntry(int $entryId): ?PointsLedgerEntry
+    {
+        foreach (array_reverse($this->entries) as $entry) {
+            if (
+                $entry->referenceType === 'ledger_entry'
+                && $entry->referenceId === $entryId
+                && ($entry->metadata['entry_kind'] ?? null) === 'reversal'
+            ) {
+                return $entry;
+            }
+        }
+
+        return null;
+    }
+
     public function listForOrganization(int $organizationId, int $limit = 50, ?string $accountType = null): array
     {
         $entries = array_values(array_filter(

@@ -25,6 +25,7 @@ use VertoAD\Http\Action\Auth\RegisterAction;
 use VertoAD\Http\Action\Billing\BillingBalanceAction;
 use VertoAD\Http\Action\Billing\GenerateRechargeKeyBatchAction;
 use VertoAD\Http\Action\Billing\BillingLedgerListAction;
+use VertoAD\Http\Action\Billing\LedgerAdjustmentAction;
 use VertoAD\Http\Action\Billing\RevealRechargeKeyPlaintextAction;
 use VertoAD\Http\Action\Billing\RechargeKeyRedeemAction;
 use VertoAD\Http\Action\Billing\WithdrawalAction;
@@ -542,6 +543,362 @@ final class BillingRouteIntegrationTest extends TestCase
         self::assertSame('Unable to generate a unique recharge key after repeated attempts.', $conflict['error']['message']);
     }
 
+    public function testAdminAdjustsAndReversesLedgerEntriesWithAudit(): void
+    {
+        $connection = $this->createConnection();
+        $app = $this->createApp($connection, platformPermissions: ['billing.ledger.adjust.platform']);
+
+        $this->handleJson($app, 'POST', '/api/v1/auth/register', [
+            'email' => 'ledger-admin@example.com',
+            'password' => 'correct horse battery staple',
+            'display_name' => 'Ledger Admin',
+        ]);
+        $login = $this->handleJson($app, 'POST', '/api/v1/auth/login', [
+            'email' => 'ledger-admin@example.com',
+            'password' => 'correct horse battery staple',
+        ]);
+        $token = $login['data']['token']['access_token'];
+
+        $adjustment = $this->handleJson($app, 'POST', '/api/v1/billing/ledger/adjustments?organization_id=10', [
+            'account_type' => 'advertiser_balance',
+            'account_id' => null,
+            'points_amount' => '450',
+            'direction' => 'credit',
+            'idempotency_key' => 'ops:ledger-adjust:route-1',
+            'reason' => 'compensate failed recharge import',
+        ], $token, ['REMOTE_ADDR' => '198.51.100.24'], [
+            'CF-Connecting-IP' => '203.0.113.88',
+            'User-Agent' => 'LedgerAdmin/1.0',
+        ]);
+
+        self::assertSame(10, $adjustment['data']['ledger_entry']['organization_id']);
+        self::assertSame('advertiser_balance', $adjustment['data']['ledger_entry']['account_type']);
+        self::assertNull($adjustment['data']['ledger_entry']['account_id']);
+        self::assertSame(450, $adjustment['data']['ledger_entry']['points_amount']);
+        self::assertSame('credit', $adjustment['data']['ledger_entry']['direction']);
+        self::assertSame(450, $adjustment['data']['ledger_entry']['balance_after_points']);
+        self::assertSame('manual_adjustment', $adjustment['data']['ledger_entry']['reference_type']);
+        self::assertSame('Adjustment: compensate failed recharge import', $adjustment['data']['ledger_entry']['memo']);
+        self::assertSame('adjustment', $adjustment['data']['ledger_entry']['metadata']['entry_kind']);
+        self::assertSame(1, $adjustment['data']['ledger_entry']['metadata']['actor_user_id']);
+        self::assertStringNotContainsString('idempotency_key', json_encode($adjustment, JSON_THROW_ON_ERROR));
+
+        $duplicate = $this->handleJson($app, 'POST', '/api/v1/billing/ledger/adjustments?organization_id=10', [
+            'account_type' => 'advertiser_balance',
+            'points_amount' => 999,
+            'direction' => 'debit',
+            'idempotency_key' => 'ops:ledger-adjust:route-1',
+            'reason' => 'duplicate submission',
+        ], $token);
+        self::assertSame($adjustment['data']['ledger_entry']['id'], $duplicate['data']['ledger_entry']['id']);
+        self::assertSame(450, $duplicate['data']['ledger_entry']['points_amount']);
+
+        $reversal = $this->handleJson(
+            $app,
+            'POST',
+            '/api/v1/billing/ledger/' . $adjustment['data']['ledger_entry']['id'] . '/reversals?organization_id=10',
+            [
+                'idempotency_key' => 'ops:ledger-reversal:route-1',
+                'reason' => 'operator found duplicate compensation',
+            ],
+            $token,
+            ['REMOTE_ADDR' => '198.51.100.24'],
+            [
+                'CF-Connecting-IP' => '203.0.113.89',
+                'User-Agent' => 'LedgerAdmin/1.0',
+            ],
+        );
+
+        self::assertSame(10, $reversal['data']['ledger_entry']['organization_id']);
+        self::assertSame('debit', $reversal['data']['ledger_entry']['direction']);
+        self::assertSame(450, $reversal['data']['ledger_entry']['points_amount']);
+        self::assertSame(0, $reversal['data']['ledger_entry']['balance_after_points']);
+        self::assertSame('ledger_entry', $reversal['data']['ledger_entry']['reference_type']);
+        self::assertSame($adjustment['data']['ledger_entry']['id'], $reversal['data']['ledger_entry']['reference_id']);
+        self::assertSame('reversal', $reversal['data']['ledger_entry']['metadata']['entry_kind']);
+        self::assertSame(
+            $adjustment['data']['ledger_entry']['id'],
+            $reversal['data']['ledger_entry']['metadata']['reverses_ledger_entry_id'],
+        );
+
+        $reversalReplay = $this->handleJson(
+            $app,
+            'POST',
+            '/api/v1/billing/ledger/' . $adjustment['data']['ledger_entry']['id'] . '/reversals?organization_id=10',
+            [
+                'idempotency_key' => 'ops:ledger-reversal:route-1',
+                'reason' => 'replayed after timeout',
+            ],
+            $token,
+        );
+        self::assertSame($reversal['data']['ledger_entry']['id'], $reversalReplay['data']['ledger_entry']['id']);
+        self::assertSame(450, $reversalReplay['data']['ledger_entry']['points_amount']);
+
+        $duplicateReversal = $this->handleJson(
+            $app,
+            'POST',
+            '/api/v1/billing/ledger/' . $adjustment['data']['ledger_entry']['id'] . '/reversals?organization_id=10',
+            [
+                'idempotency_key' => 'ops:ledger-reversal:route-2',
+                'reason' => 'second reversal should be blocked',
+            ],
+            $token,
+        );
+        self::assertSame('ledger_reversal_conflict', $duplicateReversal['error']['code']);
+
+        $auditRows = $connection->fetchAllAssociative('SELECT action, subject_type, subject_id, actor_user_id, organization_id, ip_address, user_agent, metadata_json FROM audit_logs ORDER BY id ASC');
+        self::assertCount(2, $auditRows);
+        self::assertSame('billing.ledger.adjust', $auditRows[0]['action']);
+        self::assertSame('ledger_entry', $auditRows[0]['subject_type']);
+        self::assertSame((int) $adjustment['data']['ledger_entry']['id'], (int) $auditRows[0]['subject_id']);
+        self::assertSame(1, (int) $auditRows[0]['actor_user_id']);
+        self::assertSame(10, (int) $auditRows[0]['organization_id']);
+        self::assertSame(inet_pton('203.0.113.88'), $auditRows[0]['ip_address']);
+        self::assertSame('LedgerAdmin/1.0', $auditRows[0]['user_agent']);
+        self::assertStringContainsString('compensate failed recharge import', (string) $auditRows[0]['metadata_json']);
+
+        self::assertSame('billing.ledger.reverse', $auditRows[1]['action']);
+        self::assertSame('ledger_entry', $auditRows[1]['subject_type']);
+        self::assertSame((int) $reversal['data']['ledger_entry']['id'], (int) $auditRows[1]['subject_id']);
+        self::assertSame(1, (int) $auditRows[1]['actor_user_id']);
+        self::assertSame(10, (int) $auditRows[1]['organization_id']);
+        self::assertSame(inet_pton('203.0.113.89'), $auditRows[1]['ip_address']);
+        self::assertSame('LedgerAdmin/1.0', $auditRows[1]['user_agent']);
+        self::assertStringContainsString('operator found duplicate compensation', (string) $auditRows[1]['metadata_json']);
+    }
+
+    public function testAdminLedgerAdjustmentRoutesEnforcePlatformPermission(): void
+    {
+        $connection = $this->createConnection();
+        $app = $this->createApp($connection, platformPermissions: []);
+
+        $this->handleJson($app, 'POST', '/api/v1/auth/register', [
+            'email' => 'ledger-permission@example.com',
+            'password' => 'correct horse battery staple',
+            'display_name' => 'Ledger Permission',
+        ]);
+        $login = $this->handleJson($app, 'POST', '/api/v1/auth/login', [
+            'email' => 'ledger-permission@example.com',
+            'password' => 'correct horse battery staple',
+        ]);
+        $token = $login['data']['token']['access_token'];
+
+        $missingScope = $this->handleJson($app, 'POST', '/api/v1/billing/ledger/adjustments', [
+            'account_type' => 'advertiser_balance',
+            'points_amount' => 100,
+            'direction' => 'credit',
+            'idempotency_key' => 'ops:ledger-adjust:permission',
+            'reason' => 'permission test',
+        ], $token);
+        self::assertSame('organization_scope_required', $missingScope['error']['code']);
+        self::assertSame('billing.ledger.adjust.platform', $missingScope['error']['required_permission']);
+
+        $missingAdjustmentPermission = $this->handleJson($app, 'POST', '/api/v1/billing/ledger/adjustments?organization_id=10', [
+            'account_type' => 'advertiser_balance',
+            'points_amount' => 100,
+            'direction' => 'credit',
+            'idempotency_key' => 'ops:ledger-adjust:permission',
+            'reason' => 'permission test',
+        ], $token);
+        self::assertSame('permission_required', $missingAdjustmentPermission['error']['code']);
+        self::assertSame('billing.ledger.adjust.platform', $missingAdjustmentPermission['error']['required_permission']);
+
+        $ledger = new PointsLedgerService(new PointsLedgerRepository($connection));
+        $original = $ledger->credit(10, 'advertiser_balance', null, 100, 'ops:ledger-original:permission');
+        $missingReversalPermission = $this->handleJson(
+            $app,
+            'POST',
+            '/api/v1/billing/ledger/' . $original->id . '/reversals?organization_id=10',
+            [
+                'idempotency_key' => 'ops:ledger-reversal:permission',
+                'reason' => 'permission test',
+            ],
+            $token,
+        );
+        self::assertSame('permission_required', $missingReversalPermission['error']['code']);
+        self::assertSame('billing.ledger.adjust.platform', $missingReversalPermission['error']['required_permission']);
+        self::assertSame(0, (int) $connection->fetchOne("SELECT COUNT(*) FROM audit_logs WHERE action LIKE 'billing.ledger.%'"));
+    }
+
+    public function testAdminLedgerAdjustmentRoutesReturnControlledErrors(): void
+    {
+        $connection = $this->createConnection();
+        $app = $this->createApp($connection, platformPermissions: ['billing.ledger.adjust.platform']);
+
+        $unauthenticatedAdjustment = $this->handleJson($app, 'POST', '/api/v1/billing/ledger/adjustments', [
+            'account_type' => 'advertiser_balance',
+            'points_amount' => 100,
+            'direction' => 'credit',
+            'idempotency_key' => 'ops:ledger-adjust:unauth',
+            'reason' => 'unauthenticated',
+        ]);
+        self::assertSame('authentication_required', $unauthenticatedAdjustment['error']['code']);
+
+        $this->handleJson($app, 'POST', '/api/v1/auth/register', [
+            'email' => 'ledger-errors@example.com',
+            'password' => 'correct horse battery staple',
+            'display_name' => 'Ledger Errors',
+        ]);
+        $login = $this->handleJson($app, 'POST', '/api/v1/auth/login', [
+            'email' => 'ledger-errors@example.com',
+            'password' => 'correct horse battery staple',
+        ]);
+        $token = $login['data']['token']['access_token'];
+
+        $appWithoutPlatformGuard = $this->createApp($connection);
+        $missingAdjustmentScope = $this->handleJson($appWithoutPlatformGuard, 'POST', '/api/v1/billing/ledger/adjustments', [
+            'account_type' => 'advertiser_balance',
+            'points_amount' => 100,
+            'direction' => 'credit',
+            'idempotency_key' => 'ops:ledger-adjust:missing-scope',
+            'reason' => 'missing scope',
+        ], $token);
+        self::assertSame('organization_scope_required', $missingAdjustmentScope['error']['code']);
+
+        $badDirection = $this->handleJson($app, 'POST', '/api/v1/billing/ledger/adjustments?organization_id=10', [
+            'account_type' => 'advertiser_balance',
+            'points_amount' => 100,
+            'direction' => 'refund',
+            'idempotency_key' => 'ops:ledger-adjust:bad-direction',
+            'reason' => 'bad direction',
+        ], $token);
+        self::assertSame('invalid_request', $badDirection['error']['code']);
+
+        $blankReason = $this->handleJson($app, 'POST', '/api/v1/billing/ledger/adjustments?organization_id=10', [
+            'account_type' => 'advertiser_balance',
+            'points_amount' => 100,
+            'direction' => 'credit',
+            'idempotency_key' => 'ops:ledger-adjust:blank-reason',
+            'reason' => ' ',
+        ], $token);
+        self::assertSame('invalid_request', $blankReason['error']['code']);
+        self::assertSame('reason must be a non-empty string.', $blankReason['error']['message']);
+
+        $wrongReasonType = $this->handleJson($app, 'POST', '/api/v1/billing/ledger/adjustments?organization_id=10', [
+            'account_type' => 'advertiser_balance',
+            'points_amount' => 100,
+            'direction' => 'credit',
+            'idempotency_key' => 'ops:ledger-adjust:wrong-reason-type',
+            'reason' => ['not' => 'a string'],
+        ], $token);
+        self::assertSame('invalid_request', $wrongReasonType['error']['code']);
+        self::assertSame('reason must be a string.', $wrongReasonType['error']['message']);
+
+        $missingPointsAmount = $this->handleJson($app, 'POST', '/api/v1/billing/ledger/adjustments?organization_id=10', [
+            'account_type' => 'advertiser_balance',
+            'direction' => 'credit',
+            'idempotency_key' => 'ops:ledger-adjust:missing-points',
+            'reason' => 'missing points',
+        ], $token);
+        self::assertSame('invalid_request', $missingPointsAmount['error']['code']);
+        self::assertSame('points_amount must be a positive integer.', $missingPointsAmount['error']['message']);
+
+        $badAccountId = $this->handleJson($app, 'POST', '/api/v1/billing/ledger/adjustments?organization_id=10', [
+            'account_type' => 'advertiser_balance',
+            'account_id' => 'not-int',
+            'points_amount' => 100,
+            'direction' => 'credit',
+            'idempotency_key' => 'ops:ledger-adjust:bad-account',
+            'reason' => 'bad account',
+        ], $token);
+        self::assertSame('invalid_request', $badAccountId['error']['code']);
+
+        $badAccountType = $this->handleJson($app, 'POST', '/api/v1/billing/ledger/adjustments?organization_id=10', [
+            'account_type' => 'settlement',
+            'points_amount' => 100,
+            'direction' => 'credit',
+            'idempotency_key' => 'ops:ledger-adjust:bad-account-type',
+            'reason' => 'bad account type',
+        ], $token);
+        self::assertSame('invalid_request', $badAccountType['error']['code']);
+        self::assertSame('account_type must be either advertiser_balance or publisher_earnings.', $badAccountType['error']['message']);
+
+        $tooLongReason = $this->handleJson($app, 'POST', '/api/v1/billing/ledger/adjustments?organization_id=10', [
+            'account_type' => 'advertiser_balance',
+            'points_amount' => 100,
+            'direction' => 'credit',
+            'idempotency_key' => 'ops:ledger-adjust:too-long-reason',
+            'reason' => str_repeat('x', 241),
+        ], $token);
+        self::assertSame('invalid_request', $tooLongReason['error']['code']);
+        self::assertSame('reason must be at most 240 characters.', $tooLongReason['error']['message']);
+
+        $badEntryId = $this->handleJson($app, 'POST', '/api/v1/billing/ledger/abc/reversals?organization_id=10', [
+            'idempotency_key' => 'ops:ledger-reversal:bad-id',
+            'reason' => 'bad id',
+        ], $token);
+        self::assertSame('invalid_request', $badEntryId['error']['code']);
+
+        $missingOriginal = $this->handleJson($app, 'POST', '/api/v1/billing/ledger/999/reversals?organization_id=10', [
+            'idempotency_key' => 'ops:ledger-reversal:missing',
+            'reason' => 'missing original',
+        ], $token);
+        self::assertSame('ledger_entry_not_found', $missingOriginal['error']['code']);
+
+        $ledger = new PointsLedgerService(new PointsLedgerRepository($connection));
+        $original = $ledger->credit(10, 'advertiser_balance', null, 100, 'ops:ledger-original:conflict');
+
+        $missingReversalScope = $this->handleJson(
+            $appWithoutPlatformGuard,
+            'POST',
+            '/api/v1/billing/ledger/' . $original->id . '/reversals',
+            [
+                'idempotency_key' => 'ops:ledger-reversal:missing-scope',
+                'reason' => 'missing scope',
+            ],
+            $token,
+        );
+        self::assertSame('organization_scope_required', $missingReversalScope['error']['code']);
+
+        $tooLongReversalIdempotencyKey = $this->handleJson(
+            $app,
+            'POST',
+            '/api/v1/billing/ledger/' . $original->id . '/reversals?organization_id=10',
+            [
+                'idempotency_key' => str_repeat('r', 161),
+                'reason' => 'too long idempotency key',
+            ],
+            $token,
+        );
+        self::assertSame('invalid_request', $tooLongReversalIdempotencyKey['error']['code']);
+        self::assertSame('idempotency_key must be at most 160 characters.', $tooLongReversalIdempotencyKey['error']['message']);
+
+        $ledger->credit(10, 'advertiser_balance', null, 1, 'ops:ledger-adjust:conflicting-key');
+        $conflictingAdjustmentKey = $this->handleJson($app, 'POST', '/api/v1/billing/ledger/adjustments?organization_id=10', [
+            'account_type' => 'advertiser_balance',
+            'points_amount' => 100,
+            'direction' => 'credit',
+            'idempotency_key' => 'ops:ledger-adjust:conflicting-key',
+            'reason' => 'attempt conflicting adjustment key reuse',
+        ], $token);
+        self::assertSame('ledger_idempotency_conflict', $conflictingAdjustmentKey['error']['code']);
+
+        $adjustment = $ledger->adjust(
+            organizationId: 10,
+            accountType: 'advertiser_balance',
+            accountId: null,
+            pointsAmount: 100,
+            direction: \VertoAD\Domain\Ledger\LedgerDirection::Credit,
+            idempotencyKey: 'ops:ledger-shared-key',
+            reason: 'reserve idempotency key',
+        );
+        self::assertSame('adjustment', $adjustment->metadata['entry_kind'] ?? null);
+
+        $reusedKey = $this->handleJson(
+            $app,
+            'POST',
+            '/api/v1/billing/ledger/' . $original->id . '/reversals?organization_id=10',
+            [
+                'idempotency_key' => 'ops:ledger-shared-key',
+                'reason' => 'attempt conflicting reuse',
+            ],
+            $token,
+        );
+        self::assertSame('ledger_idempotency_conflict', $reusedKey['error']['code']);
+
+        self::assertSame(0, (int) $connection->fetchOne("SELECT COUNT(*) FROM audit_logs WHERE action LIKE 'billing.ledger.%'"));
+    }
+
     public function testAdminRechargeKeyRevealReturnsControlledConflictWhenAuditIsUnavailable(): void
     {
         $connection = $this->createConnection();
@@ -950,6 +1307,16 @@ final class BillingRouteIntegrationTest extends TestCase
         $app->post('/api/v1/auth/login', LoginAction::class);
         $app->get('/api/v1/billing/balance', BillingBalanceAction::class)->add(AuthenticateRequestMiddleware::class);
         $app->get('/api/v1/billing/ledger', BillingLedgerListAction::class)->add(AuthenticateRequestMiddleware::class);
+        $adjustmentRoute = $app->post('/api/v1/billing/ledger/adjustments', [LedgerAdjustmentAction::class, 'createAdjustment']);
+        if ($platformPermissions !== null) {
+            $adjustmentRoute->add($platformPermission('billing.ledger.adjust.platform'));
+        }
+        $adjustmentRoute->add(AuthenticateRequestMiddleware::class);
+        $reversalRoute = $app->post('/api/v1/billing/ledger/{entry_id}/reversals', [LedgerAdjustmentAction::class, 'reverseEntry']);
+        if ($platformPermissions !== null) {
+            $reversalRoute->add($platformPermission('billing.ledger.adjust.platform'));
+        }
+        $reversalRoute->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/billing/recharge-keys/redeem', RechargeKeyRedeemAction::class)->add(AuthenticateRequestMiddleware::class);
         $generateRoute = $app->post('/api/v1/billing/recharge-keys/generate', GenerateRechargeKeyBatchAction::class);
         if ($platformPermissions !== null) {
