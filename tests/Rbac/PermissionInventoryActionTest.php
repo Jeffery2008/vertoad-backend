@@ -32,6 +32,7 @@ final class PermissionInventoryActionTest extends TestCase
 
         foreach ([
             'rbac.permission.read.platform',
+            'billing.recharge_key.generate.platform',
             'billing.recharge_key.view_plaintext.platform',
             'publisher.slot.write.own',
             'ops.error_log.view_raw.platform',

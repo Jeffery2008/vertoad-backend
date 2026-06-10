@@ -9,7 +9,11 @@ use VertoAD\Domain\Recharge\RechargeKey;
 
 interface RechargeKeyRepositoryInterface
 {
+    public function transactional(callable $operation): mixed;
+
     public function store(RechargeKey $key): RechargeKey;
+
+    public function findById(int $id): ?RechargeKey;
 
     public function findByKeyHash(string $keyHash): ?RechargeKey;
 

@@ -16,6 +16,11 @@ final class RechargeKeyRepository implements RechargeKeyRepositoryInterface
     {
     }
 
+    public function transactional(callable $operation): mixed
+    {
+        return $this->connection->transactional(static fn (): mixed => $operation());
+    }
+
     public function store(RechargeKey $key): RechargeKey
     {
         $this->connection->insert(
@@ -83,6 +88,36 @@ final class RechargeKeyRepository implements RechargeKeyRepositoryInterface
             ->from('recharge_keys')
             ->where('key_hash = :key_hash')
             ->setParameter('key_hash', $keyHash)
+            ->fetchAssociative();
+
+        return $row === false ? null : $this->hydrate($row);
+    }
+
+    public function findById(int $id): ?RechargeKey
+    {
+        if ($id <= 0) {
+            return null;
+        }
+
+        $row = $this->connection->createQueryBuilder()
+            ->select(
+                'id',
+                'organization_id',
+                'key_hash',
+                'encrypted_plaintext_key',
+                'points_amount',
+                'status',
+                'batch_code',
+                'batch_metadata_json',
+                'issued_by_user_id',
+                'redeemed_by_user_id',
+                'redeemed_ledger_entry_id',
+                'expires_at',
+                'redeemed_at',
+            )
+            ->from('recharge_keys')
+            ->where('id = :id')
+            ->setParameter('id', $id, ParameterType::INTEGER)
             ->fetchAssociative();
 
         return $row === false ? null : $this->hydrate($row);

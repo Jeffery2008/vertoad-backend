@@ -4,43 +4,62 @@ declare(strict_types=1);
 
 namespace VertoAD\Tests\Billing;
 
+use Closure;
 use DateTimeImmutable;
 use Defuse\Crypto\Key;
 use DI\ContainerBuilder;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\DriverManager;
 use PHPUnit\Framework\TestCase;
+use Slim\CallableResolver;
 use Slim\Factory\AppFactory as SlimAppFactory;
+use Slim\Psr7\Factory\ResponseFactory;
 use Slim\Psr7\Factory\ServerRequestFactory;
 use Slim\Psr7\Factory\StreamFactory;
+use Slim\Routing\Route;
+use Slim\Routing\RouteContext;
+use VertoAD\Domain\Auth\AuthenticatedUser;
+use VertoAD\Domain\Auth\OrganizationMembership;
 use VertoAD\Http\Action\Auth\LoginAction;
 use VertoAD\Http\Action\Auth\RegisterAction;
 use VertoAD\Http\Action\Billing\BillingBalanceAction;
+use VertoAD\Http\Action\Billing\GenerateRechargeKeyBatchAction;
 use VertoAD\Http\Action\Billing\BillingLedgerListAction;
+use VertoAD\Http\Action\Billing\RevealRechargeKeyPlaintextAction;
 use VertoAD\Http\Action\Billing\RechargeKeyRedeemAction;
 use VertoAD\Http\Action\Billing\WithdrawalAction;
 use VertoAD\Http\Auth\BearerTokenAuthenticator;
+use VertoAD\Http\Auth\PermissionRequirement;
+use VertoAD\Http\Auth\RequestUserContext;
 use VertoAD\Http\Middleware\ApiEnvelopeMiddleware;
 use VertoAD\Http\Middleware\AuthenticateRequestMiddleware;
+use VertoAD\Http\Middleware\RequirePermissionMiddleware;
 use VertoAD\Infrastructure\Storage\DeterministicPresignedUploadSigner;
+use VertoAD\Infrastructure\Security\ClientIpResolver;
 use VertoAD\Infrastructure\Storage\ObjectStorageUploadSignerInterface;
 use VertoAD\Repository\Billing\WithdrawalRepository;
 use VertoAD\Repository\FirstPartySessionRepository;
 use VertoAD\Repository\FirstPartySessionRepositoryInterface;
+use VertoAD\Repository\OrganizationMembershipRepositoryInterface;
 use VertoAD\Repository\PasswordResetTokenRepository;
 use VertoAD\Repository\PasswordResetTokenRepositoryInterface;
 use VertoAD\Repository\PointsLedgerRepository;
 use VertoAD\Repository\PointsLedgerRepositoryInterface;
+use VertoAD\Repository\AuditLogRepository;
+use VertoAD\Repository\AuditLogRepositoryInterface;
 use VertoAD\Repository\RechargeKeyRepository;
 use VertoAD\Repository\RechargeKeyRepositoryInterface;
+use VertoAD\Service\AuditLogService;
 use VertoAD\Service\AuthService;
 use VertoAD\Service\Billing\WithdrawalProofService;
 use VertoAD\Service\Billing\WithdrawalService;
 use VertoAD\Service\PasswordHasher;
 use VertoAD\Service\DefuseRechargeKeyPlaintextCipher;
+use VertoAD\Service\PermissionMatcher;
 use VertoAD\Service\PointsLedgerService;
 use VertoAD\Service\RechargeKeyPlaintextCipherInterface;
 use VertoAD\Service\RechargeKeyService;
+use VertoAD\Service\TenantAccessService;
 
 final class BillingRouteIntegrationTest extends TestCase
 {
@@ -266,6 +285,345 @@ final class BillingRouteIntegrationTest extends TestCase
         self::assertSame('invalid_request', $wrongType['error']['code']);
     }
 
+    public function testAdminGeneratesRechargeKeyBatchAndRevealsPlaintextWithAudit(): void
+    {
+        $connection = $this->createConnection();
+        $app = $this->createApp($connection);
+        $this->handleJson($app, 'POST', '/api/v1/auth/register', [
+            'email' => 'admin-billing@example.com',
+            'password' => 'correct horse battery staple',
+            'display_name' => 'Billing Admin',
+        ]);
+        $login = $this->handleJson($app, 'POST', '/api/v1/auth/login', [
+            'email' => 'admin-billing@example.com',
+            'password' => 'correct horse battery staple',
+        ]);
+        $token = $login['data']['token']['access_token'];
+
+        $generated = $this->handleJson($app, 'POST', '/api/v1/billing/recharge-keys/generate', [
+            'points_amount' => 2500,
+            'count' => 2,
+            'batch_code' => 'route-admin-batch',
+            'batch_metadata' => ['channel' => 'ops-console'],
+            'expires_at' => '2026-12-31 23:59:59',
+        ], $token, ['REMOTE_ADDR' => '198.51.100.24'], [
+            'CF-Connecting-IP' => '203.0.113.44',
+            'User-Agent' => 'BillingAdmin/1.0',
+        ]);
+
+        self::assertSame('route-admin-batch', $generated['data']['batch_code']);
+        self::assertSame(2, $generated['data']['count']);
+        self::assertCount(2, $generated['data']['keys']);
+        self::assertSame(2500, $generated['data']['keys'][0]['points_amount']);
+        self::assertSame('issued', $generated['data']['keys'][0]['status']);
+        self::assertSame('route-admin-batch', $generated['data']['keys'][0]['batch_code']);
+        self::assertSame(['channel' => 'ops-console'], $generated['data']['keys'][0]['batch_metadata']);
+        self::assertStringStartsWith('rk_live_', $generated['data']['keys'][0]['plaintext_key']);
+
+        $reveal = $this->handleJson(
+            $app,
+            'POST',
+            '/api/v1/billing/recharge-keys/' . $generated['data']['keys'][0]['id'] . '/reveal',
+            [],
+            $token,
+            ['REMOTE_ADDR' => '198.51.100.24'],
+            [
+                'CF-Connecting-IP' => '203.0.113.45',
+                'User-Agent' => 'BillingAdmin/1.0',
+            ],
+        );
+
+        self::assertSame($generated['data']['keys'][0]['id'], $reveal['data']['id']);
+        self::assertSame($generated['data']['keys'][0]['plaintext_key'], $reveal['data']['plaintext_key']);
+        self::assertSame('route-admin-batch', $reveal['data']['batch_code']);
+
+        $auditRows = $connection->fetchAllAssociative('SELECT action, subject_type, subject_id, actor_user_id, ip_address, user_agent, metadata_json FROM audit_logs ORDER BY id ASC');
+        self::assertCount(2, $auditRows);
+        self::assertSame('billing.recharge_key.generate_batch', $auditRows[0]['action']);
+        self::assertSame('recharge_key_batch', $auditRows[0]['subject_type']);
+        self::assertNull($auditRows[0]['subject_id']);
+        self::assertSame(1, (int) $auditRows[0]['actor_user_id']);
+        self::assertSame(inet_pton('203.0.113.44'), $auditRows[0]['ip_address']);
+        self::assertSame('BillingAdmin/1.0', $auditRows[0]['user_agent']);
+        self::assertStringContainsString('route-admin-batch', (string) $auditRows[0]['metadata_json']);
+        self::assertStringNotContainsString($generated['data']['keys'][0]['plaintext_key'], (string) $auditRows[0]['metadata_json']);
+
+        self::assertSame('billing.recharge_key.reveal_plaintext', $auditRows[1]['action']);
+        self::assertSame('recharge_key', $auditRows[1]['subject_type']);
+        self::assertSame((int) $generated['data']['keys'][0]['id'], (int) $auditRows[1]['subject_id']);
+        self::assertSame(1, (int) $auditRows[1]['actor_user_id']);
+        self::assertSame(inet_pton('203.0.113.45'), $auditRows[1]['ip_address']);
+        self::assertSame('BillingAdmin/1.0', $auditRows[1]['user_agent']);
+        self::assertStringContainsString('route-admin-batch', (string) $auditRows[1]['metadata_json']);
+        self::assertStringNotContainsString($generated['data']['keys'][0]['plaintext_key'], (string) $auditRows[1]['metadata_json']);
+    }
+
+    public function testAdminRechargeKeyRoutesEnforcePlatformPermissions(): void
+    {
+        $connection = $this->createConnection();
+        $app = $this->createApp($connection, platformPermissions: []);
+
+        $this->handleJson($app, 'POST', '/api/v1/auth/register', [
+            'email' => 'admin-permissions@example.com',
+            'password' => 'correct horse battery staple',
+            'display_name' => 'Billing Admin',
+        ]);
+        $login = $this->handleJson($app, 'POST', '/api/v1/auth/login', [
+            'email' => 'admin-permissions@example.com',
+            'password' => 'correct horse battery staple',
+        ]);
+        $token = $login['data']['token']['access_token'];
+
+        $missingScope = $this->handleJson($app, 'POST', '/api/v1/billing/recharge-keys/generate', [
+            'points_amount' => 100,
+            'count' => 1,
+        ], $token);
+        self::assertSame('organization_scope_required', $missingScope['error']['code']);
+        self::assertSame('billing.recharge_key.generate.platform', $missingScope['error']['required_permission']);
+
+        $missingPermission = $this->handleJson($app, 'POST', '/api/v1/billing/recharge-keys/generate?organization_id=10', [
+            'points_amount' => 100,
+            'count' => 1,
+        ], $token);
+        self::assertSame('permission_required', $missingPermission['error']['code']);
+        self::assertSame('billing.recharge_key.generate.platform', $missingPermission['error']['required_permission']);
+
+        $this->issueRechargeKey($connection, 'rk_live_PERMISSION_SECRET', 100);
+        $missingRevealScope = $this->handleJson(
+            $app,
+            'POST',
+            '/api/v1/billing/recharge-keys/1/reveal',
+            [],
+            $token,
+        );
+        self::assertSame('organization_scope_required', $missingRevealScope['error']['code']);
+        self::assertSame('billing.recharge_key.view_plaintext.platform', $missingRevealScope['error']['required_permission']);
+        self::assertStringNotContainsString('plaintext_key', json_encode($missingRevealScope, JSON_THROW_ON_ERROR));
+        self::assertStringNotContainsString('rk_live_PERMISSION_SECRET', json_encode($missingRevealScope, JSON_THROW_ON_ERROR));
+
+        $missingRevealPermission = $this->handleJson(
+            $app,
+            'POST',
+            '/api/v1/billing/recharge-keys/1/reveal?organization_id=10',
+            [],
+            $token,
+        );
+        self::assertSame('permission_required', $missingRevealPermission['error']['code']);
+        self::assertSame('billing.recharge_key.view_plaintext.platform', $missingRevealPermission['error']['required_permission']);
+        self::assertStringNotContainsString('plaintext_key', json_encode($missingRevealPermission, JSON_THROW_ON_ERROR));
+        self::assertStringNotContainsString('rk_live_PERMISSION_SECRET', json_encode($missingRevealPermission, JSON_THROW_ON_ERROR));
+        self::assertSame(0, (int) $connection->fetchOne(
+            "SELECT COUNT(*) FROM audit_logs WHERE action = 'billing.recharge_key.reveal_plaintext'",
+        ));
+
+        $allowedApp = $this->createApp($connection, platformPermissions: [
+            'billing.recharge_key.generate.platform',
+            'billing.recharge_key.view_plaintext.platform',
+        ]);
+        $generated = $this->handleJson($allowedApp, 'POST', '/api/v1/billing/recharge-keys/generate?organization_id=10', [
+            'points_amount' => 100,
+            'count' => 1,
+        ], $token);
+        self::assertSame(1, $generated['data']['count']);
+
+        $revealed = $this->handleJson(
+            $allowedApp,
+            'POST',
+            '/api/v1/billing/recharge-keys/' . $generated['data']['keys'][0]['id'] . '/reveal?organization_id=10',
+            [],
+            $token,
+        );
+        self::assertSame($generated['data']['keys'][0]['plaintext_key'], $revealed['data']['plaintext_key']);
+    }
+
+    public function testAdminRechargeKeyRoutesReturnControlledErrors(): void
+    {
+        $app = $this->createApp($this->createConnection());
+
+        $unauthenticatedGenerate = $this->handleJson($app, 'POST', '/api/v1/billing/recharge-keys/generate', [
+            'points_amount' => 100,
+            'count' => 1,
+        ]);
+        self::assertSame('authentication_required', $unauthenticatedGenerate['error']['code']);
+
+        $unauthenticatedReveal = $this->handleJson($app, 'POST', '/api/v1/billing/recharge-keys/1/reveal');
+        self::assertSame('authentication_required', $unauthenticatedReveal['error']['code']);
+
+        $this->handleJson($app, 'POST', '/api/v1/auth/register', [
+            'email' => 'admin-errors@example.com',
+            'password' => 'correct horse battery staple',
+            'display_name' => 'Billing Admin',
+        ]);
+        $login = $this->handleJson($app, 'POST', '/api/v1/auth/login', [
+            'email' => 'admin-errors@example.com',
+            'password' => 'correct horse battery staple',
+        ]);
+        $token = $login['data']['token']['access_token'];
+
+        $invalidGenerate = $this->handleJson($app, 'POST', '/api/v1/billing/recharge-keys/generate', [
+            'points_amount' => 100,
+            'count' => 0,
+        ], $token);
+        self::assertSame('invalid_request', $invalidGenerate['error']['code']);
+
+        $missingCount = $this->handleJson($app, 'POST', '/api/v1/billing/recharge-keys/generate', [
+            'points_amount' => 100,
+        ], $token);
+        self::assertSame('invalid_request', $missingCount['error']['code']);
+
+        $stringIntegersAndOmittedOptionalFields = $this->handleJson($app, 'POST', '/api/v1/billing/recharge-keys/generate', [
+            'points_amount' => '100',
+            'count' => '1',
+            'batch_code' => ' ',
+        ], $token);
+        self::assertNull($stringIntegersAndOmittedOptionalFields['data']['batch_code']);
+        self::assertSame(1, $stringIntegersAndOmittedOptionalFields['data']['count']);
+        self::assertSame(100, $stringIntegersAndOmittedOptionalFields['data']['keys'][0]['points_amount']);
+        self::assertNull($stringIntegersAndOmittedOptionalFields['data']['keys'][0]['batch_metadata']);
+        self::assertNull($stringIntegersAndOmittedOptionalFields['data']['keys'][0]['expires_at']);
+
+        $wrongBatchCodeType = $this->handleJson($app, 'POST', '/api/v1/billing/recharge-keys/generate', [
+            'points_amount' => 100,
+            'count' => 1,
+            'batch_code' => ['not' => 'a-string'],
+        ], $token);
+        self::assertSame('invalid_request', $wrongBatchCodeType['error']['code']);
+
+        $wrongMetadataType = $this->handleJson($app, 'POST', '/api/v1/billing/recharge-keys/generate', [
+            'points_amount' => 100,
+            'count' => 1,
+            'batch_metadata' => 'not-json-object',
+        ], $token);
+        self::assertSame('invalid_request', $wrongMetadataType['error']['code']);
+
+        $metadataList = $this->handleJson($app, 'POST', '/api/v1/billing/recharge-keys/generate', [
+            'points_amount' => 100,
+            'count' => 1,
+            'batch_metadata' => ['not', 'an', 'object'],
+        ], $token);
+        self::assertSame('invalid_request', $metadataList['error']['code']);
+
+        $wrongDateType = $this->handleJson($app, 'POST', '/api/v1/billing/recharge-keys/generate', [
+            'points_amount' => 100,
+            'count' => 1,
+            'expires_at' => 'not-a-valid-datetime',
+        ], $token);
+        self::assertSame('invalid_request', $wrongDateType['error']['code']);
+
+        $badRevealId = $this->handleJson($app, 'POST', '/api/v1/billing/recharge-keys/abc/reveal', [], $token);
+        self::assertSame('invalid_request', $badRevealId['error']['code']);
+
+        $missingReveal = $this->handleJson($app, 'POST', '/api/v1/billing/recharge-keys/999/reveal', [], $token);
+        self::assertSame('recharge_key_not_found', $missingReveal['error']['code']);
+    }
+
+    public function testAdminRechargeKeyGenerateReturnsControlledConflictWhenUniqueKeyGenerationFails(): void
+    {
+        $connection = $this->createConnection();
+        $this->issueRechargeKey($connection, 'rk_live_DUPLICATE', 100);
+        $app = $this->createApp($connection, static fn (): string => 'rk_live_DUPLICATE');
+
+        $this->handleJson($app, 'POST', '/api/v1/auth/register', [
+            'email' => 'admin-duplicate-generator@example.com',
+            'password' => 'correct horse battery staple',
+            'display_name' => 'Billing Admin',
+        ]);
+        $login = $this->handleJson($app, 'POST', '/api/v1/auth/login', [
+            'email' => 'admin-duplicate-generator@example.com',
+            'password' => 'correct horse battery staple',
+        ]);
+
+        $conflict = $this->handleJson($app, 'POST', '/api/v1/billing/recharge-keys/generate', [
+            'points_amount' => 100,
+            'count' => 1,
+        ], $login['data']['token']['access_token']);
+
+        self::assertSame('recharge_key_generation_failed', $conflict['error']['code']);
+        self::assertSame('Unable to generate a unique recharge key after repeated attempts.', $conflict['error']['message']);
+    }
+
+    public function testAdminRechargeKeyRevealReturnsControlledConflictWhenAuditIsUnavailable(): void
+    {
+        $connection = $this->createConnection();
+        $this->issueRechargeKey($connection, 'rk_live_SECRET_NO_AUDIT', 100);
+        $app = $this->createApp($connection, wireRechargeKeyAudit: false);
+
+        $this->handleJson($app, 'POST', '/api/v1/auth/register', [
+            'email' => 'admin-no-audit@example.com',
+            'password' => 'correct horse battery staple',
+            'display_name' => 'Billing Admin',
+        ]);
+        $login = $this->handleJson($app, 'POST', '/api/v1/auth/login', [
+            'email' => 'admin-no-audit@example.com',
+            'password' => 'correct horse battery staple',
+        ]);
+
+        $rejected = $this->handleJson(
+            $app,
+            'POST',
+            '/api/v1/billing/recharge-keys/1/reveal',
+            [],
+            $login['data']['token']['access_token'],
+        );
+
+        self::assertSame('recharge_key_rejected', $rejected['error']['code']);
+        self::assertSame('Audit log service is required to reveal recharge key plaintext.', $rejected['error']['message']);
+    }
+
+    public function testRevealRechargeKeyActionRejectsMissingRouteAndServiceValidationErrors(): void
+    {
+        $repository = new RechargeKeyRepository($connection = $this->createConnection());
+        $service = new RechargeKeyService(
+            repository: $repository,
+            ledger: new PointsLedgerService(new PointsLedgerRepository($connection)),
+            cipher: new DefuseRechargeKeyPlaintextCipher($this->appKey),
+            audit: new AuditLogService(new AuditLogRepository($connection)),
+        );
+        $issued = $service->issue('rk_live_ACTION_DIRECT', 100, null, null, null, 7, null);
+        self::assertNotNull($issued->id);
+
+        $action = new RevealRechargeKeyPlaintextAction($service, new ClientIpResolver());
+        $responseFactory = new ResponseFactory();
+
+        $missingRoute = $action(
+            (new ServerRequestFactory())
+                ->createServerRequest('POST', '/api/v1/billing/recharge-keys/1/reveal')
+                ->withAttribute(
+                    RequestUserContext::ATTRIBUTE,
+                    new RequestUserContext(new AuthenticatedUser(1, 'admin@example.com', true)),
+                ),
+            $responseFactory->createResponse(),
+        );
+        $missingRouteDecoded = json_decode((string) $missingRoute->getBody(), true, flags: JSON_THROW_ON_ERROR);
+        self::assertSame('invalid_request', $missingRouteDecoded['code']);
+
+        $route = new Route(
+            ['POST'],
+            '/api/v1/billing/recharge-keys/{key_id}/reveal',
+            static fn (): null => null,
+            $responseFactory,
+            new CallableResolver(),
+        );
+        $route->setArgument('key_id', (string) $issued->id);
+
+        $invalidActor = $action(
+            (new ServerRequestFactory())
+                ->createServerRequest('POST', '/api/v1/billing/recharge-keys/' . $issued->id . '/reveal')
+                ->withAttribute(RouteContext::ROUTE, $route)
+                ->withAttribute(
+                    RequestUserContext::ATTRIBUTE,
+                    new RequestUserContext(new AuthenticatedUser(0, 'admin@example.com', true)),
+                ),
+            $responseFactory->createResponse(),
+        );
+        $invalidActorDecoded = json_decode((string) $invalidActor->getBody(), true, flags: JSON_THROW_ON_ERROR);
+        self::assertSame('invalid_request', $invalidActorDecoded['code']);
+        self::assertSame(
+            'Recharge key plaintext reveal actor user ID must be positive.',
+            $invalidActorDecoded['message'],
+        );
+    }
+
     public function testMalformedJsonRechargeKeyRedeemReturnsEnvelopeValidationError(): void
     {
         $app = $this->createApp($this->createConnection());
@@ -474,8 +832,10 @@ final class BillingRouteIntegrationTest extends TestCase
         string $uri,
         ?array $payload = null,
         ?string $bearerToken = null,
+        array $serverParams = [],
+        array $headers = [],
     ): array {
-        $request = (new ServerRequestFactory())->createServerRequest($method, $uri);
+        $request = (new ServerRequestFactory())->createServerRequest($method, $uri, $serverParams);
         if ($payload !== null) {
             $request = $request->withParsedBody($payload);
         }
@@ -484,15 +844,28 @@ final class BillingRouteIntegrationTest extends TestCase
             $request = $request->withHeader('Authorization', 'Bearer ' . $bearerToken);
         }
 
+        foreach ($headers as $name => $value) {
+            $request = $request->withHeader((string) $name, (string) $value);
+        }
+
         $decoded = json_decode((string) $app->handle($request)->getBody(), true, flags: JSON_THROW_ON_ERROR);
         self::assertIsArray($decoded);
 
         return $decoded;
     }
 
-    private function createApp(Connection $connection): \Slim\App
+    private function createApp(
+        Connection $connection,
+        ?Closure $plaintextGenerator = null,
+        bool $wireRechargeKeyAudit = true,
+        ?array $platformPermissions = null,
+    ): \Slim\App
     {
         $appKey = $this->appKey;
+        $ipResolver = ClientIpResolver::fromSettings([
+            'real_ip_header' => 'CF-Connecting-IP',
+            'trusted_proxies' => ['198.51.100.0/24'],
+        ]);
 
         $container = (new ContainerBuilder())->addDefinitions([
             Connection::class => $connection,
@@ -513,6 +886,14 @@ final class BillingRouteIntegrationTest extends TestCase
             AuthenticateRequestMiddleware::class => static fn (
                 BearerTokenAuthenticator $authenticator,
             ): AuthenticateRequestMiddleware => new AuthenticateRequestMiddleware($authenticator),
+            ClientIpResolver::class => static fn (): ClientIpResolver => $ipResolver,
+            OrganizationMembershipRepositoryInterface::class => static fn (): OrganizationMembershipRepositoryInterface =>
+                new BillingPermissionMembershipRepository($platformPermissions ?? []),
+            PermissionMatcher::class => static fn (): PermissionMatcher => new PermissionMatcher(),
+            TenantAccessService::class => static fn (
+                OrganizationMembershipRepositoryInterface $memberships,
+                PermissionMatcher $permissions,
+            ): TenantAccessService => new TenantAccessService($memberships, $permissions),
             PointsLedgerRepositoryInterface::class => static fn (): PointsLedgerRepositoryInterface =>
                 new PointsLedgerRepository($connection),
             PointsLedgerService::class => static fn (PointsLedgerRepositoryInterface $repository): PointsLedgerService =>
@@ -525,7 +906,18 @@ final class BillingRouteIntegrationTest extends TestCase
                 RechargeKeyRepositoryInterface $repository,
                 PointsLedgerService $ledger,
                 RechargeKeyPlaintextCipherInterface $cipher,
-            ): RechargeKeyService => new RechargeKeyService($repository, $ledger, $cipher),
+                AuditLogService $audit,
+            ): RechargeKeyService => new RechargeKeyService(
+                $repository,
+                $ledger,
+                $cipher,
+                plaintextGenerator: $plaintextGenerator,
+                audit: $wireRechargeKeyAudit ? $audit : null,
+            ),
+            AuditLogRepositoryInterface::class => static fn (): AuditLogRepositoryInterface =>
+                new AuditLogRepository($connection),
+            AuditLogService::class => static fn (AuditLogRepositoryInterface $repository): AuditLogService =>
+                new AuditLogService($repository),
             WithdrawalRepository::class => static fn (): WithdrawalRepository => new WithdrawalRepository($connection),
             WithdrawalService::class => static fn (
                 WithdrawalRepository $repository,
@@ -549,11 +941,26 @@ final class BillingRouteIntegrationTest extends TestCase
         SlimAppFactory::setContainer($container);
         $app = SlimAppFactory::create();
         $app->addBodyParsingMiddleware();
+        $platformPermission = static fn (string $permission): RequirePermissionMiddleware => new RequirePermissionMiddleware(
+            $app->getResponseFactory(),
+            $container->get(TenantAccessService::class),
+            PermissionRequirement::forPlatform($permission),
+        );
         $app->post('/api/v1/auth/register', RegisterAction::class);
         $app->post('/api/v1/auth/login', LoginAction::class);
         $app->get('/api/v1/billing/balance', BillingBalanceAction::class)->add(AuthenticateRequestMiddleware::class);
         $app->get('/api/v1/billing/ledger', BillingLedgerListAction::class)->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/billing/recharge-keys/redeem', RechargeKeyRedeemAction::class)->add(AuthenticateRequestMiddleware::class);
+        $generateRoute = $app->post('/api/v1/billing/recharge-keys/generate', GenerateRechargeKeyBatchAction::class);
+        if ($platformPermissions !== null) {
+            $generateRoute->add($platformPermission('billing.recharge_key.generate.platform'));
+        }
+        $generateRoute->add(AuthenticateRequestMiddleware::class);
+        $revealRoute = $app->post('/api/v1/billing/recharge-keys/{key_id}/reveal', RevealRechargeKeyPlaintextAction::class);
+        if ($platformPermissions !== null) {
+            $revealRoute->add($platformPermission('billing.recharge_key.view_plaintext.platform'));
+        }
+        $revealRoute->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/billing/withdrawals', [WithdrawalAction::class, 'request'])->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/paid', [WithdrawalAction::class, 'markPaid'])->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/reject', [WithdrawalAction::class, 'reject'])->add(AuthenticateRequestMiddleware::class);
@@ -646,6 +1053,20 @@ final class BillingRouteIntegrationTest extends TestCase
             )',
         );
         $connection->executeStatement(
+            'CREATE TABLE audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action TEXT NOT NULL,
+                subject_type TEXT NOT NULL,
+                subject_id INTEGER NULL,
+                actor_user_id INTEGER NULL,
+                organization_id INTEGER NULL,
+                ip_address BLOB NULL,
+                user_agent TEXT NULL,
+                metadata_json TEXT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )',
+        );
+        $connection->executeStatement(
             'CREATE TABLE withdrawal_requests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 organization_id INTEGER NOT NULL,
@@ -697,5 +1118,35 @@ final class BillingRouteIntegrationTest extends TestCase
         );
 
         return $connection;
+    }
+}
+
+final class BillingPermissionMembershipRepository implements OrganizationMembershipRepositoryInterface
+{
+    /**
+     * @param list<string> $permissions
+     */
+    public function __construct(private readonly array $permissions)
+    {
+    }
+
+    public function findActiveMembership(int $userId, int $organizationId): ?OrganizationMembership
+    {
+        if ($userId !== 1 || $organizationId !== 10) {
+            return null;
+        }
+
+        return new OrganizationMembership(
+            organizationId: 10,
+            userId: 1,
+            status: 'active',
+            roleSlugs: ['billing-admin'],
+            permissions: $this->permissions,
+        );
+    }
+
+    public function listForOrganization(int $organizationId): array
+    {
+        return [];
     }
 }

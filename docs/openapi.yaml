@@ -40,7 +40,7 @@ tags:
   - name: Permissions
     description: Public permission metadata used for route gating and developer tooling.
   - name: Billing
-    description: Advertiser points balance, ledger, and recharge-key redemption endpoints.
+    description: Advertiser points balance, ledger, admin recharge-key generation, and withdrawal endpoints.
   - name: Publisher
     description: Publisher site verification, ad slot presets, and slot management endpoints.
   - name: Assets
@@ -495,6 +495,94 @@ paths:
         "400":
           $ref: "#/components/responses/Error"
         "401":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/billing/recharge-keys/generate:
+    post:
+      tags:
+        - Billing
+      operationId: generateRechargeKeyBatch
+      summary: Generate a platform recharge-key batch.
+      description: Creates one or more plaintext recharge keys, stores encrypted plaintext plus hash, and returns the new plaintext keys once for operator handling.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - billing.recharge_key.generate.platform
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RechargeKeyGenerateRequest"
+      responses:
+        "201":
+          description: Recharge-key batch generated.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/RechargeKeyBatchData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/billing/recharge-keys/{key_id}/reveal:
+    post:
+      tags:
+        - Billing
+      operationId: revealRechargeKeyPlaintext
+      summary: Reveal stored recharge-key plaintext.
+      description: Decrypts a recharge key for a privileged operator and records a sensitive audit log entry without storing the plaintext in audit metadata.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - billing.recharge_key.view_plaintext.platform
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - name: key_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Recharge-key plaintext revealed.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/RechargeKeyAdminData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
           $ref: "#/components/responses/Error"
         "409":
           $ref: "#/components/responses/Error"
@@ -4108,6 +4196,135 @@ components:
         - key
       properties:
         key:
+          type: string
+          minLength: 1
+      additionalProperties: false
+    RechargeKeyGenerateRequest:
+      type: object
+      required:
+        - points_amount
+        - count
+      properties:
+        points_amount:
+          type: integer
+          minimum: 1
+        count:
+          type: integer
+          minimum: 1
+          maximum: 500
+        batch_code:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        batch_metadata:
+          type:
+            - object
+            - "null"
+          additionalProperties: true
+        expires_at:
+          type:
+            - string
+            - "null"
+          minLength: 1
+          examples:
+            - "2026-12-31 23:59:59"
+      additionalProperties: false
+    RechargeKeyBatchData:
+      type: object
+      required:
+        - batch_code
+        - count
+        - keys
+      properties:
+        batch_code:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        count:
+          type: integer
+          minimum: 1
+          maximum: 500
+        keys:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            $ref: "#/components/schemas/RechargeKeyAdminData"
+      additionalProperties: false
+    RechargeKeyAdminData:
+      type: object
+      required:
+        - id
+        - organization_id
+        - points_amount
+        - status
+        - batch_code
+        - batch_metadata
+        - expires_at
+        - issued_by_user_id
+        - redeemed_by_user_id
+        - redeemed_ledger_entry_id
+        - redeemed_at
+        - plaintext_key
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        organization_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        points_amount:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum:
+            - issued
+            - redeemed
+            - expired
+            - revoked
+        batch_code:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        batch_metadata:
+          type:
+            - object
+            - "null"
+          additionalProperties: true
+        expires_at:
+          type:
+            - string
+            - "null"
+          minLength: 1
+          examples:
+            - "2026-12-31 23:59:59"
+        issued_by_user_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        redeemed_by_user_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        redeemed_ledger_entry_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        redeemed_at:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        plaintext_key:
           type: string
           minLength: 1
       additionalProperties: false

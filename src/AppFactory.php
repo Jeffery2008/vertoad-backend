@@ -21,6 +21,7 @@ use VertoAD\Http\Middleware\TurnstileMiddleware;
 use VertoAD\Infrastructure\Database\ConnectionFactory;
 use VertoAD\Infrastructure\OAuth\LeagueOAuthRepository;
 use VertoAD\Infrastructure\OAuth\LeagueOAuthServerFactory;
+use VertoAD\Infrastructure\Security\ClientIpResolver;
 use VertoAD\Infrastructure\Security\InMemoryRateLimitStore;
 use VertoAD\Infrastructure\Security\RateLimiter;
 use VertoAD\Infrastructure\Security\RateLimitPolicy;
@@ -462,7 +463,8 @@ final class AppFactory
                     RechargeKeyRepositoryInterface $repository,
                     PointsLedgerService $ledger,
                     RechargeKeyPlaintextCipherInterface $cipher,
-                ): RechargeKeyService => new RechargeKeyService($repository, $ledger, $cipher),
+                    AuditLogService $audit,
+                ): RechargeKeyService => new RechargeKeyService($repository, $ledger, $cipher, audit: $audit),
                 SystemConfigRepositoryInterface::class => static fn (Connection $connection): SystemConfigRepositoryInterface =>
                     new SystemConfigRepository($connection),
                 SystemConfigService::class => static fn (SystemConfigRepositoryInterface $repository): SystemConfigService =>
@@ -567,21 +569,26 @@ final class AppFactory
                 ),
                 CronStatusAction::class => static fn (): CronStatusAction => new CronStatusAction($settings),
                 CronRunAction::class => static fn (CronRunner $runner): CronRunAction => new CronRunAction($runner),
-                CronAuthMiddleware::class => static fn (): CronAuthMiddleware => new CronAuthMiddleware(
+                CronAuthMiddleware::class => static fn (ClientIpResolver $ipResolver): CronAuthMiddleware => new CronAuthMiddleware(
                     SlimAppFactory::determineResponseFactory(),
-                    $settings
+                    $settings,
+                    $ipResolver,
                 ),
                 TurnstileVerifier::class => static fn (): TurnstileVerifier => new TurnstileVerifier(
                     (string) ($settings['turnstile']['secret_key'] ?? ''),
                     (string) ($settings['turnstile']['verify_url'] ?? ''),
                 ),
+                ClientIpResolver::class => static fn (): ClientIpResolver =>
+                    ClientIpResolver::fromSettings($settings['cloudflare'] ?? []),
                 TurnstileMiddleware::class => static fn (
                     TurnstileVerifier $verifier,
                     AuditLogService $audit,
+                    ClientIpResolver $ipResolver,
                 ): TurnstileMiddleware => new TurnstileMiddleware(
                     SlimAppFactory::determineResponseFactory(),
                     $verifier,
                     $audit,
+                    $ipResolver,
                 ),
                 RateLimitStoreInterface::class => static fn (): RateLimitStoreInterface =>
                     self::rateLimitStore($settings),
@@ -594,11 +601,14 @@ final class AppFactory
                     RateLimiter $limiter,
                     RateLimitPolicy $policy,
                     AuditLogService $audit,
+                    ClientIpResolver $ipResolver,
                 ): RateLimitMiddleware => new RateLimitMiddleware(
                     SlimAppFactory::determineResponseFactory(),
                     $limiter,
                     $policy,
                     $audit,
+                    null,
+                    $ipResolver,
                 ),
             ])
             ->build();

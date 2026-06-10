@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VertoAD\Http\Action\Billing;
 
 use VertoAD\Domain\Ledger\PointsLedgerEntry;
+use VertoAD\Domain\Recharge\RechargeKey;
 use VertoAD\Domain\Billing\WithdrawalProof;
 use VertoAD\Domain\Billing\WithdrawalProofUploadIntent;
 use VertoAD\Domain\Billing\WithdrawalRequest;
@@ -84,5 +85,31 @@ final class BillingSerializers
                 'headers' => $intent->upload->headers,
             ],
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public static function rechargeKey(RechargeKey $key, ?string $plaintextKey = null): array
+    {
+        $payload = [
+            'id' => $key->id,
+            'organization_id' => $key->organizationId,
+            'points_amount' => $key->pointsAmount,
+            'status' => $key->status->value,
+            'batch_code' => $key->batchCode,
+            'batch_metadata' => $key->batchMetadata,
+            'expires_at' => $key->expiresAt?->format('Y-m-d H:i:s'),
+            'issued_by_user_id' => $key->issuedByUserId,
+            'redeemed_by_user_id' => $key->redeemedByUserId,
+            'redeemed_ledger_entry_id' => $key->redeemedLedgerEntryId,
+            'redeemed_at' => $key->redeemedAt?->format('Y-m-d H:i:s'),
+        ];
+
+        if ($plaintextKey !== null) {
+            $payload['plaintext_key'] = $plaintextKey;
+        }
+
+        return $payload;
     }
 }

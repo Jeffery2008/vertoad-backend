@@ -11,6 +11,7 @@ use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\MiddlewareInterface;
 use Psr\Http\Server\RequestHandlerInterface;
 use VertoAD\Http\Auth\RequestUserContext;
+use VertoAD\Infrastructure\Security\ClientIpResolver;
 use VertoAD\Infrastructure\Security\RateLimitDimensions;
 use VertoAD\Infrastructure\Security\RateLimiter;
 use VertoAD\Infrastructure\Security\RateLimitPolicy;
@@ -24,6 +25,7 @@ final readonly class RateLimitMiddleware implements MiddlewareInterface
         private RateLimitPolicy $policy,
         private ?AuditLogService $audit = null,
         private mixed $clock = null,
+        private ?ClientIpResolver $ipResolver = null,
     ) {
     }
 
@@ -74,7 +76,7 @@ final readonly class RateLimitMiddleware implements MiddlewareInterface
         $clientId = $request->getHeaderLine('X-OAuth-Client-Id') ?: $request->getHeaderLine('X-Client-Id');
 
         return new RateLimitDimensions(
-            ip: $this->remoteIp($request),
+            ip: $this->ipResolver()->resolve($request),
             userId: $context->user?->id,
             organizationId: $context->organizationId ?? $this->organizationId($request),
             clientId: $clientId === '' ? null : $clientId,
@@ -94,12 +96,9 @@ final readonly class RateLimitMiddleware implements MiddlewareInterface
         return new DateTimeImmutable();
     }
 
-    private function remoteIp(ServerRequestInterface $request): ?string
+    private function ipResolver(): ClientIpResolver
     {
-        $server = $request->getServerParams();
-        $ip = $server['REMOTE_ADDR'] ?? null;
-
-        return is_string($ip) && trim($ip) !== '' ? trim($ip) : null;
+        return $this->ipResolver ?? new ClientIpResolver();
     }
 
     private function organizationId(ServerRequestInterface $request): ?int

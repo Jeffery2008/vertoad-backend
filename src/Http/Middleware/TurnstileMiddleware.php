@@ -9,6 +9,7 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\MiddlewareInterface;
 use Psr\Http\Server\RequestHandlerInterface;
+use VertoAD\Infrastructure\Security\ClientIpResolver;
 use VertoAD\Infrastructure\Security\TurnstileVerifier;
 use VertoAD\Service\AuditLogService;
 
@@ -18,6 +19,7 @@ final readonly class TurnstileMiddleware implements MiddlewareInterface
         private ResponseFactoryInterface $responseFactory,
         private TurnstileVerifier $verifier,
         private ?AuditLogService $audit = null,
+        private ?ClientIpResolver $ipResolver = null,
     ) {
     }
 
@@ -63,10 +65,7 @@ final readonly class TurnstileMiddleware implements MiddlewareInterface
 
     private function remoteIp(ServerRequestInterface $request): ?string
     {
-        $server = $request->getServerParams();
-        $ip = $server['REMOTE_ADDR'] ?? null;
-
-        return is_string($ip) && trim($ip) !== '' ? trim($ip) : null;
+        return ($this->ipResolver ?? new ClientIpResolver())->resolve($request);
     }
 
     private function audit(ServerRequestInterface $request, string $action, string $reason): void

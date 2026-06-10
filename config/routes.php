@@ -39,7 +39,9 @@ use VertoAD\Http\Action\Attribution\ConversionPixelAction;
 use VertoAD\Http\Action\Attribution\ServerConversionAction;
 use VertoAD\Http\Action\Billing\BillingBalanceAction;
 use VertoAD\Http\Action\Billing\BillingLedgerListAction;
+use VertoAD\Http\Action\Billing\GenerateRechargeKeyBatchAction;
 use VertoAD\Http\Action\Billing\RechargeKeyRedeemAction;
+use VertoAD\Http\Action\Billing\RevealRechargeKeyPlaintextAction;
 use VertoAD\Http\Action\Billing\WithdrawalAction;
 use VertoAD\Http\Action\Campaigns\CreateCampaignAction;
 use VertoAD\Http\Action\Campaigns\GetCampaignAction;
@@ -131,6 +133,12 @@ return static function (App $app): void {
         ->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/billing/balance', BillingBalanceAction::class)->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/billing/ledger', BillingLedgerListAction::class)->add(AuthenticateRequestMiddleware::class);
+    $app->post('/api/v1/billing/recharge-keys/generate', GenerateRechargeKeyBatchAction::class)
+        ->add($platformPermission('billing.recharge_key.generate.platform'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->post('/api/v1/billing/recharge-keys/{key_id}/reveal', RevealRechargeKeyPlaintextAction::class)
+        ->add($platformPermission('billing.recharge_key.view_plaintext.platform'))
+        ->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/billing/recharge-keys/redeem', RechargeKeyRedeemAction::class)
         ->add(TurnstileMiddleware::class)
         ->add(RateLimitMiddleware::class)

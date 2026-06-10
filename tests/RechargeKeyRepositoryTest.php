@@ -88,6 +88,39 @@ final class RechargeKeyRepositoryTest extends TestCase
         self::assertSame('2026-06-07 10:00:00', $found?->redeemedAt?->format('Y-m-d H:i:s'));
     }
 
+    public function testFindByIdHydratesStoredRechargeKeyAndRejectsInvalidIds(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        $this->createSchema($connection);
+        $repository = new RechargeKeyRepository($connection);
+        $stored = $repository->store(new RechargeKey(
+            id: null,
+            organizationId: 9,
+            keyHash: hash('sha256', 'rk_live_BY_ID'),
+            encryptedPlaintextKey: 'encrypted:rk_live_BY_ID',
+            pointsAmount: 750,
+            status: RechargeKeyStatus::Issued,
+            batchCode: 'batch-by-id',
+            batchMetadata: ['purpose' => 'admin'],
+            expiresAt: null,
+            issuedByUserId: 7,
+            redeemedByUserId: null,
+            redeemedLedgerEntryId: null,
+            redeemedAt: null,
+        ));
+
+        $found = $repository->findById((int) $stored->id);
+
+        self::assertNotNull($found);
+        self::assertSame($stored->id, $found->id);
+        self::assertSame(9, $found->organizationId);
+        self::assertSame('batch-by-id', $found->batchCode);
+        self::assertSame(['purpose' => 'admin'], $found->batchMetadata);
+        self::assertNull($repository->findById(0));
+        self::assertNull($repository->findById(-1));
+        self::assertNull($repository->findById(999));
+    }
+
     public function testFindByBlankHashReturnsNullWithoutQueryingAndMarkExpiredUpdatesStatus(): void
     {
         $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);

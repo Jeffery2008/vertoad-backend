@@ -9,6 +9,7 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\MiddlewareInterface;
 use Psr\Http\Server\RequestHandlerInterface;
+use VertoAD\Infrastructure\Security\ClientIpResolver;
 
 final class CronAuthMiddleware implements MiddlewareInterface
 {
@@ -17,7 +18,8 @@ final class CronAuthMiddleware implements MiddlewareInterface
      */
     public function __construct(
         private readonly ResponseFactoryInterface $responseFactory,
-        private readonly array $settings
+        private readonly array $settings,
+        private readonly ?ClientIpResolver $ipResolver = null,
     ) {
     }
 
@@ -34,7 +36,7 @@ final class CronAuthMiddleware implements MiddlewareInterface
         }
 
         $allowedIps = $this->settings['cron']['allowed_ips'] ?? [];
-        $remoteIp = (string) ($request->getServerParams()['REMOTE_ADDR'] ?? '');
+        $remoteIp = (string) ($this->ipResolver ?? ClientIpResolver::fromSettings($this->settings['cloudflare'] ?? []))->resolve($request);
         if (is_array($allowedIps) && $allowedIps !== [] && !in_array($remoteIp, $allowedIps, true)) {
             return $this->errorResponse(403, 'forbidden', 'Cron caller IP is not allowed.');
         }

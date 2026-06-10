@@ -7,11 +7,15 @@ namespace VertoAD\Http\Action\Auth;
 use InvalidArgumentException;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
+use VertoAD\Infrastructure\Security\ClientIpResolver;
 use VertoAD\Service\AuthService;
 
 final readonly class PasswordResetRequestAction
 {
-    public function __construct(private AuthService $auth)
+    public function __construct(
+        private AuthService $auth,
+        private ?ClientIpResolver $ipResolver = null,
+    )
     {
     }
 
@@ -22,7 +26,7 @@ final readonly class PasswordResetRequestAction
         try {
             $this->auth->requestPasswordReset(
                 $this->stringField($body, 'email'),
-                requestedIp: $request->getServerParams()['REMOTE_ADDR'] ?? null,
+                requestedIp: ($this->ipResolver ?? new ClientIpResolver())->resolve($request),
                 userAgent: $request->getHeaderLine('User-Agent') ?: null,
             );
 

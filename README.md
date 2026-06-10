@@ -82,7 +82,7 @@ The current public contract intentionally documents only implemented endpoints. 
 - Auth: first-party registration, login, logout, password reset, and authenticated current-user context.
 - Health: runtime liveness metadata.
 - Permissions: public permission inventory metadata for frontend route gating and developer tooling.
-- Billing: authenticated advertiser points balance, ledger, recharge-key redemption, publisher withdrawals, and withdrawal proof upload confirmation endpoints.
+- Billing: authenticated advertiser points balance, ledger, recharge-key redemption, admin recharge-key generation/plaintext reveal, publisher withdrawals, and withdrawal proof upload confirmation endpoints.
 - Assets, Campaigns, and Review: authenticated creative upload validation, campaign lifecycle, and AI/human review endpoints.
 - Publisher: site verification, ad slot presets, and slot management endpoints.
 - Reports, Attribution, Archive, and Serving: dashboard reporting, conversion attribution, cold-data jobs, public serve/track/click delivery endpoints, and SDK-facing ad event contracts.
@@ -96,6 +96,8 @@ Do not add new public endpoints to OpenAPI until the corresponding backend route
 The current backend slice establishes the Slim application shell, environment-backed settings, health checks, protected Cron API surface, first-party auth/session bridge endpoints, permission metadata, and the implemented authenticated billing endpoints documented in OpenAPI.
 
 System configuration is currently loaded from `.env` into PHP settings for infrastructure integrations such as MySQL, Redis, S3-compatible storage, OAuth key paths, cron protection, Cloudflare real IP handling, Turnstile, and AI review. The product roadmap calls for business configuration to move into versioned, auditable admin-managed records; until that storage and API surface exists, docs should treat `.env` settings as runtime infrastructure config only.
+
+Cloudflare real-IP handling is fail-closed. `CLOUDFLARE_REAL_IP_HEADER` defaults to `CF-Connecting-IP`, but the header is trusted only when `CLOUDFLARE_TRUSTED_PROXIES` contains the connecting proxy IP or CIDR. If the trusted proxy list is empty or does not match `REMOTE_ADDR`, the API ignores forwarded IP headers and uses `REMOTE_ADDR` for rate limits, Turnstile audit metadata, Cron IP checks, password reset logs, and billing admin audit logs.
 
 Serving events and serving frequency caps are Redis-first outside local/test environments. `serve`, `track`, and `click` event writes go to Redis, and the protected Cron job `redis-events-consume` leases events, persists them to MySQL, bills valid events, and only acknowledges the Redis lease after persistence and billing processing complete. A MySQL persistence failure must leave the event unacknowledged so the Redis visibility timeout can redeliver it. Frequency caps use `REDIS_PREFIX`-scoped hashed viewer buckets for campaign + ad slot hourly/daily serve counts, with local/test memory fallback only.
 
@@ -124,7 +126,7 @@ composer openapi:check
 
 Audit logging is a required platform boundary for sensitive operations, configuration changes, ledger adjustments, cron operations, and support/admin actions. It is not currently exposed as a public API in this slice, so contracts should describe audit behavior only when the backing implementation is present.
 
-The points ledger is a core platform boundary. The current implemented HTTP surface includes authenticated advertiser balance, ledger listing, and recharge-key redemption. Broader ledger operations for publisher earnings, adjustments, reversals, recharge-key management, and withdrawals should remain out of OpenAPI until routes, persistence, and tests are implemented.
+The points ledger is a core platform boundary. The current implemented HTTP surface includes authenticated advertiser balance, ledger listing, recharge-key redemption, admin recharge-key generation/plaintext reveal, and publisher withdrawal flows. Broader ledger operations for publisher earnings, adjustments, and reversals should remain out of OpenAPI until routes, persistence, and tests are implemented.
 
 Near-term backend contract work should keep OpenAPI aligned with implemented routes, then add OAuth2-protected resources, audit records, and broader ledger operations as those slices land.
 
