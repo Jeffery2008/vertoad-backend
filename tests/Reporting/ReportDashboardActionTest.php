@@ -78,7 +78,27 @@ final class ReportDashboardActionTest extends TestCase
 
         self::assertSame(422, $response->getStatusCode());
         self::assertSame('invalid_request', $decoded['error']['code']);
-        self::assertSame('from must be an ISO-8601 date-time string.', $decoded['error']['message']);
+        self::assertSame('from must be an RFC3339 date-time string.', $decoded['error']['message']);
+    }
+
+    public function testDashboardRouteRejectsNonRfc3339DateFilters(): void
+    {
+        $app = $this->createApp();
+
+        foreach ([
+            '/api/v1/reports/dashboard?from=2026-06-08',
+            '/api/v1/reports/dashboard?from=2026-06-08T00:00:00',
+            '/api/v1/reports/dashboard?from=2026-02-30T00:00:00Z',
+            '/api/v1/reports/dashboard?from=2026-06-08T24:00:00Z',
+            '/api/v1/reports/dashboard?from=2026-06-08T00:00:00%2B24:00',
+        ] as $uri) {
+            $response = $app->handle((new ServerRequestFactory())->createServerRequest('GET', $uri));
+            $decoded = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+            self::assertSame(422, $response->getStatusCode(), $uri);
+            self::assertSame('invalid_request', $decoded['error']['code']);
+            self::assertSame('from must be an RFC3339 date-time string.', $decoded['error']['message']);
+        }
     }
 
     public function testDashboardRouteRejectsInvalidPortalAndGranularity(): void

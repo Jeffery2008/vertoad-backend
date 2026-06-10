@@ -4,12 +4,18 @@ declare(strict_types=1);
 
 namespace VertoAD\Service\Reporting;
 
+use Closure;
+use DateTimeImmutable;
+use DateTimeZone;
 use VertoAD\Domain\Reporting\ReportAggregateRow;
 use VertoAD\Repository\Reporting\ReportAggregateRepositoryInterface;
 
 final readonly class ReportQueryService
 {
-    public function __construct(private ReportAggregateRepositoryInterface $aggregates)
+    public function __construct(
+        private ReportAggregateRepositoryInterface $aggregates,
+        private ?Closure $clock = null,
+    )
     {
     }
 
@@ -62,11 +68,54 @@ final readonly class ReportQueryService
      */
     private function range(array $filters, array $rows): array
     {
+        $granularity = $filters['granularity'] ?? 'day';
+
+        if ($rows === []) {
+            $from = $filters['from'] ?? null;
+            $to = $filters['to'] ?? null;
+
+            if (!$from instanceof DateTimeImmutable && !$to instanceof DateTimeImmutable) {
+                $to = $this->now();
+                $from = $to->modify('-7 days');
+            } elseif (!$from instanceof DateTimeImmutable && $to instanceof DateTimeImmutable) {
+                $from = $to->modify('-7 days');
+            } elseif ($from instanceof DateTimeImmutable && !$to instanceof DateTimeImmutable) {
+                $to = $from->modify('+7 days');
+            }
+        } else {
+            $lastRow = $rows[array_key_last($rows)];
+            $from = $filters['from'] ?? $this->bucketStart($rows[0]->date, $granularity);
+            $to = $filters['to'] ?? $this->bucketEnd($lastRow->date, $granularity);
+        }
+
         return [
-            'from' => isset($filters['from']) ? $filters['from']->format(DATE_ATOM) : ($rows[0]->date ?? ''),
-            'to' => isset($filters['to']) ? $filters['to']->format(DATE_ATOM) : ($rows === [] ? '' : $rows[array_key_last($rows)]->date),
-            'granularity' => $filters['granularity'] ?? 'day',
+            'from' => $from->format(DATE_ATOM),
+            'to' => $to->format(DATE_ATOM),
+            'granularity' => $granularity,
         ];
+    }
+
+    private function bucketStart(string $date, string $granularity): DateTimeImmutable
+    {
+        if ($granularity === 'hour') {
+            return new DateTimeImmutable($date, new DateTimeZone('UTC'));
+        }
+
+        return new DateTimeImmutable($date . 'T00:00:00+00:00');
+    }
+
+    private function bucketEnd(string $date, string $granularity): DateTimeImmutable
+    {
+        return $this->bucketStart($date, $granularity)->modify($granularity === 'hour' ? '+1 hour' : '+1 day');
+    }
+
+    private function now(): DateTimeImmutable
+    {
+        if ($this->clock !== null) {
+            return ($this->clock)();
+        }
+
+        return new DateTimeImmutable('now', new DateTimeZone('UTC'));
     }
 
     /**

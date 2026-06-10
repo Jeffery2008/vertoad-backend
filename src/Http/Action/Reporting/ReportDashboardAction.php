@@ -13,6 +13,8 @@ use VertoAD\Service\Reporting\ReportQueryService;
 
 final readonly class ReportDashboardAction
 {
+    private const RFC3339_DATE_TIME_PATTERN = '/\A(?<year>\d{4})-(?<month>0[1-9]|1[0-2])-(?<day>0[1-9]|[12]\d|3[01])T(?<hour>[01]\d|2[0-3]):(?<minute>[0-5]\d):(?<second>[0-5]\d)(?:\.\d{1,6})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)\z/';
+
     public function __construct(private ReportQueryService $reports)
     {
     }
@@ -72,11 +74,7 @@ final readonly class ReportDashboardAction
                 continue;
             }
 
-            if (!is_scalar($query[$field])) {
-                throw new InvalidArgumentException($field . ' must be an ISO-8601 date-time string.');
-            }
-
-            $filters[$field] = new DateTimeImmutable((string) $query[$field]);
+            $filters[$field] = $this->rfc3339DateTime($field, $query[$field]);
         }
 
         if (isset($filters['from'], $filters['to']) && $filters['from'] >= $filters['to']) {
@@ -84,6 +82,22 @@ final readonly class ReportDashboardAction
         }
 
         return $filters;
+    }
+
+    private function rfc3339DateTime(string $field, mixed $value): DateTimeImmutable
+    {
+        if (!is_scalar($value)) {
+            throw new InvalidArgumentException($field . ' must be an RFC3339 date-time string.');
+        }
+
+        $dateTime = (string) $value;
+        if (preg_match(self::RFC3339_DATE_TIME_PATTERN, $dateTime, $matches) !== 1
+            || !checkdate((int) $matches['month'], (int) $matches['day'], (int) $matches['year'])
+        ) {
+            throw new InvalidArgumentException($field . ' must be an RFC3339 date-time string.');
+        }
+
+        return new DateTimeImmutable($dateTime);
     }
 
     /**

@@ -62,16 +62,88 @@ final class ReportServiceTest extends TestCase
 
     public function testDefaultsRangeWhenFiltersAndRowsAreAbsent(): void
     {
-        $service = new ReportQueryService(new StaticReportAggregateRepository([]));
+        $service = new ReportQueryService(
+            new StaticReportAggregateRepository([]),
+            static fn (): DateTimeImmutable => new DateTimeImmutable('2026-06-10T12:00:00+00:00'),
+        );
 
         $report = $service->dashboard([]);
 
         self::assertSame('admin', $report['portal']);
         self::assertNull($report['organization_id']);
-        self::assertSame('', $report['range']['from']);
-        self::assertSame('', $report['range']['to']);
+        self::assertSame('2026-06-03T12:00:00+00:00', $report['range']['from']);
+        self::assertSame('2026-06-10T12:00:00+00:00', $report['range']['to']);
         self::assertSame('day', $report['range']['granularity']);
         self::assertSame(0.0, $report['totals']['ctr']);
         self::assertSame([], $report['dimensions']['geo']);
+    }
+
+    public function testDefaultsRangeFromRowsAsRfc3339DateTimes(): void
+    {
+        $service = new ReportQueryService(new StaticReportAggregateRepository([
+            new ReportAggregateRow('2026-06-08', null, null, 5, 10, null, null, null, null, null, 100, 25, 1_000, 600),
+            new ReportAggregateRow('2026-06-09', null, null, 5, 10, null, null, null, null, null, 40, 8, 300, 180),
+        ]));
+
+        $report = $service->dashboard(['granularity' => 'day']);
+
+        self::assertSame('2026-06-08T00:00:00+00:00', $report['range']['from']);
+        self::assertSame('2026-06-10T00:00:00+00:00', $report['range']['to']);
+    }
+
+    public function testDefaultsHourlyRangeFromRowsAsRfc3339DateTimes(): void
+    {
+        $service = new ReportQueryService(new StaticReportAggregateRepository([
+            new ReportAggregateRow('2026-06-08T10:00:00+00:00', null, null, 5, 10, null, null, null, null, null, 100, 25, 1_000, 600),
+            new ReportAggregateRow('2026-06-08T11:00:00+00:00', null, null, 5, 10, null, null, null, null, null, 40, 8, 300, 180),
+        ]));
+
+        $report = $service->dashboard(['granularity' => 'hour']);
+
+        self::assertSame('2026-06-08T10:00:00+00:00', $report['range']['from']);
+        self::assertSame('2026-06-08T12:00:00+00:00', $report['range']['to']);
+    }
+
+    public function testRangeUsesProvidedFiltersWhenRowsAreAbsent(): void
+    {
+        $service = new ReportQueryService(new StaticReportAggregateRepository([]));
+
+        $report = $service->dashboard([
+            'granularity' => 'hour',
+            'from' => new DateTimeImmutable('2026-06-08T10:00:00+00:00'),
+            'to' => new DateTimeImmutable('2026-06-08T12:00:00+00:00'),
+        ]);
+
+        self::assertSame('2026-06-08T10:00:00+00:00', $report['range']['from']);
+        self::assertSame('2026-06-08T12:00:00+00:00', $report['range']['to']);
+        self::assertSame([], $report['series']);
+    }
+
+    public function testRangeCompletesPartialFiltersWhenRowsAreAbsent(): void
+    {
+        $service = new ReportQueryService(new StaticReportAggregateRepository([]));
+
+        $reportWithFromOnly = $service->dashboard([
+            'from' => new DateTimeImmutable('2026-06-08T10:00:00+00:00'),
+        ]);
+        $reportWithToOnly = $service->dashboard([
+            'to' => new DateTimeImmutable('2026-06-15T10:00:00+00:00'),
+        ]);
+
+        self::assertSame('2026-06-08T10:00:00+00:00', $reportWithFromOnly['range']['from']);
+        self::assertSame('2026-06-15T10:00:00+00:00', $reportWithFromOnly['range']['to']);
+        self::assertSame('2026-06-08T10:00:00+00:00', $reportWithToOnly['range']['from']);
+        self::assertSame('2026-06-15T10:00:00+00:00', $reportWithToOnly['range']['to']);
+    }
+
+    public function testDefaultsRangeFromCurrentTimeWhenClockIsNotInjected(): void
+    {
+        $service = new ReportQueryService(new StaticReportAggregateRepository([]));
+
+        $report = $service->dashboard([]);
+        $from = new DateTimeImmutable($report['range']['from']);
+        $to = new DateTimeImmutable($report['range']['to']);
+
+        self::assertSame(604_800, $to->getTimestamp() - $from->getTimestamp());
     }
 }
