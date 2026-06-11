@@ -9,6 +9,7 @@ use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\DriverManager;
 use PHPUnit\Framework\TestCase;
 use VertoAD\Domain\Serving\AdEvent;
+use VertoAD\Repository\Archive\DatabaseArchiveRepository;
 use VertoAD\Repository\Billing\RevenueShareRepository;
 use VertoAD\Repository\CampaignBudgetRepository;
 use VertoAD\Repository\Cron\InMemoryServingEventBuffer;
@@ -49,6 +50,10 @@ final class EventConsumptionJobTest extends TestCase
         self::assertSame(960, $ledgerRepository->balanceForOrganization(99));
         self::assertSame(20, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
         self::assertNotNull((new DatabaseAdEventRepository($connection))->findEvent('impression', 'imp-1'));
+        self::assertSame(
+            ['clk-invalid', 'clk-missing-metadata', 'imp-1'],
+            array_map(static fn ($event): string => $event->eventId, (new DatabaseArchiveRepository($connection))->pendingEvents()),
+        );
     }
 
     public function testRepeatingConsumptionWindowDoesNotDoubleBillAckedEvents(): void
@@ -249,6 +254,26 @@ CREATE TABLE ad_serving_events (
     visible_ms INTEGER NULL,
     processed_at DATETIME NULL,
     UNIQUE (event_type, event_id)
+)
+SQL
+        );
+        $connection->executeStatement(
+            <<<'SQL'
+CREATE TABLE raw_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_uuid VARCHAR(160) NOT NULL UNIQUE,
+    organization_id INTEGER NULL,
+    site_id INTEGER NULL,
+    ad_slot_id INTEGER NULL,
+    campaign_id INTEGER NULL,
+    creative_id INTEGER NULL,
+    event_type VARCHAR(64) NOT NULL,
+    occurred_at DATETIME NOT NULL,
+    received_at DATETIME NOT NULL,
+    request_ip BLOB NULL,
+    user_agent VARCHAR(512) NULL,
+    payload_json TEXT NOT NULL,
+    processed_at DATETIME NULL
 )
 SQL
         );

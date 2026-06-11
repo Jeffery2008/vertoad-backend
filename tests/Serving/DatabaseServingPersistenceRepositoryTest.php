@@ -90,6 +90,40 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
         self::assertSame($decision->clickCostPoints, $invalid->costPoints);
     }
 
+    public function testServingEventsAreMirroredToRawEventsForPermanentArchive(): void
+    {
+        $connection = $this->createConnection();
+        $decision = $this->decision();
+        (new DatabaseAdDecisionRepository($connection))->save($decision);
+
+        $events = new DatabaseAdEventRepository($connection);
+        $events->recordImpression($decision, 'imp-archive', 0.75, 1500, new DateTimeImmutable('2026-06-08T10:00:00+00:00'));
+        $events->recordImpression($decision, 'imp-archive', 0.80, 2000, new DateTimeImmutable('2026-06-08T10:00:01+00:00'));
+
+        $rawRows = $connection->fetchAllAssociative('SELECT * FROM raw_events ORDER BY event_uuid');
+
+        self::assertCount(1, $rawRows);
+        self::assertSame('imp-archive', $rawRows[0]['event_uuid']);
+        self::assertSame('impression', $rawRows[0]['event_type']);
+        self::assertSame(40, (int) $rawRows[0]['organization_id']);
+        self::assertSame(10, (int) $rawRows[0]['site_id']);
+        self::assertSame(20, (int) $rawRows[0]['ad_slot_id']);
+        self::assertSame(30, (int) $rawRows[0]['campaign_id']);
+        self::assertNull($rawRows[0]['processed_at']);
+
+        $payload = json_decode((string) $rawRows[0]['payload_json'], true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame('imp-archive', $payload['event_id']);
+        self::assertSame('ad:decision-1', $payload['decision_id']);
+        self::assertSame('viewer-1', $payload['viewer_id']);
+        self::assertSame(40, $payload['advertiser_organization_id']);
+        self::assertSame(50, $payload['publisher_organization_id']);
+        self::assertSame(10, $payload['cost_points']);
+        self::assertTrue($payload['valid']);
+        self::assertSame(0.75, $payload['visible_ratio']);
+        self::assertSame(1500, $payload['visible_ms']);
+    }
+
     public function testCronLeaseAcknowledgeMarksEventsProcessedWithoutRemovingReportHistory(): void
     {
         $connection = $this->createConnection();
@@ -224,6 +258,24 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
                 visible_ms INTEGER NULL,
                 processed_at DATETIME NULL,
                 UNIQUE (event_type, event_id)
+            )',
+        );
+        $connection->executeStatement(
+            'CREATE TABLE raw_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_uuid VARCHAR(160) NOT NULL UNIQUE,
+                organization_id INTEGER NULL,
+                site_id INTEGER NULL,
+                ad_slot_id INTEGER NULL,
+                campaign_id INTEGER NULL,
+                creative_id INTEGER NULL,
+                event_type VARCHAR(64) NOT NULL,
+                occurred_at DATETIME NOT NULL,
+                received_at DATETIME NOT NULL,
+                request_ip BLOB NULL,
+                user_agent VARCHAR(512) NULL,
+                payload_json TEXT NOT NULL,
+                processed_at DATETIME NULL
             )',
         );
     }

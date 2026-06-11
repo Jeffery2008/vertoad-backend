@@ -111,6 +111,8 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
             ]);
         } catch (UniqueConstraintViolationException) {
         }
+
+        $this->persistRawEvent($event);
     }
 
     public function lease(int $limit): array
@@ -170,28 +172,72 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
         ?float $visibleRatio = null,
         ?int $visibleMs = null,
     ): void {
+        $this->persist(new AdEvent(
+            eventType: $eventType,
+            eventId: trim($eventId),
+            decisionId: $decision->decisionId,
+            siteId: $decision->siteId,
+            slotId: $decision->slotId,
+            viewerId: $decision->viewerId,
+            adId: $decision->adId,
+            campaignId: $decision->campaignId,
+            advertiserOrganizationId: $decision->advertiserOrganizationId,
+            publisherOrganizationId: $decision->publisherOrganizationId,
+            costPoints: $eventType === 'impression' ? $decision->impressionCostPoints : $decision->clickCostPoints,
+            occurredAt: $occurredAt,
+            valid: $valid,
+            reason: $reason,
+            visibleRatio: $visibleRatio,
+            visibleMs: $visibleMs,
+        ));
+    }
+
+    private function persistRawEvent(AdEvent $event): void
+    {
         try {
-            $this->connection->insert('ad_serving_events', [
-                'event_type' => $eventType,
-                'event_id' => trim($eventId),
-                'decision_id' => $decision->decisionId,
-                'site_id' => $decision->siteId,
-                'slot_id' => $decision->slotId,
-                'viewer_id' => $decision->viewerId,
-                'ad_id' => $decision->adId,
-                'campaign_id' => $decision->campaignId,
-                'advertiser_organization_id' => $decision->advertiserOrganizationId,
-                'publisher_organization_id' => $decision->publisherOrganizationId,
-                'cost_points' => $eventType === 'impression' ? $decision->impressionCostPoints : $decision->clickCostPoints,
-                'occurred_at' => $this->formatDate($occurredAt),
-                'valid' => $valid ? 1 : 0,
-                'reason' => $reason,
-                'visible_ratio' => $visibleRatio,
-                'visible_ms' => $visibleMs,
+            $this->connection->insert('raw_events', [
+                'event_uuid' => trim($event->eventId),
+                'organization_id' => $event->advertiserOrganizationId ?? $event->publisherOrganizationId,
+                'site_id' => $event->siteId,
+                'ad_slot_id' => $event->slotId,
+                'campaign_id' => $event->campaignId,
+                'creative_id' => null,
+                'event_type' => trim($event->eventType),
+                'occurred_at' => $this->formatDate($event->occurredAt),
+                'received_at' => $this->formatDate(new DateTimeImmutable()),
+                'request_ip' => null,
+                'user_agent' => null,
+                'payload_json' => json_encode($this->rawPayload($event), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
                 'processed_at' => null,
             ]);
         } catch (UniqueConstraintViolationException) {
         }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function rawPayload(AdEvent $event): array
+    {
+        return [
+            'source' => 'ad_serving_events',
+            'event_type' => trim($event->eventType),
+            'event_id' => trim($event->eventId),
+            'decision_id' => $event->decisionId,
+            'site_id' => $event->siteId,
+            'slot_id' => $event->slotId,
+            'viewer_id' => $event->viewerId,
+            'ad_id' => $event->adId,
+            'campaign_id' => $event->campaignId,
+            'advertiser_organization_id' => $event->advertiserOrganizationId,
+            'publisher_organization_id' => $event->publisherOrganizationId,
+            'cost_points' => $event->costPoints,
+            'occurred_at' => $this->formatDate($event->occurredAt),
+            'valid' => $event->valid,
+            'reason' => $event->reason,
+            'visible_ratio' => $event->visibleRatio,
+            'visible_ms' => $event->visibleMs,
+        ];
     }
 
     /**

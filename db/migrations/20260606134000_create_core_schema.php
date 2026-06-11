@@ -302,7 +302,7 @@ SQL);
         $this->execute(<<<'SQL'
 CREATE TABLE raw_events (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    event_uuid CHAR(36) NOT NULL,
+    event_uuid VARCHAR(160) NOT NULL,
     organization_id BIGINT UNSIGNED NULL,
     site_id BIGINT UNSIGNED NULL,
     ad_slot_id BIGINT UNSIGNED NULL,
