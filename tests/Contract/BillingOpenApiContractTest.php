@@ -139,6 +139,41 @@ final class BillingOpenApiContractTest extends TestCase
         }
     }
 
+    public function testPublisherWithdrawalResubmitContractIsDocumented(): void
+    {
+        $openApi = (string) file_get_contents(dirname(__DIR__, 2) . '/docs/openapi.yaml');
+        $resubmitPath = $this->block($openApi, '  /api/v1/billing/withdrawals/{withdrawal_id}/resubmit:', '  /api/v1/billing/withdrawals/{withdrawal_id}/proofs:');
+        $resubmitSchema = $this->block($openApi, '    WithdrawalResubmitRequest:', '    WithdrawalRequestData:');
+
+        foreach ([
+            'operationId: resubmitPublisherWithdrawal',
+            'x-permissions:',
+            '- billing.withdrawal.resubmit.own',
+            'billing.withdrawal.resubmit.own',
+            'OrganizationId',
+            'WithdrawalId',
+            'WithdrawalResubmitRequest',
+            'WithdrawalRequestData',
+            '"200":',
+            '"401":',
+            '"403":',
+            '"409":',
+            '"422":',
+        ] as $fragment) {
+            self::assertStringContainsString($fragment, $resubmitPath);
+        }
+
+        foreach ([
+            'required:',
+            '- payout_account',
+            'payout_account:',
+            'notes:',
+            'additionalProperties: false',
+        ] as $fragment) {
+            self::assertStringContainsString($fragment, $resubmitSchema);
+        }
+    }
+
     private function block(string $document, string $start, string $end): string
     {
         $startOffset = strpos($document, $start);

@@ -130,37 +130,52 @@ final class WithdrawalService
         ?string $notes,
         DateTimeImmutable $now,
     ): WithdrawalRequest {
-        $request = $this->repository->findRequest($withdrawalRequestId);
-        if ($request === null || $request->status !== WithdrawalStatus::Revoked) {
-            throw new RuntimeException('withdrawal_transition_not_allowed');
-        }
-        if ($this->ledgerRepository->balanceForOrganization($request->organizationId, 'publisher_earnings') < $request->pointsAmount) {
-            throw new RuntimeException('insufficient_publisher_earnings');
-        }
+        return $this->repository->transactional(function () use (
+            $withdrawalRequestId,
+            $actorUserId,
+            $payoutAccount,
+            $notes,
+            $now,
+        ): WithdrawalRequest {
+            $request = $this->repository->findRequest($withdrawalRequestId);
+            if ($request === null || $request->status !== WithdrawalStatus::Revoked) {
+                throw new RuntimeException('withdrawal_transition_not_allowed');
+            }
 
-        $this->ledger->debit(
-            organizationId: $request->organizationId,
-            accountType: 'publisher_earnings',
-            accountId: null,
-            pointsAmount: $request->pointsAmount,
-            idempotencyKey: 'withdrawal-resubmit:' . $withdrawalRequestId . ':' . $now->format('U.u'),
-            referenceType: 'withdrawal_request',
-            referenceId: $withdrawalRequestId,
-            memo: 'Publisher withdrawal resubmitted hold',
-            metadata: ['actor_user_id' => $actorUserId],
-        );
+            $this->repository->lockOrganizationForUpdate($request->organizationId);
+            if ($this->ledgerRepository->balanceForOrganization($request->organizationId, 'publisher_earnings') < $request->pointsAmount) {
+                throw new RuntimeException('insufficient_publisher_earnings');
+            }
 
-        $updated = $this->repository->updateRequestState(
-            id: $withdrawalRequestId,
-            status: WithdrawalStatus::Requested,
-            reviewerUserId: null,
-            reviewerNotes: $this->normalizeText($notes),
-            payoutAccount: $payoutAccount,
-            now: $now,
-        );
-        $this->audit($updated, $actorUserId, 'resubmitted', $request->status, WithdrawalStatus::Requested, $notes, null, $now);
+            $this->ledger->debit(
+                organizationId: $request->organizationId,
+                accountType: 'publisher_earnings',
+                accountId: null,
+                pointsAmount: $request->pointsAmount,
+                idempotencyKey: 'withdrawal-resubmit:' . $withdrawalRequestId . ':' . $now->format('U.u'),
+                referenceType: 'withdrawal_request',
+                referenceId: $withdrawalRequestId,
+                memo: 'Publisher withdrawal resubmitted hold',
+                metadata: ['actor_user_id' => $actorUserId],
+            );
 
-        return $updated;
+            $updated = $this->repository->updateRequestStateIfCurrent(
+                id: $withdrawalRequestId,
+                expectedStatus: WithdrawalStatus::Revoked,
+                status: WithdrawalStatus::Requested,
+                reviewerUserId: null,
+                reviewerNotes: $this->normalizeText($notes),
+                payoutAccount: $payoutAccount,
+                now: $now,
+            );
+            if ($updated === null) {
+                throw new RuntimeException('withdrawal_transition_not_allowed');
+            }
+
+            $this->audit($updated, $actorUserId, 'resubmitted', $request->status, WithdrawalStatus::Requested, $notes, null, $now);
+
+            return $updated;
+        });
     }
 
     private function transitionFromRequested(

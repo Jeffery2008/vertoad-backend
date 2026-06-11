@@ -143,6 +143,46 @@ final class WithdrawalTest extends TestCase
         self::assertSame('insufficient_publisher_earnings', $insufficient->getMessage());
     }
 
+    public function testResubmitRollsBackLedgerDebitWhenStateUpdateFails(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        BillingTask14Schema::create($connection);
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        $ledger = new PointsLedgerService($ledgerRepository);
+        $ledger->credit(42, 'publisher_earnings', null, 1000, 'earning:resubmit-rollback');
+        $service = new WithdrawalService(new WithdrawalRepository($connection), $ledger, $ledgerRepository);
+
+        $request = $service->requestWithdrawal(42, 7, 400, 'bank_transfer', ['account_no' => 'x'], null, new DateTimeImmutable('2026-06-08 12:00:00'));
+        $service->revoke($request->id ?? 0, 7, 'cancelled', new DateTimeImmutable('2026-06-08 12:01:00'));
+        $connection->executeStatement(
+            <<<'SQL'
+CREATE TRIGGER fail_withdrawal_resubmit_update
+BEFORE UPDATE OF status ON withdrawal_requests
+WHEN OLD.status = 'revoked' AND NEW.status = 'requested'
+BEGIN
+    SELECT RAISE(ABORT, 'forced withdrawal resubmit failure');
+END
+SQL
+        );
+
+        try {
+            $service->resubmit(
+                $request->id ?? 0,
+                7,
+                ['account_no' => 'z'],
+                'fixed account',
+                new DateTimeImmutable('2026-06-08 12:02:00'),
+            );
+        } catch (\Throwable) {
+            self::assertSame(1000, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+            self::assertSame(3, (int) $connection->fetchOne('SELECT COUNT(*) FROM ledger_entries'));
+            self::assertSame('revoked', (string) $connection->fetchOne('SELECT status FROM withdrawal_requests WHERE id = ?', [$request->id]));
+            return;
+        }
+
+        self::fail('Expected withdrawal resubmit update failure.');
+    }
+
     public function testRequestWithdrawalRollsBackLedgerDebitWhenWithdrawalInsertFails(): void
     {
         $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);

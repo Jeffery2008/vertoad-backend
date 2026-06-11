@@ -64,6 +64,32 @@ final readonly class WithdrawalAction
         return $this->transition($request, $response, $args, 'revoked');
     }
 
+    public function resubmit(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
+    {
+        $context = RequestUserContext::fromRequest($request);
+        $error = BillingRequestGuards::requireAuthenticatedOrganization($context, $request);
+        if ($error !== null) {
+            return $this->json($response, $error['payload'], $error['status']);
+        }
+
+        try {
+            $body = $this->body($request);
+            $withdrawal = $this->withdrawals->resubmit(
+                withdrawalRequestId: $this->routeId($args),
+                actorUserId: (int) $context->user?->id,
+                payoutAccount: $this->arrayField($body, 'payout_account'),
+                notes: $this->optionalStringField($body, 'notes'),
+                now: new DateTimeImmutable(),
+            );
+        } catch (InvalidArgumentException $exception) {
+            return $this->json($response, ['code' => 'invalid_request', 'message' => $exception->getMessage()], 422);
+        } catch (RuntimeException $exception) {
+            return $this->json($response, ['code' => 'withdrawal_transition_rejected', 'message' => $exception->getMessage()], 409);
+        }
+
+        return $this->json($response, BillingSerializers::withdrawalRequest($withdrawal), 200);
+    }
+
     public function createProofIntent(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $context = RequestUserContext::fromRequest($request);

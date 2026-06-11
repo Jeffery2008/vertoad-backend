@@ -855,6 +855,48 @@ paths:
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/billing/withdrawals/{withdrawal_id}/resubmit:
+    post:
+      tags:
+        - Billing
+      operationId: resubmitPublisherWithdrawal
+      summary: Resubmit a revoked withdrawal with updated payout details.
+      description: Places a fresh publisher earnings hold and moves a revoked withdrawal back to requested state.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - billing.withdrawal.resubmit.own
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/WithdrawalId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WithdrawalResubmitRequest"
+      responses:
+        "200":
+          description: Withdrawal resubmitted.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/WithdrawalRequestData"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/billing/withdrawals/{withdrawal_id}/proofs:
     post:
       tags:
@@ -4570,6 +4612,19 @@ components:
     WithdrawalTransitionRequest:
       type: object
       properties:
+        notes:
+          type:
+            - string
+            - "null"
+      additionalProperties: false
+    WithdrawalResubmitRequest:
+      type: object
+      required:
+        - payout_account
+      properties:
+        payout_account:
+          type: object
+          additionalProperties: true
         notes:
           type:
             - string

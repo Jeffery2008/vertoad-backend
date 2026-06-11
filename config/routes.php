@@ -163,6 +163,9 @@ return static function (App $app): void {
     $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/revoke', [WithdrawalAction::class, 'revoke'])
         ->add($permission('billing.withdrawal.revoke.own'))
         ->add(AuthenticateRequestMiddleware::class);
+    $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/resubmit', [WithdrawalAction::class, 'resubmit'])
+        ->add($permission('billing.withdrawal.resubmit.own'))
+        ->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/proofs', [WithdrawalAction::class, 'createProofIntent'])
         ->add($permission('billing.withdrawal.proof.write.own'))
         ->add(AuthenticateRequestMiddleware::class);

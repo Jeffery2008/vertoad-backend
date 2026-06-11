@@ -34,6 +34,7 @@ final class PermissionInventory
                 ['billing.recharge_key.redeem.own', 'Redeem recharge keys for own organization.', false],
                 ['billing.withdrawal.request.own', 'Request own organization withdrawals.', true],
                 ['billing.withdrawal.revoke.own', 'Revoke own pending withdrawals.', true],
+                ['billing.withdrawal.resubmit.own', 'Resubmit own revoked withdrawals with updated payout details.', true],
                 ['billing.withdrawal.proof.write.own', 'Upload proof metadata for own withdrawals.', true],
                 ['billing.withdrawal.review.platform', 'Review withdrawal requests.', true],
                 ['billing.withdrawal.mark_paid.platform', 'Mark withdrawals as paid.', true],

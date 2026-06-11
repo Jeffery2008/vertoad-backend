@@ -1085,6 +1085,15 @@ final class BillingRouteIntegrationTest extends TestCase
         ], $token);
         $revoked = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $third['data']['id'] . '/revoke?organization_id=99', [], $token);
         self::assertSame('revoked', $revoked['data']['status']);
+
+        $resubmitted = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $third['data']['id'] . '/resubmit?organization_id=99', [
+            'payout_account' => ['account_no' => '****0000'],
+            'notes' => 'updated payout account',
+        ], $token);
+        self::assertSame('requested', $resubmitted['data']['status']);
+        self::assertSame(['account_no' => '****0000'], $resubmitted['data']['payout_account']);
+        self::assertSame('updated payout account', $resubmitted['data']['reviewer_notes']);
+        self::assertSame(1700, (new PointsLedgerRepository($connection))->balanceForOrganization(99, 'publisher_earnings'));
     }
 
     public function testWithdrawalRoutesReturnControlledErrors(): void
@@ -1191,6 +1200,21 @@ final class BillingRouteIntegrationTest extends TestCase
 
         $badPaidId = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/abc/paid?organization_id=99', [], $token);
         self::assertSame('invalid_request', $badPaidId['error']['code']);
+
+        $badResubmitId = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/abc/resubmit?organization_id=99', [
+            'payout_account' => ['account_no' => 'x'],
+        ], $token);
+        self::assertSame('invalid_request', $badResubmitId['error']['code']);
+
+        $badResubmitBody = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/resubmit?organization_id=99', [
+            'notes' => 'missing account',
+        ], $token);
+        self::assertSame('invalid_request', $badResubmitBody['error']['code']);
+
+        $invalidResubmitState = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/resubmit?organization_id=99', [
+            'payout_account' => ['account_no' => 'x'],
+        ], $token);
+        self::assertSame('withdrawal_transition_rejected', $invalidResubmitState['error']['code']);
     }
 
     /**
@@ -1363,6 +1387,7 @@ final class BillingRouteIntegrationTest extends TestCase
         $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/paid', [WithdrawalAction::class, 'markPaid'])->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/reject', [WithdrawalAction::class, 'reject'])->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/revoke', [WithdrawalAction::class, 'revoke'])->add(AuthenticateRequestMiddleware::class);
+        $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/resubmit', [WithdrawalAction::class, 'resubmit'])->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/proofs', [WithdrawalAction::class, 'createProofIntent'])->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/proofs/confirm', [WithdrawalAction::class, 'confirmProof'])->add(AuthenticateRequestMiddleware::class);
         $app->add(new ApiEnvelopeMiddleware($app->getResponseFactory()));

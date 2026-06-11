@@ -54,6 +54,7 @@ VALUES
     ('billing.recharge_key.redeem.own', 'Redeem recharge keys for own organization.'),
     ('billing.withdrawal.request.own', 'Request own organization withdrawals.'),
     ('billing.withdrawal.revoke.own', 'Revoke own pending withdrawals.'),
+    ('billing.withdrawal.resubmit.own', 'Resubmit own revoked withdrawals with updated payout details.'),
     ('billing.withdrawal.proof.write.own', 'Upload proof metadata for own withdrawals.'),
     ('billing.withdrawal.review.platform', 'Review withdrawal requests.'),
     ('billing.withdrawal.mark_paid.platform', 'Mark withdrawals as paid.'),
