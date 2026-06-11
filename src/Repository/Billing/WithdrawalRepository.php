@@ -49,7 +49,7 @@ final class WithdrawalRepository
         string $payoutMethod,
         array $payoutAccount,
         ?string $notes,
-        ?int $ledgerEntryId,
+        int $ledgerEntryId,
         DateTimeImmutable $now,
     ): WithdrawalRequest {
         $this->connection->insert('withdrawal_requests', [
@@ -83,23 +83,6 @@ final class WithdrawalRepository
             ->fetchAssociative();
 
         return $row === false ? null : $this->hydrateRequest($row);
-    }
-
-    /**
-     * @param array<string, mixed>|null $payoutAccount
-     */
-    public function updateRequestState(
-        int $id,
-        WithdrawalStatus $status,
-        ?int $reviewerUserId,
-        ?string $reviewerNotes,
-        ?array $payoutAccount,
-        DateTimeImmutable $now,
-    ): WithdrawalRequest {
-        $this->connection->update('withdrawal_requests', $this->stateFields($status, $reviewerUserId, $reviewerNotes, $payoutAccount, $now), ['id' => $id]);
-        $request = $this->findRequest($id);
-        assert($request instanceof WithdrawalRequest);
-        return $request;
     }
 
     /**
@@ -246,7 +229,7 @@ final class WithdrawalRepository
             applicantNotes: $row['applicant_notes'] === null ? null : (string) $row['applicant_notes'],
             reviewerUserId: $row['reviewer_user_id'] === null ? null : (int) $row['reviewer_user_id'],
             reviewerNotes: $row['reviewer_notes'] === null ? null : (string) $row['reviewer_notes'],
-            ledgerEntryId: $row['ledger_entry_id'] === null ? null : (int) $row['ledger_entry_id'],
+            ledgerEntryId: (int) $row['ledger_entry_id'],
             requestedAt: new DateTimeImmutable((string) $row['requested_at']),
             reviewedAt: $this->nullableDate($row['reviewed_at']),
             paidAt: $this->nullableDate($row['paid_at']),

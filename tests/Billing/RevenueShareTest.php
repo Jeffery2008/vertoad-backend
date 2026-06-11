@@ -42,6 +42,7 @@ final class RevenueShareTest extends TestCase
         );
 
         self::assertSame(1000, $earning->publisherPoints);
+        self::assertSame(250, $earning->platformPoints);
         self::assertSame(8000, $earning->shareRatioBps);
         self::assertSame($slotRule->id, $earning->revenueShareRuleId);
         self::assertSame(1000, (new PointsLedgerRepository($connection))->balanceForOrganization(42, 'publisher_earnings'));
@@ -82,6 +83,30 @@ final class RevenueShareTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Revenue share scope is invalid.');
         $repository->createRule('invalid', null, null, null, 5000, null, new DateTimeImmutable('2026-06-08 10:00:00'));
+    }
+
+    public function testRevenueShareRulesValidateScopeTargetsBeforeWriting(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        BillingTask14Schema::create($connection);
+        $repository = new RevenueShareRepository($connection);
+
+        foreach ([
+            ['global', 42, null, null],
+            ['publisher', null, null, null],
+            ['site', null, null, null],
+            ['slot', null, null, null],
+            ['slot', null, 5, 10],
+        ] as [$scope, $organizationId, $siteId, $slotId]) {
+            try {
+                $repository->createRule($scope, $organizationId, $siteId, $slotId, 5000, null, new DateTimeImmutable('2026-06-08 10:00:00'));
+            } catch (\InvalidArgumentException $exception) {
+                self::assertSame('Revenue share scope target is invalid.', $exception->getMessage());
+                continue;
+            }
+
+            self::fail('Expected invalid revenue share scope target for ' . $scope . '.');
+        }
     }
 
     public function testRevenueShareServiceRejectsMissingEventIdsAndZeroEarnings(): void

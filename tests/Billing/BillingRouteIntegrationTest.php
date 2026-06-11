@@ -1195,6 +1195,11 @@ final class BillingRouteIntegrationTest extends TestCase
         $unauthenticatedPaid = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/paid?organization_id=99');
         self::assertSame('authentication_required', $unauthenticatedPaid['error']['code']);
 
+        $unauthenticatedResubmit = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/resubmit?organization_id=99', [
+            'payout_account' => ['account_no' => 'x'],
+        ]);
+        self::assertSame('authentication_required', $unauthenticatedResubmit['error']['code']);
+
         $missingPaid = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/999/paid?organization_id=99', [], $token);
         self::assertSame('withdrawal_transition_rejected', $missingPaid['error']['code']);
 
@@ -1501,7 +1506,7 @@ final class BillingRouteIntegrationTest extends TestCase
                 applicant_notes TEXT NULL,
                 reviewer_user_id INTEGER NULL,
                 reviewer_notes TEXT NULL,
-                ledger_entry_id INTEGER NULL,
+                ledger_entry_id INTEGER NOT NULL,
                 requested_at TEXT NOT NULL,
                 reviewed_at TEXT NULL,
                 paid_at TEXT NULL,

@@ -22,7 +22,7 @@ final readonly class WithdrawalRequest
         public ?string $applicantNotes,
         public ?int $reviewerUserId,
         public ?string $reviewerNotes,
-        public ?int $ledgerEntryId,
+        public int $ledgerEntryId,
         public DateTimeImmutable $requestedAt,
         public ?DateTimeImmutable $reviewedAt,
         public ?DateTimeImmutable $paidAt,

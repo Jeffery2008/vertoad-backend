@@ -1,0 +1,217 @@
+<?php
+
+declare(strict_types=1);
+
+namespace VertoAD\Tests\Billing;
+
+use Doctrine\DBAL\Connection;
+use Doctrine\DBAL\DriverManager;
+use PHPUnit\Framework\TestCase;
+
+final class PublisherWithdrawalMigrationIntegrityTest extends TestCase
+{
+    public function testPublisherWithdrawalMigrationDefinesMySqlFinancialIntegrityConstraints(): void
+    {
+        $path = dirname(__DIR__, 2) . '/db/migrations/20260608100000_create_publisher_withdrawal_tables.php';
+        self::assertFileExists($path);
+        self::assertFileDoesNotExist(dirname(__DIR__, 2) . '/db/migrations/20260612100000_harden_publisher_withdrawal_integrity.php');
+
+        $sql = preg_replace('/\s+/', ' ', strtolower((string) file_get_contents($path))) ?? '';
+        foreach ([
+            'platform_points bigint not null',
+            'unique key uq_publisher_earning_events_ledger (ledger_entry_id)',
+            'unique key uq_withdrawal_requests_ledger (ledger_entry_id)',
+            'constraint chk_revenue_share_rules_ratio check (share_ratio_bps between 0 and 10000)',
+            "constraint chk_revenue_share_rules_scope check (scope in ('global', 'publisher', 'site', 'slot'))",
+            'constraint chk_revenue_share_rules_scope_target check',
+            "constraint chk_revenue_share_rules_status check (status in ('active', 'inactive'))",
+            'constraint fk_publisher_earning_events_ledger foreign key (ledger_entry_id) references ledger_entries (id) on delete restrict',
+            'constraint fk_publisher_earning_events_rule foreign key (revenue_share_rule_id) references revenue_share_rules (id) on delete set null',
+            'constraint chk_publisher_earning_events_points check (gross_points >= 0 and publisher_points >= 0 and platform_points >= 0 and gross_points = publisher_points + platform_points)',
+            'ledger_entry_id bigint unsigned not null',
+            'constraint fk_withdrawal_requests_ledger foreign key (ledger_entry_id) references ledger_entries (id) on delete restrict',
+            "constraint chk_withdrawal_requests_status check (status in ('requested', 'paid', 'rejected', 'revoked'))",
+            'constraint chk_withdrawal_requests_points_positive check (points_amount > 0)',
+            'constraint fk_withdrawal_proofs_request foreign key (withdrawal_request_id) references withdrawal_requests (id) on delete cascade',
+            "constraint chk_withdrawal_proofs_status check (status in ('pending_upload', 'confirmed'))",
+            'constraint chk_withdrawal_proofs_byte_size_positive check (byte_size > 0)',
+            'constraint fk_withdrawal_audit_events_request foreign key (withdrawal_request_id) references withdrawal_requests (id) on delete cascade',
+            "constraint chk_withdrawal_audit_events_statuses check ( (from_status is null or from_status in ('requested', 'paid', 'rejected', 'revoked')) and to_status in ('requested', 'paid', 'rejected', 'revoked') )",
+        ] as $fragment) {
+            self::assertStringContainsString($fragment, $sql);
+        }
+    }
+
+    public function testRevenueShareRulesConstrainShareRatioBasisPoints(): void
+    {
+        $connection = $this->createBillingConnection();
+
+        $this->assertDatabaseRejects(static fn () => $connection->insert('revenue_share_rules', [
+            'scope' => 'global',
+            'share_ratio_bps' => 10001,
+            'status' => 'active',
+            'version' => 1,
+        ]));
+    }
+
+    public function testPublisherEarningEventsConstrainPointsAndLedgerReference(): void
+    {
+        $connection = $this->createBillingConnection();
+
+        $this->assertDatabaseRejects(fn () => $this->insertPublisherEarning($connection, [
+            'event_id' => 'evt-negative-gross',
+            'gross_points' => -1,
+        ]));
+
+        $this->assertDatabaseRejects(fn () => $this->insertPublisherEarning($connection, [
+            'event_id' => 'evt-negative-publisher',
+            'publisher_points' => -1,
+        ]));
+
+        $this->assertDatabaseRejects(fn () => $this->insertPublisherEarning($connection, [
+            'event_id' => 'evt-negative-platform',
+            'publisher_points' => 101,
+            'platform_points' => -1,
+        ]));
+
+        $this->assertDatabaseRejects(fn () => $this->insertPublisherEarning($connection, [
+            'event_id' => 'evt-missing-ledger',
+            'ledger_entry_id' => 999,
+        ]));
+    }
+
+    public function testWithdrawalRequestsConstrainAmountStatusAndLedgerReference(): void
+    {
+        $connection = $this->createBillingConnection();
+
+        $this->assertDatabaseRejects(fn () => $this->insertWithdrawalRequest($connection, [
+            'points_amount' => 0,
+        ]));
+
+        $this->assertDatabaseRejects(fn () => $this->insertWithdrawalRequest($connection, [
+            'status' => 'processing',
+        ]));
+
+        $this->assertDatabaseRejects(fn () => $this->insertWithdrawalRequest($connection, [
+            'ledger_entry_id' => 999,
+        ]));
+
+        $this->assertDatabaseRejects(fn () => $this->insertWithdrawalRequest($connection, [
+            'ledger_entry_id' => null,
+        ]));
+    }
+
+    public function testWithdrawalProofsAndAuditEventsReferenceExistingWithdrawals(): void
+    {
+        $connection = $this->createBillingConnection();
+
+        $this->assertDatabaseRejects(static fn () => $connection->insert('withdrawal_proofs', [
+            'withdrawal_request_id' => 999,
+            'organization_id' => 42,
+            'uploaded_by_user_id' => 7,
+            'object_key' => 'withdrawals/999/proof.pdf',
+            'content_type' => 'application/pdf',
+            'byte_size' => 1024,
+            'status' => 'pending_upload',
+        ]));
+
+        $this->assertDatabaseRejects(static fn () => $connection->insert('withdrawal_audit_events', [
+            'withdrawal_request_id' => 999,
+            'organization_id' => 42,
+            'actor_user_id' => 7,
+            'action' => 'requested',
+            'from_status' => null,
+            'to_status' => 'requested',
+        ]));
+    }
+
+    private function createBillingConnection(): Connection
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        $connection->executeStatement('PRAGMA foreign_keys = ON');
+        BillingTask14Schema::create($connection);
+        $connection->executeStatement('PRAGMA foreign_keys = ON');
+        $this->seedLedgerEntry($connection, id: 1, pointsAmount: 1000, direction: 'credit');
+
+        return $connection;
+    }
+
+    /**
+     * @param array<string, mixed> $overrides
+     */
+    private function insertPublisherEarning(Connection $connection, array $overrides): void
+    {
+        $connection->insert('publisher_earning_events', array_merge([
+            'event_id' => 'evt-valid',
+            'publisher_organization_id' => 42,
+            'site_id' => 5,
+            'ad_slot_id' => 10,
+            'advertiser_organization_id' => 99,
+            'campaign_id' => null,
+            'gross_points' => 100,
+            'share_ratio_bps' => 8000,
+            'publisher_points' => 80,
+            'platform_points' => 20,
+            'revenue_share_rule_id' => null,
+            'ledger_entry_id' => 1,
+            'metadata_json' => null,
+            'earned_at' => '2026-06-08 11:00:00',
+        ], $overrides));
+    }
+
+    /**
+     * @param array<string, mixed> $overrides
+     */
+    private function insertWithdrawalRequest(Connection $connection, array $overrides): void
+    {
+        $connection->insert('withdrawal_requests', array_merge([
+            'organization_id' => 42,
+            'requested_by_user_id' => 7,
+            'points_amount' => 100,
+            'status' => 'requested',
+            'payout_method' => 'bank_transfer',
+            'payout_account_json' => '{"account_no":"x"}',
+            'applicant_notes' => null,
+            'reviewer_user_id' => null,
+            'reviewer_notes' => null,
+            'ledger_entry_id' => 1,
+            'requested_at' => '2026-06-08 12:00:00',
+            'reviewed_at' => null,
+            'paid_at' => null,
+            'rejected_at' => null,
+            'revoked_at' => null,
+            'resubmitted_at' => null,
+        ], $overrides));
+    }
+
+    private function seedLedgerEntry(Connection $connection, int $id, int $pointsAmount, string $direction): void
+    {
+        $connection->insert('ledger_entries', [
+            'id' => $id,
+            'organization_id' => 42,
+            'account_type' => 'publisher_earnings',
+            'account_id' => null,
+            'points_amount' => $pointsAmount,
+            'direction' => $direction,
+            'balance_after_points' => $pointsAmount,
+            'reference_type' => null,
+            'reference_id' => null,
+            'idempotency_key' => 'seed-ledger-' . $id,
+            'memo' => null,
+            'metadata_json' => null,
+            'created_at' => '2026-06-08 10:00:00',
+        ]);
+    }
+
+    private function assertDatabaseRejects(callable $operation): void
+    {
+        try {
+            $operation();
+        } catch (\Throwable) {
+            $this->addToAssertionCount(1);
+            return;
+        }
+
+        self::fail('Expected database constraint to reject invalid billing data.');
+    }
+}

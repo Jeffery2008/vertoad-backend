@@ -67,6 +67,7 @@ final class RevenueShareService
 
         $ratio = $rule->shareRatioBps;
         $publisherPoints = $this->publisherPoints($grossPoints, $ratio);
+        $platformPoints = $grossPoints - $publisherPoints;
         if ($publisherPoints <= 0) {
             throw new InvalidArgumentException('Publisher earning points must be positive.');
         }
@@ -102,6 +103,7 @@ final class RevenueShareService
             grossPoints: $grossPoints,
             shareRatioBps: $ratio,
             publisherPoints: $publisherPoints,
+            platformPoints: $platformPoints,
             revenueShareRuleId: $rule?->id,
             ledgerEntryId: $ledgerEntry->id ?? 0,
             metadata: [

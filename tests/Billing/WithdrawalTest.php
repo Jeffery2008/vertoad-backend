@@ -337,7 +337,7 @@ SQL
         $service = new WithdrawalService(new WithdrawalRepository($connection), $ledger, $ledgerRepository);
 
         $request = $service->requestWithdrawal(42, 7, 400, 'bank_transfer', ['account_no' => 'x'], null, new DateTimeImmutable('2026-06-08 12:00:00'));
-        $this->installWithdrawalStatusRaceTrigger($connection, 'paid', 'rejected');
+        $this->installWithdrawalStatusRaceTrigger($connection, 'requested', 'paid', 'rejected');
         $stale = $this->captureValidation(fn () => $service->markPaid($request->id ?? 0, 99, 'paid', new DateTimeImmutable('2026-06-08 12:01:00')));
 
         self::assertSame('withdrawal_transition_not_allowed', $stale->getMessage());
@@ -355,7 +355,7 @@ SQL
         $service = new WithdrawalService(new WithdrawalRepository($connection), $ledger, $ledgerRepository);
 
         $request = $service->requestWithdrawal(42, 7, 400, 'bank_transfer', ['account_no' => 'x'], null, new DateTimeImmutable('2026-06-08 12:00:00'));
-        $this->installWithdrawalStatusRaceTrigger($connection, 'paid', 'paid');
+        $this->installWithdrawalStatusRaceTrigger($connection, 'requested', 'paid', 'paid');
         $paid = $service->markPaid($request->id ?? 0, 99, 'paid', new DateTimeImmutable('2026-06-08 12:01:00'));
 
         self::assertSame('paid', $paid->status->value);
@@ -364,18 +364,45 @@ SQL
         self::assertSame(0, (int) $connection->fetchOne("SELECT COUNT(*) FROM withdrawal_audit_events WHERE action = 'paid'"));
     }
 
-    private function installWithdrawalStatusRaceTrigger(\Doctrine\DBAL\Connection $connection, string $attemptedStatus, string $concurrentStatus): void
+    public function testResubmitRejectsWhenCompareAndSwapMissesRevokedState(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        BillingTask14Schema::create($connection);
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        $ledger = new PointsLedgerService($ledgerRepository);
+        $ledger->credit(42, 'publisher_earnings', null, 1000, 'earning:stale-resubmit');
+        $service = new WithdrawalService(new WithdrawalRepository($connection), $ledger, $ledgerRepository);
+
+        $request = $service->requestWithdrawal(42, 7, 400, 'bank_transfer', ['account_no' => 'x'], null, new DateTimeImmutable('2026-06-08 12:00:00'));
+        $service->revoke($request->id ?? 0, 7, 'cancelled', new DateTimeImmutable('2026-06-08 12:01:00'));
+        $this->installWithdrawalStatusRaceTrigger($connection, 'revoked', 'requested', 'paid');
+
+        $stale = $this->captureValidation(fn () => $service->resubmit($request->id ?? 0, 7, ['account_no' => 'y'], null, new DateTimeImmutable('2026-06-08 12:02:00')));
+
+        self::assertSame('withdrawal_transition_not_allowed', $stale->getMessage());
+        self::assertSame(1000, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+        self::assertSame('revoked', (string) $connection->fetchOne('SELECT status FROM withdrawal_requests WHERE id = ?', [$request->id]));
+        self::assertSame(0, (int) $connection->fetchOne("SELECT COUNT(*) FROM withdrawal_audit_events WHERE action = 'resubmitted'"));
+    }
+
+    private function installWithdrawalStatusRaceTrigger(
+        \Doctrine\DBAL\Connection $connection,
+        string $currentStatus,
+        string $attemptedStatus,
+        string $concurrentStatus,
+    ): void
     {
         $connection->executeStatement(sprintf(
             <<<'SQL'
 CREATE TRIGGER withdrawal_status_race
 BEFORE UPDATE OF status ON withdrawal_requests
-WHEN OLD.status = 'requested' AND NEW.status = '%s'
+WHEN OLD.status = '%s' AND NEW.status = '%s'
 BEGIN
     UPDATE withdrawal_requests SET status = '%s' WHERE id = OLD.id;
     SELECT RAISE(IGNORE);
 END
 SQL,
+            $currentStatus,
             $attemptedStatus,
             $concurrentStatus,
         ));

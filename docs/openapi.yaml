@@ -4684,9 +4684,8 @@ components:
             - string
             - "null"
         ledger_entry_id:
-          type:
-            - integer
-            - "null"
+          type: integer
+          minimum: 1
       additionalProperties: false
     WithdrawalProofCreateRequest:
       type: object

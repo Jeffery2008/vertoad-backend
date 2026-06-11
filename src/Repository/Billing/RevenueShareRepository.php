@@ -32,6 +32,9 @@ final class RevenueShareRepository
         if ($shareRatioBps < 0 || $shareRatioBps > 10000) {
             throw new InvalidArgumentException('Revenue share ratio must be between 0 and 10000 basis points.');
         }
+        if (!$this->scopeTargetIsValid($scope, $organizationId, $siteId, $adSlotId)) {
+            throw new InvalidArgumentException('Revenue share scope target is invalid.');
+        }
 
         $version = $this->nextVersion();
         $this->connection->insert('revenue_share_rules', [
@@ -118,6 +121,7 @@ final class RevenueShareRepository
         int $grossPoints,
         int $shareRatioBps,
         int $publisherPoints,
+        int $platformPoints,
         ?int $revenueShareRuleId,
         int $ledgerEntryId,
         ?array $metadata,
@@ -133,6 +137,7 @@ final class RevenueShareRepository
             'gross_points' => $grossPoints,
             'share_ratio_bps' => $shareRatioBps,
             'publisher_points' => $publisherPoints,
+            'platform_points' => $platformPoints,
             'revenue_share_rule_id' => $revenueShareRuleId,
             'ledger_entry_id' => $ledgerEntryId,
             'metadata_json' => $metadata === null ? null : json_encode($metadata, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
@@ -150,6 +155,7 @@ final class RevenueShareRepository
             grossPoints: $grossPoints,
             shareRatioBps: $shareRatioBps,
             publisherPoints: $publisherPoints,
+            platformPoints: $platformPoints,
             revenueShareRuleId: $revenueShareRuleId,
             ledgerEntryId: $ledgerEntryId,
             metadata: $metadata,
@@ -163,6 +169,16 @@ final class RevenueShareRepository
             ->select('COALESCE(MAX(version), 0)')
             ->from('revenue_share_rules')
             ->fetchOne()) + 1;
+    }
+
+    private function scopeTargetIsValid(string $scope, ?int $organizationId, ?int $siteId, ?int $adSlotId): bool
+    {
+        return match ($scope) {
+            'global' => $organizationId === null && $siteId === null && $adSlotId === null,
+            'publisher' => $organizationId !== null && $siteId === null && $adSlotId === null,
+            'site' => $organizationId === null && $siteId !== null && $adSlotId === null,
+            'slot' => $organizationId === null && $siteId === null && $adSlotId !== null,
+        };
     }
 
     /**
@@ -201,6 +217,7 @@ final class RevenueShareRepository
             grossPoints: (int) $row['gross_points'],
             shareRatioBps: (int) $row['share_ratio_bps'],
             publisherPoints: (int) $row['publisher_points'],
+            platformPoints: (int) $row['platform_points'],
             revenueShareRuleId: $row['revenue_share_rule_id'] === null ? null : (int) $row['revenue_share_rule_id'],
             ledgerEntryId: (int) $row['ledger_entry_id'],
             metadata: is_array($metadata) ? $metadata : null,

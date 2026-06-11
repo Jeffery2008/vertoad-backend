@@ -66,7 +66,16 @@ CREATE TABLE revenue_share_rules (
     status VARCHAR(32) NOT NULL,
     version INTEGER NOT NULL,
     created_by_user_id INTEGER NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (scope IN ('global', 'publisher', 'site', 'slot')),
+    CHECK (status IN ('active', 'inactive')),
+    CHECK (share_ratio_bps BETWEEN 0 AND 10000),
+    CHECK (
+        (scope = 'global' AND organization_id IS NULL AND site_id IS NULL AND ad_slot_id IS NULL)
+        OR (scope = 'publisher' AND organization_id IS NOT NULL AND site_id IS NULL AND ad_slot_id IS NULL)
+        OR (scope = 'site' AND organization_id IS NULL AND site_id IS NOT NULL AND ad_slot_id IS NULL)
+        OR (scope = 'slot' AND organization_id IS NULL AND site_id IS NULL AND ad_slot_id IS NOT NULL)
+    )
 )
 SQL
         );
@@ -83,10 +92,16 @@ CREATE TABLE publisher_earning_events (
     gross_points INTEGER NOT NULL,
     share_ratio_bps INTEGER NOT NULL,
     publisher_points INTEGER NOT NULL,
+    platform_points INTEGER NOT NULL,
     revenue_share_rule_id INTEGER NULL,
     ledger_entry_id INTEGER NOT NULL,
     metadata_json TEXT NULL,
-    earned_at DATETIME NOT NULL
+    earned_at DATETIME NOT NULL,
+    UNIQUE (ledger_entry_id),
+    FOREIGN KEY (revenue_share_rule_id) REFERENCES revenue_share_rules (id) ON DELETE SET NULL,
+    FOREIGN KEY (ledger_entry_id) REFERENCES ledger_entries (id) ON DELETE RESTRICT,
+    CHECK (share_ratio_bps BETWEEN 0 AND 10000),
+    CHECK (gross_points >= 0 AND publisher_points >= 0 AND platform_points >= 0 AND gross_points = publisher_points + platform_points)
 )
 SQL
         );
@@ -103,13 +118,17 @@ CREATE TABLE withdrawal_requests (
     applicant_notes TEXT NULL,
     reviewer_user_id INTEGER NULL,
     reviewer_notes TEXT NULL,
-    ledger_entry_id INTEGER NULL,
+    ledger_entry_id INTEGER NOT NULL,
     requested_at DATETIME NOT NULL,
     reviewed_at DATETIME NULL,
     paid_at DATETIME NULL,
     rejected_at DATETIME NULL,
     revoked_at DATETIME NULL,
-    resubmitted_at DATETIME NULL
+    resubmitted_at DATETIME NULL,
+    UNIQUE (ledger_entry_id),
+    FOREIGN KEY (ledger_entry_id) REFERENCES ledger_entries (id) ON DELETE RESTRICT,
+    CHECK (points_amount > 0),
+    CHECK (status IN ('requested', 'paid', 'rejected', 'revoked'))
 )
 SQL
         );
@@ -126,7 +145,10 @@ CREATE TABLE withdrawal_proofs (
     checksum VARCHAR(160) NULL,
     status VARCHAR(32) NOT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    confirmed_at DATETIME NULL
+    confirmed_at DATETIME NULL,
+    FOREIGN KEY (withdrawal_request_id) REFERENCES withdrawal_requests (id) ON DELETE CASCADE,
+    CHECK (byte_size > 0),
+    CHECK (status IN ('pending_upload', 'confirmed'))
 )
 SQL
         );
@@ -142,7 +164,13 @@ CREATE TABLE withdrawal_audit_events (
     to_status VARCHAR(32) NOT NULL,
     notes TEXT NULL,
     metadata_json TEXT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (withdrawal_request_id) REFERENCES withdrawal_requests (id) ON DELETE CASCADE,
+    CHECK (action IN ('requested', 'paid', 'rejected', 'revoked', 'resubmitted')),
+    CHECK (
+        (from_status IS NULL OR from_status IN ('requested', 'paid', 'rejected', 'revoked'))
+        AND to_status IN ('requested', 'paid', 'rejected', 'revoked')
+    )
 )
 SQL
         );

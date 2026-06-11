@@ -22,6 +22,7 @@ final readonly class PublisherEarningEvent
         public int $grossPoints,
         public int $shareRatioBps,
         public int $publisherPoints,
+        public int $platformPoints,
         public ?int $revenueShareRuleId,
         public int $ledgerEntryId,
         public ?array $metadata,
