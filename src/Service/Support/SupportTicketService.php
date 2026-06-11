@@ -123,7 +123,7 @@ final readonly class SupportTicketService
     }
 
     /**
-     * @param array{user_id:int,organization_id:int|null,roles:list<string>} $context
+     * @param array{user_id:int,organization_id:int|null,roles:list<string>,filter_organization_id?:int|null} $context
      * @return list<array<string, mixed>>
      */
     public function listVisibleTickets(array $context): array
@@ -131,17 +131,18 @@ final readonly class SupportTicketService
         $userId = (int) $context['user_id'];
         $organizationId = $context['organization_id'];
         $roles = $context['roles'];
+        $filterOrganizationId = $context['filter_organization_id'] ?? null;
 
-        $visible = array_filter($this->tickets->all(), static function (SupportTicket $ticket) use ($userId, $organizationId, $roles): bool {
+        $visible = array_filter($this->tickets->all(), static function (SupportTicket $ticket) use ($userId, $organizationId, $roles, $filterOrganizationId): bool {
             if (in_array('admin', $roles, true) || in_array('super_admin', $roles, true)) {
-                return true;
+                $visibleToRole = true;
+            } elseif (in_array('support', $roles, true)) {
+                $visibleToRole = $ticket->assignee_user_id === $userId || $ticket->priority === 'urgent';
+            } else {
+                $visibleToRole = $organizationId !== null && $ticket->organization_id === $organizationId;
             }
 
-            if (in_array('support', $roles, true)) {
-                return $ticket->assignee_user_id === $userId || $ticket->priority === 'urgent';
-            }
-
-            return $organizationId !== null && $ticket->organization_id === $organizationId;
+            return $visibleToRole && ($filterOrganizationId === null || $ticket->organization_id === $filterOrganizationId);
         });
 
         return array_map(static fn (SupportTicket $ticket): array => $ticket->toArray(), array_values($visible));

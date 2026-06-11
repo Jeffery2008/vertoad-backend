@@ -3082,6 +3082,14 @@ paths:
       summary: List support tickets visible to the caller.
       security:
         - BearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: false
+          description: Positive organization id used to narrow the caller's already visible support ticket list. This parameter never expands ticket visibility.
+          schema:
+            type: integer
+            minimum: 1
       responses:
         "200":
           description: Visible support tickets.
@@ -3102,6 +3110,8 @@ paths:
                             items:
                               $ref: "#/components/schemas/SupportTicket"
                         additionalProperties: false
+        "422":
+          $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
   /api/v1/support/tickets/{ticket_id}/notes:

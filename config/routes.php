@@ -84,6 +84,7 @@ use VertoAD\Http\Middleware\AuthenticateRequestMiddleware;
 use VertoAD\Http\Middleware\CronAuthMiddleware;
 use VertoAD\Http\Middleware\RateLimitMiddleware;
 use VertoAD\Http\Middleware\RequirePermissionMiddleware;
+use VertoAD\Http\Middleware\SupportTicketListQueryMiddleware;
 use VertoAD\Http\Middleware\TurnstileMiddleware;
 use VertoAD\Service\TenantAccessService;
 
@@ -303,6 +304,7 @@ return static function (App $app): void {
         ->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/support/tickets', ListSupportTicketsAction::class)
         ->add($permission('support.ticket.read.own'))
+        ->add(new SupportTicketListQueryMiddleware($app->getResponseFactory()))
         ->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/support/tickets/{ticket_id}/notes', AddSupportTicketNoteAction::class)
         ->add($platformPermission('support.ticket.note.internal.platform'))

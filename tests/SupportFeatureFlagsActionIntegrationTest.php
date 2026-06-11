@@ -131,6 +131,108 @@ final class SupportFeatureFlagsActionIntegrationTest extends TestCase
         );
     }
 
+    public function testSupportTicketListOrganizationFilterOnlyNarrowsExistingVisibility(): void
+    {
+        $app = $this->createApp(new Task29ActionAuditRepository());
+        $member101 = new RequestUserContext(new AuthenticatedUser(501, 'member101@example.com', false), 101);
+        $member202 = new RequestUserContext(new AuthenticatedUser(502, 'member202@example.com', false), 202);
+        $support700 = new RequestUserContext(new AuthenticatedUser(700, 'support@example.com', false), null);
+
+        $normal101 = $this->handle($app, 'POST', '/api/v1/support/tickets', [
+            'subject' => 'Organization 101 billing question',
+            'description' => 'Visible to organization 101 members and admins.',
+            'priority' => 'normal',
+            'linked_entity' => ['type' => 'campaign', 'id' => 9001],
+        ], $member101);
+        $urgent101 = $this->handle($app, 'POST', '/api/v1/support/tickets', [
+            'subject' => 'Organization 101 urgent payout',
+            'description' => 'Visible to support because it is urgent.',
+            'priority' => 'urgent',
+            'linked_entity' => ['type' => 'withdrawal', 'id' => 3001],
+        ], $member101);
+        $urgent202 = $this->handle($app, 'POST', '/api/v1/support/tickets', [
+            'subject' => 'Organization 202 urgent site issue',
+            'description' => 'Visible to support, but not when filtering organization 101.',
+            'priority' => 'urgent',
+            'linked_entity' => ['type' => 'site', 'id' => 302],
+        ], $member202);
+
+        $adminFiltered = $this->handle($app, 'GET', '/api/v1/support/tickets?roles=admin&organization_id=101', context: $support700);
+        self::assertSame(
+            [
+                (string) $normal101['body']['data']['ticket_id'],
+                (string) $urgent101['body']['data']['ticket_id'],
+            ],
+            array_column($adminFiltered['body']['data']['tickets'], 'ticket_id'),
+        );
+
+        $supportFiltered = $this->handle($app, 'GET', '/api/v1/support/tickets?roles=support&organization_id=101', context: $support700);
+        self::assertSame(
+            [(string) $urgent101['body']['data']['ticket_id']],
+            array_column($supportFiltered['body']['data']['tickets'], 'ticket_id'),
+        );
+
+        $memberOtherOrganization = $this->handle($app, 'GET', '/api/v1/support/tickets?organization_id=202', context: $member101);
+        self::assertSame([], array_column($memberOtherOrganization['body']['data']['tickets'], 'ticket_id'));
+
+        $adminOtherOrganization = $this->handle($app, 'GET', '/api/v1/support/tickets?roles=admin&organization_id=202', context: $support700);
+        self::assertSame(
+            [(string) $urgent202['body']['data']['ticket_id']],
+            array_column($adminOtherOrganization['body']['data']['tickets'], 'ticket_id'),
+        );
+    }
+
+    public function testSupportTicketListAcceptsIntegerOrganizationIdQueryParams(): void
+    {
+        $app = $this->createApp(new Task29ActionAuditRepository());
+        $member101 = new RequestUserContext(new AuthenticatedUser(501, 'member101@example.com', false), 101);
+        $admin = new RequestUserContext(new AuthenticatedUser(700, 'admin@example.com', true), null);
+
+        $created = $this->handle($app, 'POST', '/api/v1/support/tickets', [
+            'subject' => 'Organization 101 integer query filter',
+            'description' => 'Visible when Slim query params already contain an integer.',
+            'priority' => 'normal',
+            'linked_entity' => ['type' => 'campaign', 'id' => 9001],
+        ], $member101);
+
+        $filtered = $this->handle(
+            $app,
+            'GET',
+            '/api/v1/support/tickets',
+            context: $admin,
+            queryParams: ['roles' => 'admin', 'organization_id' => 101],
+        );
+
+        self::assertSame(
+            [(string) $created['body']['data']['ticket_id']],
+            array_column($filtered['body']['data']['tickets'], 'ticket_id'),
+        );
+    }
+
+    public function testSupportTicketListRejectsInvalidOrganizationIdQueryWithEnvelope(): void
+    {
+        $app = $this->createApp(new Task29ActionAuditRepository());
+        $member = new RequestUserContext(new AuthenticatedUser(501, 'member@example.com', false), 101);
+
+        foreach (
+            [
+                '/api/v1/support/tickets?organization_id[]=101',
+                '/api/v1/support/tickets?organization_id=0',
+                '/api/v1/support/tickets?organization_id=-1',
+                '/api/v1/support/tickets?organization_id=not-a-number',
+            ] as $uri
+        ) {
+            $invalid = $this->handle($app, 'GET', $uri, context: $member, requestId: 'req-support-invalid-organization');
+
+            self::assertSame(422, $invalid['status']);
+            self::assertNull($invalid['body']['data']);
+            self::assertSame('invalid_request', $invalid['body']['error']['code']);
+            self::assertStringContainsString('organization_id', $invalid['body']['error']['message']);
+            self::assertStringContainsString('positive integer', $invalid['body']['error']['message']);
+            self::assertSame('req-support-invalid-organization', $invalid['body']['request_id']);
+        }
+    }
+
     public function testSupportRoutesReturnValidationEnvelopesForInvalidCreateAndInternalNotePayloads(): void
     {
         $app = $this->createApp(new Task29ActionAuditRepository());
@@ -260,10 +362,15 @@ final class SupportFeatureFlagsActionIntegrationTest extends TestCase
         ?array $payload = null,
         ?RequestUserContext $context = null,
         string $requestId = 'req-task29-action',
+        ?array $queryParams = null,
     ): array {
         $request = (new ServerRequestFactory())
             ->createServerRequest($method, $uri)
             ->withHeader('X-Request-Id', $requestId);
+
+        if ($queryParams !== null) {
+            $request = $request->withQueryParams($queryParams);
+        }
 
         if ($payload !== null) {
             $request = $request->withParsedBody($payload);
