@@ -306,6 +306,19 @@ function metadataPlaceholderErrors(string $contents): array
         }
     }
 
+    $schemaKeys = [];
+    $schemasBlock = yamlNestedBlock(yamlNestedBlock($contents, 0, 'components') ?? '', 2, 'schemas');
+    if ($schemasBlock !== null && preg_match_all('/^\s{4}"?([A-Za-z][A-Za-z0-9_.-]*)"?:\s*$/m', $schemasBlock, $matches) !== false) {
+        foreach ($matches[1] as $schemaKey) {
+            if (in_array($schemaKey, $schemaKeys, true)) {
+                $errors[] = "OpenAPI components.schemas contain duplicate key: {$schemaKey}";
+                continue;
+            }
+
+            $schemaKeys[] = $schemaKey;
+        }
+    }
+
     return $errors;
 }
 

@@ -1382,6 +1382,57 @@ PHP);
         self::assertStringContainsString('OpenAPI paths contain duplicate key: /api/v1/health', implode(PHP_EOL, $output));
     }
 
+    public function testCheckerFailsWhenYamlContainsDuplicateComponentSchemaKeys(): void
+    {
+        $result = self::runChecker(<<<'YAML'
+openapi: 3.1.0
+paths:
+  /api/v1/health:
+    get:
+      tags:
+        - Health
+      operationId: getHealth
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  responses:
+    Error:
+      description: error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    SuccessEnvelope:
+      type: object
+    ErrorEnvelope:
+      type: object
+    DuplicateSchema:
+      type: object
+    DuplicateSchema:
+      type: object
+YAML, <<<'PHP'
+<?php
+
+$app->get('/api/v1/health', HealthAction::class);
+PHP);
+
+        self::assertSame(1, $result['exitCode'], $result['output']);
+        self::assertStringContainsString('OpenAPI components.schemas contain duplicate key: DuplicateSchema', $result['output']);
+    }
+
     /**
      * @param array<string, mixed>|null $parsedOpenApi
      * @return array{exitCode: int, output: string}

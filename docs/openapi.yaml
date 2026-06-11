@@ -4808,29 +4808,7 @@ components:
           type: string
           format: date-time
         upload:
-          type: object
-          required:
-            - url
-            - method
-            - status_code
-            - headers
-          properties:
-            url:
-              type: string
-              format: uri
-            method:
-              type: string
-              enum:
-                - PUT
-            status_code:
-              type: integer
-              enum:
-                - 201
-            headers:
-              type: object
-              additionalProperties:
-                type: string
-          additionalProperties: false
+          $ref: "#/components/schemas/PresignedUploadData"
       additionalProperties: false
     AssetConfirmRequest:
       type: object
@@ -4865,7 +4843,7 @@ components:
           type:
             - number
             - "null"
-          minimum: 0
+          exclusiveMinimum: 0
         checksum:
           type:
             - string
@@ -4925,88 +4903,16 @@ components:
           type:
             - number
             - "null"
+          exclusiveMinimum: 0
         checksum:
           type:
             - string
             - "null"
+          minLength: 1
         status:
           type: string
           enum:
             - pending_review
-      additionalProperties: false
-    AssetUploadIntentRequest:
-      type: object
-      required:
-        - type
-        - filename
-        - content_type
-        - byte_size
-      properties:
-        type:
-          type: string
-          enum:
-            - image
-            - video
-            - fabric_snapshot
-            - text
-        filename:
-          type: string
-          minLength: 1
-        content_type:
-          type: string
-          minLength: 1
-        byte_size:
-          type: integer
-          minimum: 1
-      additionalProperties: false
-    AssetUploadIntentData:
-      type: object
-      required:
-        - id
-        - organization_id
-        - uploader_user_id
-        - type
-        - object_key
-        - content_type
-        - byte_size
-        - status
-        - expires_at
-        - upload
-      properties:
-        id:
-          type: integer
-          minimum: 1
-        organization_id:
-          type: integer
-          minimum: 1
-        uploader_user_id:
-          type: integer
-          minimum: 1
-        type:
-          type: string
-          enum:
-            - image
-            - video
-            - fabric_snapshot
-            - text
-        object_key:
-          type: string
-          minLength: 1
-        content_type:
-          type: string
-          minLength: 1
-        byte_size:
-          type: integer
-          minimum: 1
-        status:
-          type: string
-          enum:
-            - pending_upload
-        expires_at:
-          type: string
-          format: date-time
-        upload:
-          $ref: "#/components/schemas/PresignedUploadData"
       additionalProperties: false
     PresignedUploadData:
       type: object
@@ -5154,115 +5060,6 @@ components:
             - object
             - "null"
           additionalProperties: true
-      additionalProperties: false
-    AssetConfirmRequest:
-      type: object
-      required:
-        - upload_intent_id
-        - object_key
-        - content_type
-        - byte_size
-        - width
-        - height
-        - magic_base64
-      properties:
-        upload_intent_id:
-          type: integer
-          minimum: 1
-        object_key:
-          type: string
-          minLength: 1
-        content_type:
-          type: string
-          minLength: 1
-        byte_size:
-          type: integer
-          minimum: 1
-        width:
-          type: integer
-          minimum: 1
-        height:
-          type: integer
-          minimum: 1
-        duration_seconds:
-          type:
-            - number
-            - "null"
-          exclusiveMinimum: 0
-        checksum:
-          type:
-            - string
-            - "null"
-          minLength: 1
-        magic_base64:
-          type: string
-          minLength: 1
-      additionalProperties: false
-    CreativeAssetData:
-      type: object
-      required:
-        - id
-        - upload_intent_id
-        - organization_id
-        - uploader_user_id
-        - type
-        - object_key
-        - content_type
-        - byte_size
-        - width
-        - height
-        - duration_seconds
-        - checksum
-        - status
-      properties:
-        id:
-          type: integer
-          minimum: 1
-        upload_intent_id:
-          type: integer
-          minimum: 1
-        organization_id:
-          type: integer
-          minimum: 1
-        uploader_user_id:
-          type: integer
-          minimum: 1
-        type:
-          type: string
-          enum:
-            - image
-            - video
-            - fabric_snapshot
-            - text
-        object_key:
-          type: string
-          minLength: 1
-        content_type:
-          type: string
-          minLength: 1
-        byte_size:
-          type: integer
-          minimum: 1
-        width:
-          type: integer
-          minimum: 1
-        height:
-          type: integer
-          minimum: 1
-        duration_seconds:
-          type:
-            - number
-            - "null"
-          exclusiveMinimum: 0
-        checksum:
-          type:
-            - string
-            - "null"
-          minLength: 1
-        status:
-          type: string
-          enum:
-            - pending_review
       additionalProperties: false
     AdServeRequest:
       type: object
