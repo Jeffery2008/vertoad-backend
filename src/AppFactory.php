@@ -439,7 +439,8 @@ final class AppFactory
                 AdEventBillingService::class => static fn (
                     CampaignBudgetService $budgets,
                     RevenueShareService $revenueShare,
-                ): AdEventBillingService => new AdEventBillingService($budgets, $revenueShare),
+                    Connection $connection,
+                ): AdEventBillingService => new AdEventBillingService($budgets, $revenueShare, $connection),
                 WithdrawalRepository::class => static fn (Connection $connection): WithdrawalRepository =>
                     new WithdrawalRepository($connection),
                 WithdrawalService::class => static fn (

@@ -105,6 +105,22 @@ final class RevenueShareTest extends TestCase
         );
     }
 
+    public function testRevenueShareServiceRejectsMissingRulesBeforeCrediting(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        BillingTask14Schema::create($connection);
+        $repository = new RevenueShareRepository($connection);
+        $service = new RevenueShareService(
+            $repository,
+            new PointsLedgerService(new PointsLedgerRepository($connection)),
+        );
+
+        $this->assertInvalidRevenueShare(
+            static fn () => $service->creditForAdEvent('evt-missing-rule', 42, 5, 10, 99, null, 100, new DateTimeImmutable('2026-06-08 11:00:00')),
+            'Revenue share rule is required for publisher earnings.',
+        );
+    }
+
     private function seedSlot(\Doctrine\DBAL\Connection $connection): void
     {
         $connection->insert('sites', [

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace VertoAD\Service\Billing;
 
+use Doctrine\DBAL\Connection;
 use VertoAD\Domain\Billing\AdEventBillingResult;
 use VertoAD\Domain\Billing\BillableAdEvent;
 use VertoAD\Domain\Serving\AdEvent;
@@ -16,10 +17,20 @@ final readonly class AdEventBillingService
     public function __construct(
         private CampaignBudgetService $budgets,
         private RevenueShareService $revenueShare,
+        private ?Connection $connection = null,
     ) {
     }
 
     public function bill(BillableAdEvent $event): AdEventBillingResult
+    {
+        if ($this->connection === null) {
+            return $this->billWithinTransaction($event);
+        }
+
+        return $this->connection->transactional(fn (): AdEventBillingResult => $this->billWithinTransaction($event));
+    }
+
+    private function billWithinTransaction(BillableAdEvent $event): AdEventBillingResult
     {
         if (!$event->valid) {
             return AdEventBillingResult::skipped('invalid_event');
@@ -27,6 +38,17 @@ final readonly class AdEventBillingService
 
         if ($event->costPoints <= 0) {
             return AdEventBillingResult::skipped('zero_cost');
+        }
+
+        $revenueShareRejection = $this->revenueShare->rejectionReasonForAdEvent(
+            eventId: $this->publisherEventId($event),
+            publisherOrganizationId: $event->publisherOrganizationId,
+            siteId: $event->siteId,
+            adSlotId: $event->slotId,
+            grossPoints: $event->costPoints,
+        );
+        if ($revenueShareRejection !== null) {
+            return AdEventBillingResult::skipped($revenueShareRejection);
         }
 
         $reservationId = $this->reservationId($event);

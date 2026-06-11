@@ -197,6 +197,65 @@ final class AdEventBillingTest extends TestCase
         self::assertSame(0, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
     }
 
+    public function testMissingRevenueShareRuleSkipsBeforeAdvertiserDebit(): void
+    {
+        $connection = $this->createConnection();
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        (new PointsLedgerService($ledgerRepository))->credit(99, 'advertiser_balance', null, 1_000, 'recharge:advertiser');
+
+        $result = $this->createService($connection)->bill($this->event('impression', 'imp-no-share-rule', 40));
+
+        self::assertFalse($result->billed);
+        self::assertSame('missing_revenue_share_rule', $result->reason);
+        self::assertSame(1_000, $ledgerRepository->balanceForOrganization(99));
+        self::assertSame(0, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+        self::assertSame(0, (int) $connection->fetchOne('SELECT COUNT(*) FROM spend_reservations'));
+    }
+
+    public function testZeroPublisherEarningSkipsBeforeAdvertiserDebit(): void
+    {
+        $connection = $this->createConnection();
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        (new PointsLedgerService($ledgerRepository))->credit(99, 'advertiser_balance', null, 1_000, 'recharge:advertiser');
+        (new RevenueShareRepository($connection))->createRule('global', null, null, null, 0, null, new DateTimeImmutable('2026-06-08 09:00:00'));
+
+        $result = $this->createService($connection)->bill($this->event('impression', 'imp-zero-share', 40));
+
+        self::assertFalse($result->billed);
+        self::assertSame('zero_publisher_earning', $result->reason);
+        self::assertSame(1_000, $ledgerRepository->balanceForOrganization(99));
+        self::assertSame(0, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+        self::assertSame(0, (int) $connection->fetchOne('SELECT COUNT(*) FROM spend_reservations'));
+    }
+
+    public function testPublisherEarningFailureRollsBackAdvertiserDebit(): void
+    {
+        $connection = $this->createConnection();
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        (new PointsLedgerService($ledgerRepository))->credit(99, 'advertiser_balance', null, 1_000, 'recharge:advertiser');
+        (new RevenueShareRepository($connection))->createRule('global', null, null, null, 5000, null, new DateTimeImmutable('2026-06-08 09:00:00'));
+        $connection->executeStatement(
+            <<<'SQL'
+CREATE TRIGGER fail_publisher_earning_insert
+BEFORE INSERT ON publisher_earning_events
+BEGIN
+    SELECT RAISE(FAIL, 'publisher earning insert failed');
+END
+SQL
+        );
+
+        try {
+            $this->createService($connection)->bill($this->event('impression', 'imp-earning-fails', 40));
+            self::fail('Expected publisher earning persistence failure.');
+        } catch (\Throwable $exception) {
+            self::assertStringContainsString('publisher earning insert failed', $exception->getMessage());
+        }
+
+        self::assertSame(1_000, $ledgerRepository->balanceForOrganization(99));
+        self::assertSame(0, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+        self::assertSame(0, (int) $connection->fetchOne("SELECT COUNT(*) FROM spend_reservations WHERE status = 'committed'"));
+    }
+
     public function testCommitRejectionPreventsPublisherCredit(): void
     {
         $connection = $this->createConnection();
@@ -249,6 +308,7 @@ final class AdEventBillingTest extends TestCase
         return new AdEventBillingService(
             new CampaignBudgetService(new CampaignBudgetRepository($connection), $ledger, $ledgerRepository),
             new RevenueShareService(new RevenueShareRepository($connection), $ledger),
+            $connection,
         );
     }
 

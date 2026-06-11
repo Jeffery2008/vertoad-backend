@@ -56,6 +56,27 @@ final class EventConsumptionJobTest extends TestCase
         );
     }
 
+    public function testMissingRevenueShareRuleSkipsAndAcksBufferedEventsWithoutChargingAdvertiser(): void
+    {
+        $connection = $this->createConnection();
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        (new PointsLedgerService($ledgerRepository))->credit(99, 'advertiser_balance', null, 1_000, 'recharge:advertiser');
+        $buffer = new InMemoryServingEventBuffer([
+            $this->event('impression', 'imp-no-share-rule', true, 40),
+        ]);
+        $job = new EventConsumptionJob($buffer, new DatabaseAdEventRepository($connection), $this->billingService($connection), 100);
+
+        $result = $job->run();
+
+        self::assertSame(1, $result->metrics['consumed'] ?? null);
+        self::assertSame(0, $result->metrics['billed'] ?? null);
+        self::assertSame(1, $result->metrics['skipped'] ?? null);
+        self::assertSame(0, $result->metrics['failed'] ?? null);
+        self::assertSame([], $buffer->pending());
+        self::assertSame(1_000, $ledgerRepository->balanceForOrganization(99));
+        self::assertSame(0, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+    }
+
     public function testRepeatingConsumptionWindowDoesNotDoubleBillAckedEvents(): void
     {
         $connection = $this->createConnection();
@@ -195,6 +216,7 @@ final class EventConsumptionJobTest extends TestCase
         return new AdEventBillingService(
             new CampaignBudgetService(new CampaignBudgetRepository($connection), $ledger, $ledgerRepository),
             new RevenueShareService(new RevenueShareRepository($connection), $ledger),
+            $connection,
         );
     }
 

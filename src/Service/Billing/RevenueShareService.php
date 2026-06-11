@@ -12,10 +12,35 @@ use VertoAD\Service\PointsLedgerService;
 
 final class RevenueShareService
 {
+    private const string MISSING_RULE = 'missing_revenue_share_rule';
+    private const string ZERO_PUBLISHER_EARNING = 'zero_publisher_earning';
+
     public function __construct(
         private readonly RevenueShareRepository $repository,
         private readonly PointsLedgerService $ledger,
     ) {
+    }
+
+    public function rejectionReasonForAdEvent(
+        string $eventId,
+        int $publisherOrganizationId,
+        int $siteId,
+        int $adSlotId,
+        int $grossPoints,
+    ): ?string {
+        $eventId = $this->normalizeEventId($eventId);
+        if ($this->repository->findEarningByEventId($eventId) !== null) {
+            return null;
+        }
+
+        $rule = $this->repository->findBestRule($publisherOrganizationId, $siteId, $adSlotId);
+        if ($rule === null) {
+            return self::MISSING_RULE;
+        }
+
+        return $this->publisherPoints($grossPoints, $rule->shareRatioBps) > 0
+            ? null
+            : self::ZERO_PUBLISHER_EARNING;
     }
 
     public function creditForAdEvent(
@@ -28,10 +53,7 @@ final class RevenueShareService
         int $grossPoints,
         DateTimeImmutable $earnedAt,
     ): PublisherEarningEvent {
-        $eventId = trim($eventId);
-        if ($eventId === '') {
-            throw new InvalidArgumentException('Ad event id is required for publisher earnings.');
-        }
+        $eventId = $this->normalizeEventId($eventId);
 
         $existing = $this->repository->findEarningByEventId($eventId);
         if ($existing !== null) {
@@ -39,8 +61,12 @@ final class RevenueShareService
         }
 
         $rule = $this->repository->findBestRule($publisherOrganizationId, $siteId, $adSlotId);
-        $ratio = $rule?->shareRatioBps ?? 0;
-        $publisherPoints = intdiv($grossPoints * $ratio, 10000);
+        if ($rule === null) {
+            throw new InvalidArgumentException('Revenue share rule is required for publisher earnings.');
+        }
+
+        $ratio = $rule->shareRatioBps;
+        $publisherPoints = $this->publisherPoints($grossPoints, $ratio);
         if ($publisherPoints <= 0) {
             throw new InvalidArgumentException('Publisher earning points must be positive.');
         }
@@ -84,5 +110,20 @@ final class RevenueShareService
             ],
             earnedAt: $earnedAt,
         );
+    }
+
+    private function normalizeEventId(string $eventId): string
+    {
+        $eventId = trim($eventId);
+        if ($eventId === '') {
+            throw new InvalidArgumentException('Ad event id is required for publisher earnings.');
+        }
+
+        return $eventId;
+    }
+
+    private function publisherPoints(int $grossPoints, int $ratio): int
+    {
+        return intdiv($grossPoints * $ratio, 10000);
     }
 }
