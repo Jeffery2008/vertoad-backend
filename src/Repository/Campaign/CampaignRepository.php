@@ -60,6 +60,27 @@ final class CampaignRepository implements CampaignRepositoryInterface
         return $this->find($campaign->organizationId, (int) $campaign->id) ?? $campaign;
     }
 
+    public function pauseIfActive(int $organizationId, int $campaignId, string $reason): bool
+    {
+        if ($organizationId <= 0 || $campaignId <= 0 || trim($reason) === '') {
+            return false;
+        }
+
+        return $this->connection->update(
+            'campaigns',
+            [
+                'status' => CampaignStatus::Paused->value,
+                'pause_reason' => trim($reason),
+                'updated_at' => (new DateTimeImmutable())->format('Y-m-d H:i:s'),
+            ],
+            [
+                'id' => $campaignId,
+                'organization_id' => $organizationId,
+                'status' => CampaignStatus::Active->value,
+            ],
+        ) === 1;
+    }
+
     private function baseQuery(): \Doctrine\DBAL\Query\QueryBuilder
     {
         return $this->connection->createQueryBuilder()
@@ -68,6 +89,7 @@ final class CampaignRepository implements CampaignRepositoryInterface
                 'c.organization_id',
                 'c.name',
                 'c.status',
+                'c.pause_reason',
                 'c.pricing_model',
                 'c.bid_points',
                 'c.landing_url',
@@ -120,6 +142,7 @@ final class CampaignRepository implements CampaignRepositoryInterface
             endsAt: $row['ends_at'] === null ? null : new DateTimeImmutable((string) $row['ends_at']),
             targeting: is_array($targeting) ? CampaignTargeting::fromArray($targeting) : new CampaignTargeting(),
             budget: $this->hydrateBudget($id, $organizationId, $row),
+            pauseReason: $row['pause_reason'] === null ? null : (string) $row['pause_reason'],
         );
     }
 

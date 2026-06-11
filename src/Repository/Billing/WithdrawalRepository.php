@@ -46,6 +46,7 @@ final class WithdrawalRepository
         int $organizationId,
         int $requestedByUserId,
         int $pointsAmount,
+        string $idempotencyKey,
         string $payoutMethod,
         array $payoutAccount,
         ?string $notes,
@@ -56,6 +57,7 @@ final class WithdrawalRepository
             'organization_id' => $organizationId,
             'requested_by_user_id' => $requestedByUserId,
             'points_amount' => $pointsAmount,
+            'idempotency_key' => $idempotencyKey,
             'status' => WithdrawalStatus::Requested->value,
             'payout_method' => $payoutMethod,
             'payout_account_json' => json_encode($payoutAccount, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
@@ -67,6 +69,25 @@ final class WithdrawalRepository
         $request = $this->findRequest((int) $this->connection->lastInsertId());
         assert($request instanceof WithdrawalRequest);
         return $request;
+    }
+
+    public function findRequestByIdempotencyKey(int $organizationId, string $idempotencyKey): ?WithdrawalRequest
+    {
+        $idempotencyKey = trim($idempotencyKey);
+        if ($organizationId <= 0 || $idempotencyKey === '') {
+            return null;
+        }
+
+        $row = $this->connection->createQueryBuilder()
+            ->select('*')
+            ->from('withdrawal_requests')
+            ->where('organization_id = :organization_id')
+            ->andWhere('idempotency_key = :idempotency_key')
+            ->setParameter('organization_id', $organizationId)
+            ->setParameter('idempotency_key', $idempotencyKey)
+            ->fetchAssociative();
+
+        return $row === false ? null : $this->hydrateRequest($row);
     }
 
     public function findRequest(int $id): ?WithdrawalRequest
@@ -95,11 +116,12 @@ final class WithdrawalRepository
         ?int $reviewerUserId,
         ?string $reviewerNotes,
         ?array $payoutAccount,
+        ?int $ledgerEntryId,
         DateTimeImmutable $now,
     ): ?WithdrawalRequest {
         $affected = $this->connection->update(
             'withdrawal_requests',
-            $this->stateFields($status, $reviewerUserId, $reviewerNotes, $payoutAccount, $now),
+            $this->stateFields($status, $reviewerUserId, $reviewerNotes, $payoutAccount, $ledgerEntryId, $now),
             ['id' => $id, 'status' => $expectedStatus->value],
         );
 
@@ -223,6 +245,7 @@ final class WithdrawalRepository
             organizationId: (int) $row['organization_id'],
             requestedByUserId: (int) $row['requested_by_user_id'],
             pointsAmount: (int) $row['points_amount'],
+            idempotencyKey: (string) $row['idempotency_key'],
             status: WithdrawalStatus::from((string) $row['status']),
             payoutMethod: (string) $row['payout_method'],
             payoutAccount: is_array($payoutAccount) ? $payoutAccount : [],
@@ -273,6 +296,7 @@ final class WithdrawalRepository
         ?int $reviewerUserId,
         ?string $reviewerNotes,
         ?array $payoutAccount,
+        ?int $ledgerEntryId,
         DateTimeImmutable $now,
     ): array {
         $fields = [
@@ -283,6 +307,10 @@ final class WithdrawalRepository
 
         if ($payoutAccount !== null) {
             $fields['payout_account_json'] = json_encode($payoutAccount, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        }
+
+        if ($ledgerEntryId !== null) {
+            $fields['ledger_entry_id'] = $ledgerEntryId;
         }
 
         match ($status) {

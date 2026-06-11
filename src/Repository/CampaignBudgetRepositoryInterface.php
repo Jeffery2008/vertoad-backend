@@ -7,22 +7,27 @@ namespace VertoAD\Repository;
 use DateTimeImmutable;
 use VertoAD\Domain\Budget\CampaignBudgetCaps;
 use VertoAD\Domain\Budget\SpendReservation;
+use VertoAD\Domain\Budget\SpendReservationTransition;
 
 interface CampaignBudgetRepositoryInterface
 {
+    public function transactional(callable $operation): mixed;
+
     public function saveCaps(CampaignBudgetCaps $caps): CampaignBudgetCaps;
 
     public function findCaps(int $organizationId, int $campaignId): ?CampaignBudgetCaps;
 
     public function findReservation(string $reservationId): ?SpendReservation;
 
+    public function lockBudgetScope(int $organizationId, int $campaignId): void;
+
     public function createReservation(SpendReservation $reservation): SpendReservation;
 
-    public function markCommitted(string $reservationId, int $ledgerEntryId, DateTimeImmutable $committedAt): ?SpendReservation;
+    public function markCommitted(string $reservationId, int $ledgerEntryId, DateTimeImmutable $committedAt): SpendReservationTransition;
 
-    public function markReleased(string $reservationId, DateTimeImmutable $releasedAt): ?SpendReservation;
+    public function markReleased(string $reservationId, DateTimeImmutable $releasedAt): SpendReservationTransition;
 
-    public function markExpired(string $reservationId, DateTimeImmutable $expiredAt): ?SpendReservation;
+    public function markExpired(string $reservationId, DateTimeImmutable $expiredAt): SpendReservationTransition;
 
     public function activeReservedSpendForCampaign(int $organizationId, int $campaignId, DateTimeImmutable $at): int;
 

@@ -273,7 +273,8 @@ final class AppFactory
                     CampaignBudgetRepositoryInterface $budgets,
                     PointsLedgerService $ledger,
                     PointsLedgerRepositoryInterface $ledgerRepository,
-                ): CampaignBudgetService => new CampaignBudgetService($budgets, $ledger, $ledgerRepository),
+                    CampaignRepositoryInterface $campaigns,
+                ): CampaignBudgetService => new CampaignBudgetService($budgets, $ledger, $ledgerRepository, $campaigns),
                 CampaignSpendEligibilityInterface::class => static fn (CampaignBudgetService $budgets): CampaignSpendEligibilityInterface =>
                     $budgets,
                 CampaignService::class => static fn (

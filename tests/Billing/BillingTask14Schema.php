@@ -31,6 +31,17 @@ SQL
         );
         $connection->executeStatement(
             <<<'SQL'
+CREATE TABLE ledger_account_balances (
+    organization_id INTEGER NOT NULL,
+    account_type VARCHAR(64) NOT NULL,
+    balance_points INTEGER NOT NULL DEFAULT 0,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (organization_id, account_type)
+)
+SQL
+        );
+        $connection->executeStatement(
+            <<<'SQL'
 CREATE TABLE sites (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     organization_id INTEGER NOT NULL,
@@ -112,6 +123,7 @@ CREATE TABLE withdrawal_requests (
     organization_id INTEGER NOT NULL,
     requested_by_user_id INTEGER NOT NULL,
     points_amount INTEGER NOT NULL,
+    idempotency_key VARCHAR(160) NOT NULL,
     status VARCHAR(32) NOT NULL,
     payout_method VARCHAR(64) NOT NULL,
     payout_account_json TEXT NOT NULL,
@@ -125,6 +137,7 @@ CREATE TABLE withdrawal_requests (
     rejected_at DATETIME NULL,
     revoked_at DATETIME NULL,
     resubmitted_at DATETIME NULL,
+    UNIQUE (organization_id, idempotency_key),
     UNIQUE (ledger_entry_id),
     FOREIGN KEY (ledger_entry_id) REFERENCES ledger_entries (id) ON DELETE RESTRICT,
     CHECK (points_amount > 0),

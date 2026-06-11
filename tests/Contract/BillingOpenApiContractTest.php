@@ -142,8 +142,20 @@ final class BillingOpenApiContractTest extends TestCase
     public function testPublisherWithdrawalResubmitContractIsDocumented(): void
     {
         $openApi = (string) file_get_contents(dirname(__DIR__, 2) . '/docs/openapi.yaml');
+        $createSchema = $this->block($openApi, '    WithdrawalRequestCreate:', '    WithdrawalTransitionRequest:');
         $resubmitPath = $this->block($openApi, '  /api/v1/billing/withdrawals/{withdrawal_id}/resubmit:', '  /api/v1/billing/withdrawals/{withdrawal_id}/proofs:');
         $resubmitSchema = $this->block($openApi, '    WithdrawalResubmitRequest:', '    WithdrawalRequestData:');
+        $responseSchema = $this->block($openApi, '    WithdrawalRequestData:', '    WithdrawalProofIntentData:');
+
+        foreach ([
+            'required:',
+            '- idempotency_key',
+            'idempotency_key:',
+            'maxLength: 160',
+        ] as $fragment) {
+            self::assertStringContainsString($fragment, $createSchema);
+            self::assertStringContainsString($fragment, $responseSchema);
+        }
 
         foreach ([
             'operationId: resubmitPublisherWithdrawal',

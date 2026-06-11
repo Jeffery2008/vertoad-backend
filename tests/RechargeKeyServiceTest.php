@@ -807,6 +807,13 @@ final class FakeRechargeLedgerRepository implements PointsLedgerRepositoryInterf
         return $stored;
     }
 
+    public function tryDebit(PointsLedgerEntry $entry): ?PointsLedgerEntry
+    {
+        return $this->balanceForOrganization($entry->organizationId, $entry->accountType) < $entry->pointsAmount
+            ? null
+            : $this->append($entry);
+    }
+
     public function findById(int $id): ?PointsLedgerEntry
     {
         foreach ($this->entries as $entry) {

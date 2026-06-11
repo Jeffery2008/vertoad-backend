@@ -16,4 +16,6 @@ interface CampaignRepositoryInterface
     public function create(Campaign $campaign): Campaign;
 
     public function update(Campaign $campaign): Campaign;
+
+    public function pauseIfActive(int $organizationId, int $campaignId, string $reason): bool;
 }

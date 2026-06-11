@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VertoAD\Service;
 
 use InvalidArgumentException;
+use VertoAD\Domain\Ledger\InsufficientLedgerBalanceException;
 use VertoAD\Domain\Ledger\LedgerDirection;
 use VertoAD\Domain\Ledger\PointsLedgerEntry;
 use VertoAD\Repository\PointsLedgerRepositoryInterface;
@@ -164,32 +165,39 @@ final class PointsLedgerService
             throw new InvalidArgumentException('Ledger idempotency key is required.');
         }
 
-        $existing = $this->repository->findByIdempotencyKey($idempotencyKey);
-        if ($existing !== null) {
-            return $existing;
-        }
-
         $accountType = $this->normalizeAccountType($accountType);
-        $previousBalance = $this->repository->balanceForOrganization($organizationId, $accountType);
-        $balanceAfterPoints = match ($direction) {
-            LedgerDirection::Credit => $previousBalance + $pointsAmount,
-            LedgerDirection::Debit => $previousBalance - $pointsAmount,
-        };
-
-        return $this->repository->append(new PointsLedgerEntry(
+        $entry = new PointsLedgerEntry(
             id: null,
             organizationId: $organizationId,
             accountType: $accountType,
             accountId: $accountId,
             pointsAmount: $pointsAmount,
             direction: $direction,
-            balanceAfterPoints: $balanceAfterPoints,
+            balanceAfterPoints: null,
             referenceType: $this->normalizeNullableText($referenceType),
             referenceId: $referenceId,
             idempotencyKey: $idempotencyKey,
             memo: $this->normalizeNullableText($memo),
             metadata: $this->normalizeMetadata($metadata),
-        ));
+        );
+
+        $existing = $this->repository->findByIdempotencyKey($idempotencyKey);
+        if ($existing !== null) {
+            $this->assertSameIdempotentEntry($existing, $entry);
+
+            return $existing;
+        }
+
+        if ($direction === LedgerDirection::Debit) {
+            $stored = $this->repository->tryDebit($entry);
+            if ($stored === null) {
+                throw new InsufficientLedgerBalanceException();
+            }
+
+            return $stored;
+        }
+
+        return $this->repository->append($entry);
     }
 
     private function normalizeAccountType(string $accountType): string
@@ -246,5 +254,20 @@ final class PointsLedgerService
         }
 
         return $metadata;
+    }
+
+    private function assertSameIdempotentEntry(PointsLedgerEntry $existing, PointsLedgerEntry $requested): void
+    {
+        if (
+            $existing->organizationId !== $requested->organizationId
+            || $existing->accountType !== $requested->accountType
+            || $existing->accountId !== $requested->accountId
+            || $existing->pointsAmount !== $requested->pointsAmount
+            || $existing->direction !== $requested->direction
+            || $existing->referenceType !== $requested->referenceType
+            || $existing->referenceId !== $requested->referenceId
+        ) {
+            throw new InvalidArgumentException('Ledger idempotency key conflicts with an existing entry.');
+        }
     }
 }

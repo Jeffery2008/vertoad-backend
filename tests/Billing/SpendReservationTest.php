@@ -7,13 +7,18 @@ namespace VertoAD\Tests\Billing;
 use DateTimeImmutable;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\DriverManager;
+use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
+use Doctrine\DBAL\Platforms\MySQL80Platform;
+use Doctrine\DBAL\Schema\AbstractSchemaManager;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 use VertoAD\Domain\Budget\CampaignBudgetCaps;
 use VertoAD\Domain\Budget\SpendFailureReason;
 use VertoAD\Domain\Budget\SpendReservation;
 use VertoAD\Domain\Budget\SpendReservationStatus;
+use VertoAD\Domain\Budget\SpendReservationTransition;
 use VertoAD\Repository\CampaignBudgetRepository;
+use VertoAD\Repository\CampaignBudgetRepositoryInterface;
 use VertoAD\Repository\PointsLedgerRepository;
 use VertoAD\Service\CampaignBudgetService;
 use VertoAD\Service\PointsLedgerService;
@@ -204,6 +209,367 @@ final class SpendReservationTest extends TestCase
         self::assertSame(SpendFailureReason::DuplicateState, $earlyExpire->failureReason);
     }
 
+    public function testReservationLifecyclePersistenceUsesReservedStateCas(): void
+    {
+        $connection = $this->createConnection();
+        $budgetRepository = new CampaignBudgetRepository($connection);
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        $ledger = new PointsLedgerService($ledgerRepository);
+        $service = new CampaignBudgetService($budgetRepository, $ledger, $ledgerRepository);
+
+        $ledger->credit(10, 'advertiser_balance', null, 1_000, 'recharge:reservation-cas');
+        self::assertTrue($service->reserve(10, 20, 'spend:cas', 100, new DateTimeImmutable('2026-06-07 12:00:00'), 60)->accepted);
+        $released = $budgetRepository->markReleased('spend:cas', new DateTimeImmutable('2026-06-07 12:00:01'));
+        self::assertTrue($released->changed);
+        self::assertSame(SpendReservationStatus::Released, $released->reservation?->status);
+
+        $committedAfterRelease = $budgetRepository->markCommitted('spend:cas', 1, new DateTimeImmutable('2026-06-07 12:00:02'));
+        $expiredAfterRelease = $budgetRepository->markExpired('spend:cas', new DateTimeImmutable('2026-06-07 12:01:01'));
+
+        self::assertFalse($committedAfterRelease->changed);
+        self::assertSame(SpendReservationStatus::Released, $committedAfterRelease->reservation?->status);
+        self::assertNull($committedAfterRelease->reservation?->ledgerEntryId);
+        self::assertFalse($expiredAfterRelease->changed);
+        self::assertSame(SpendReservationStatus::Released, $expiredAfterRelease->reservation?->status);
+        self::assertNull($expiredAfterRelease->reservation?->expiredAt);
+    }
+
+    public function testTerminalBudgetExhaustionPausesActiveCampaigns(): void
+    {
+        $connection = $this->createConnection(withCampaigns: true);
+        $budgetRepository = new CampaignBudgetRepository($connection);
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        $ledger = new PointsLedgerService($ledgerRepository);
+        $service = new CampaignBudgetService(
+            $budgetRepository,
+            $ledger,
+            $ledgerRepository,
+            new \VertoAD\Repository\Campaign\CampaignRepository($connection),
+        );
+
+        $this->insertCampaign($connection, 10, 20);
+        $ledger->credit(10, 'advertiser_balance', null, 300, 'recharge:auto-pause-total-cap');
+        $budgetRepository->saveCaps(new CampaignBudgetCaps(20, 10, 300, null, null));
+
+        self::assertTrue($service->reserve(10, 20, 'spend:auto-pause-total-cap', 300, new DateTimeImmutable('2026-06-07 12:00:00'), 60)->accepted);
+        self::assertTrue($service->commit('spend:auto-pause-total-cap', new DateTimeImmutable('2026-06-07 12:00:01'))->accepted);
+
+        self::assertSame('paused', $connection->fetchOne('SELECT status FROM campaigns WHERE id = 20'));
+        self::assertSame('total_cap_exhausted', $connection->fetchOne('SELECT pause_reason FROM campaigns WHERE id = 20'));
+    }
+
+    public function testInsufficientBalanceRejectionPausesActiveCampaigns(): void
+    {
+        $connection = $this->createConnection(withCampaigns: true);
+        $budgetRepository = new CampaignBudgetRepository($connection);
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        $ledger = new PointsLedgerService($ledgerRepository);
+        $service = new CampaignBudgetService(
+            $budgetRepository,
+            $ledger,
+            $ledgerRepository,
+            new \VertoAD\Repository\Campaign\CampaignRepository($connection),
+        );
+
+        $this->insertCampaign($connection, 10, 20);
+        $ledger->credit(10, 'advertiser_balance', null, 50, 'recharge:auto-pause-insufficient-balance');
+        $budgetRepository->saveCaps(new CampaignBudgetCaps(20, 10, null, null, null));
+
+        $rejected = $service->reserve(10, 20, 'spend:auto-pause-insufficient-balance', 100, new DateTimeImmutable('2026-06-07 12:00:00'), 60);
+
+        self::assertFalse($rejected->accepted);
+        self::assertSame(SpendFailureReason::InsufficientBalance, $rejected->failureReason);
+        self::assertSame('paused', $connection->fetchOne('SELECT status FROM campaigns WHERE id = 20'));
+        self::assertSame('insufficient_balance', $connection->fetchOne('SELECT pause_reason FROM campaigns WHERE id = 20'));
+    }
+
+    public function testDryRunBudgetRejectionPausesActiveCampaignsForCapsAndBalanceFailures(): void
+    {
+        $connection = $this->createConnection(withCampaigns: true);
+        $budgetRepository = new CampaignBudgetRepository($connection);
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        $ledger = new PointsLedgerService($ledgerRepository);
+        $service = new CampaignBudgetService(
+            $budgetRepository,
+            $ledger,
+            $ledgerRepository,
+            new \VertoAD\Repository\Campaign\CampaignRepository($connection),
+        );
+
+        $ledger->credit(10, 'advertiser_balance', null, 10_000, 'recharge:dry-run-auto-pause');
+        $cases = [
+            [21, new CampaignBudgetCaps(21, 10, null, null, 50), 51, SpendFailureReason::HourlyCap, 'hourly_cap'],
+            [22, new CampaignBudgetCaps(22, 10, null, 50, null), 51, SpendFailureReason::DailyCap, 'daily_cap'],
+            [23, new CampaignBudgetCaps(23, 10, 50, null, null), 51, SpendFailureReason::TotalCap, 'total_cap'],
+        ];
+
+        foreach ($cases as [$campaignId, $caps, $pointsAmount, $expectedReason, $expectedPauseReason]) {
+            $this->insertCampaign($connection, 10, $campaignId);
+            $budgetRepository->saveCaps($caps);
+
+            self::assertSame(
+                $expectedReason,
+                $service->rejectionReason(10, $campaignId, $pointsAmount, new DateTimeImmutable('2026-06-07 12:00:00')),
+            );
+            self::assertSame('paused', $connection->fetchOne('SELECT status FROM campaigns WHERE id = ?', [$campaignId]));
+            self::assertSame($expectedPauseReason, $connection->fetchOne('SELECT pause_reason FROM campaigns WHERE id = ?', [$campaignId]));
+        }
+
+        $this->insertCampaign($connection, 11, 24);
+        self::assertSame(
+            SpendFailureReason::InsufficientBalance,
+            $service->rejectionReason(11, 24, 1, new DateTimeImmutable('2026-06-07 12:00:00')),
+        );
+        self::assertSame('paused', $connection->fetchOne('SELECT status FROM campaigns WHERE id = 24'));
+        self::assertSame('insufficient_balance', $connection->fetchOne('SELECT pause_reason FROM campaigns WHERE id = 24'));
+    }
+
+    public function testServingBudgetPrecheckPausesCampaignWhenAdvertiserBalanceIsInsufficient(): void
+    {
+        $connection = $this->createConnection(withCampaigns: true);
+        $budgetRepository = new CampaignBudgetRepository($connection);
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        $ledger = new PointsLedgerService($ledgerRepository);
+        $budgetService = new CampaignBudgetService(
+            $budgetRepository,
+            $ledger,
+            $ledgerRepository,
+            new \VertoAD\Repository\Campaign\CampaignRepository($connection),
+        );
+
+        $this->insertCampaign($connection, 10, 20);
+        $ledger->credit(10, 'advertiser_balance', null, 50, 'recharge:serving-budget-precheck');
+
+        $serving = new \VertoAD\Service\Serving\AdServingService(
+            new \VertoAD\Repository\Serving\StaticServingInventoryRepository([[1, 2]]),
+            new \VertoAD\Repository\Serving\StaticAdCandidateRepository([
+                new \VertoAD\Domain\Serving\AdCandidate(
+                    adId: 'ad-budget-rejected',
+                    campaignId: 20,
+                    advertiserOrganizationId: 10,
+                    creativeHtml: '<strong>VertoAD</strong>',
+                    landingUrl: 'https://advertiser.example/landing',
+                    width: 300,
+                    height: 250,
+                    impressionCostPoints: 100,
+                    clickCostPoints: 100,
+                ),
+            ]),
+            new \VertoAD\Repository\Serving\InMemoryAdDecisionRepository(),
+            new \VertoAD\Repository\Serving\InMemoryAdEventRepository(),
+            $budgetService,
+        );
+
+        $decision = $serving->serve(1, 2, 'viewer-budget-precheck', null, false, new DateTimeImmutable('2026-06-07 12:00:00'));
+
+        self::assertFalse($decision->filled);
+        self::assertSame('budget_insufficient_balance', $decision->reason);
+        self::assertSame('paused', $connection->fetchOne('SELECT status FROM campaigns WHERE id = 20'));
+        self::assertSame('insufficient_balance', $connection->fetchOne('SELECT pause_reason FROM campaigns WHERE id = 20'));
+    }
+
+    public function testCommitPausesActiveCampaignWhenAdvertiserBalanceIsExactlyExhausted(): void
+    {
+        $connection = $this->createConnection(withCampaigns: true);
+        $budgetRepository = new CampaignBudgetRepository($connection);
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        $ledger = new PointsLedgerService($ledgerRepository);
+        $service = new CampaignBudgetService(
+            $budgetRepository,
+            $ledger,
+            $ledgerRepository,
+            new \VertoAD\Repository\Campaign\CampaignRepository($connection),
+        );
+
+        $this->insertCampaign($connection, 10, 20);
+        $ledger->credit(10, 'advertiser_balance', null, 100, 'recharge:auto-pause-balance-exhausted');
+        $budgetRepository->saveCaps(new CampaignBudgetCaps(20, 10, null, null, null));
+
+        self::assertTrue($service->reserve(10, 20, 'spend:auto-pause-balance-exhausted', 100, new DateTimeImmutable('2026-06-07 12:00:00'), 60)->accepted);
+        self::assertTrue($service->commit('spend:auto-pause-balance-exhausted', new DateTimeImmutable('2026-06-07 12:00:01'))->accepted);
+
+        self::assertSame('paused', $connection->fetchOne('SELECT status FROM campaigns WHERE id = 20'));
+        self::assertSame('balance_exhausted', $connection->fetchOne('SELECT pause_reason FROM campaigns WHERE id = 20'));
+    }
+
+    public function testCommitCasFailureRollsBackAdvertiserDebit(): void
+    {
+        $connection = $this->createConnection();
+        $innerBudgetRepository = new CampaignBudgetRepository($connection);
+        $budgetRepository = new class($innerBudgetRepository, $connection) implements CampaignBudgetRepositoryInterface {
+            public function __construct(
+                private readonly CampaignBudgetRepository $inner,
+                private readonly Connection $connection,
+            ) {
+            }
+
+            public function transactional(callable $operation): mixed
+            {
+                return $this->inner->transactional($operation);
+            }
+
+            public function saveCaps(CampaignBudgetCaps $caps): CampaignBudgetCaps
+            {
+                return $this->inner->saveCaps($caps);
+            }
+
+            public function findCaps(int $organizationId, int $campaignId): ?CampaignBudgetCaps
+            {
+                return $this->inner->findCaps($organizationId, $campaignId);
+            }
+
+            public function findReservation(string $reservationId): ?SpendReservation
+            {
+                return $this->inner->findReservation($reservationId);
+            }
+
+            public function lockBudgetScope(int $organizationId, int $campaignId): void
+            {
+                $this->inner->lockBudgetScope($organizationId, $campaignId);
+            }
+
+            public function createReservation(SpendReservation $reservation): SpendReservation
+            {
+                return $this->inner->createReservation($reservation);
+            }
+
+            public function markCommitted(string $reservationId, int $ledgerEntryId, DateTimeImmutable $committedAt): SpendReservationTransition
+            {
+                $this->connection->update(
+                    'spend_reservations',
+                    ['status' => SpendReservationStatus::Released->value, 'released_at' => $committedAt->format('Y-m-d H:i:s')],
+                    ['reservation_id' => trim($reservationId), 'status' => SpendReservationStatus::Reserved->value],
+                );
+
+                return $this->inner->markCommitted($reservationId, $ledgerEntryId, $committedAt);
+            }
+
+            public function markReleased(string $reservationId, DateTimeImmutable $releasedAt): SpendReservationTransition
+            {
+                return $this->inner->markReleased($reservationId, $releasedAt);
+            }
+
+            public function markExpired(string $reservationId, DateTimeImmutable $expiredAt): SpendReservationTransition
+            {
+                return $this->inner->markExpired($reservationId, $expiredAt);
+            }
+
+            public function activeReservedSpendForCampaign(int $organizationId, int $campaignId, DateTimeImmutable $at): int
+            {
+                return $this->inner->activeReservedSpendForCampaign($organizationId, $campaignId, $at);
+            }
+
+            public function committedSpendForCampaign(int $organizationId, int $campaignId): int
+            {
+                return $this->inner->committedSpendForCampaign($organizationId, $campaignId);
+            }
+
+            public function activeReservedSpendForCampaignWindow(
+                int $organizationId,
+                int $campaignId,
+                DateTimeImmutable $windowStart,
+                DateTimeImmutable $windowEnd,
+                DateTimeImmutable $at,
+            ): int {
+                return $this->inner->activeReservedSpendForCampaignWindow($organizationId, $campaignId, $windowStart, $windowEnd, $at);
+            }
+
+            public function committedSpendForCampaignWindow(
+                int $organizationId,
+                int $campaignId,
+                DateTimeImmutable $windowStart,
+                DateTimeImmutable $windowEnd,
+            ): int {
+                return $this->inner->committedSpendForCampaignWindow($organizationId, $campaignId, $windowStart, $windowEnd);
+            }
+
+            public function activeReservedSpendForOrganization(int $organizationId, DateTimeImmutable $at): int
+            {
+                return $this->inner->activeReservedSpendForOrganization($organizationId, $at);
+            }
+        };
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        $ledger = new PointsLedgerService($ledgerRepository);
+        $service = new CampaignBudgetService($budgetRepository, $ledger, $ledgerRepository);
+
+        $ledger->credit(10, 'advertiser_balance', null, 1_000, 'recharge:cas-rollback');
+        self::assertTrue($service->reserve(10, 20, 'spend:cas-rollback', 100, new DateTimeImmutable('2026-06-07 12:00:00'), 60)->accepted);
+
+        $committed = $service->commit('spend:cas-rollback', new DateTimeImmutable('2026-06-07 12:00:01'));
+
+        self::assertFalse($committed->accepted);
+        self::assertSame(SpendFailureReason::DuplicateState, $committed->failureReason);
+        self::assertSame(SpendReservationStatus::Reserved->value, $connection->fetchOne("SELECT status FROM spend_reservations WHERE reservation_id = 'spend:cas-rollback'"));
+        self::assertSame(1_000, $ledgerRepository->balanceForOrganization(10));
+        self::assertSame(0, (int) $connection->fetchOne("SELECT COUNT(*) FROM ledger_entries WHERE idempotency_key = 'spend_reservation:spend:cas-rollback:commit'"));
+    }
+
+    public function testCreateReservationReturnsExistingRowAfterConcurrentDuplicateInsert(): void
+    {
+        $connection = $this->createConnection();
+        $repository = new CampaignBudgetRepository($connection);
+        $reservation = new SpendReservation(
+            id: null,
+            reservationId: 'spend:duplicate-create',
+            organizationId: 10,
+            campaignId: 20,
+            pointsAmount: 100,
+            status: SpendReservationStatus::Reserved,
+            reservedAt: new DateTimeImmutable('2026-06-07 12:00:00'),
+            expiresAt: new DateTimeImmutable('2026-06-07 12:01:00'),
+            committedAt: null,
+            releasedAt: null,
+            expiredAt: null,
+            ledgerEntryId: null,
+        );
+
+        $created = $repository->createReservation($reservation);
+        $duplicate = $repository->createReservation($reservation);
+
+        self::assertSame($created->id, $duplicate->id);
+        self::assertSame('spend:duplicate-create', $duplicate->reservationId);
+        self::assertSame(1, (int) $connection->fetchOne("SELECT COUNT(*) FROM spend_reservations WHERE reservation_id = 'spend:duplicate-create'"));
+    }
+
+    public function testMysqlBudgetScopeLockUsesUpsertsAndForUpdateLocks(): void
+    {
+        $schemaManager = $this->createStub(AbstractSchemaManager::class);
+        $schemaManager->method('tablesExist')->willReturn(true);
+        $connection = $this->getMockBuilder(Connection::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['createSchemaManager', 'getDatabasePlatform', 'fetchOne', 'executeStatement'])
+            ->getMock();
+        $connection->method('createSchemaManager')->willReturn($schemaManager);
+        $connection->method('getDatabasePlatform')->willReturn(new MySQL80Platform());
+        $connection->expects(self::exactly(4))
+            ->method('fetchOne')
+            ->willReturnOnConsecutiveCalls(false, false, 10, 20);
+        $connection->expects(self::exactly(2))
+            ->method('executeStatement')
+            ->with(
+                self::callback(static fn (string $sql): bool => str_contains($sql, 'ON DUPLICATE KEY UPDATE')),
+                self::isArray(),
+            )
+            ->willReturn(1);
+
+        (new CampaignBudgetRepository($connection))->lockBudgetScope(10, 20);
+    }
+
+    public function testBudgetLockTableDetectionFallsBackWhenSchemaInspectionFails(): void
+    {
+        $schemaManager = $this->createStub(AbstractSchemaManager::class);
+        $schemaManager->method('tablesExist')->willThrowException(new \RuntimeException('schema unavailable'));
+        $connection = $this->getMockBuilder(Connection::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['createSchemaManager', 'fetchOne', 'executeStatement'])
+            ->getMock();
+        $connection->method('createSchemaManager')->willReturn($schemaManager);
+        $connection->expects(self::never())->method('fetchOne');
+        $connection->expects(self::never())->method('executeStatement');
+
+        (new CampaignBudgetRepository($connection))->lockBudgetScope(10, 20);
+    }
+
     public function testReserveRejectsInsufficientAdvertiserBalanceAfterOpenReservations(): void
     {
         $connection = $this->createConnection();
@@ -223,9 +589,42 @@ final class SpendReservationTest extends TestCase
         self::assertSame(SpendFailureReason::InsufficientBalance, $rejected->failureReason);
     }
 
-    private function createConnection(): Connection
+    private function createConnection(bool $withCampaigns = false): Connection
     {
         $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        if ($withCampaigns) {
+            $connection->executeStatement(
+                <<<'SQL'
+CREATE TABLE campaigns (
+    id INTEGER PRIMARY KEY,
+    organization_id INTEGER NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    pause_reason VARCHAR(160) NULL,
+    pricing_model VARCHAR(16) NOT NULL,
+    bid_points INTEGER NOT NULL,
+    landing_url VARCHAR(1024) NOT NULL,
+    creative_asset_id INTEGER NOT NULL,
+    starts_at DATETIME NULL,
+    ends_at DATETIME NULL,
+    targeting_json TEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+SQL
+            );
+        }
+        $connection->executeStatement(
+            <<<'SQL'
+CREATE TABLE ledger_account_balances (
+    organization_id INTEGER NOT NULL,
+    account_type VARCHAR(64) NOT NULL,
+    balance_points INTEGER NOT NULL DEFAULT 0,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (organization_id, account_type)
+)
+SQL
+        );
         $connection->executeStatement(
             <<<'SQL'
 CREATE TABLE ledger_entries (
@@ -242,6 +641,24 @@ CREATE TABLE ledger_entries (
     memo VARCHAR(255) NULL,
     metadata_json TEXT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+SQL
+        );
+        $connection->executeStatement(
+            <<<'SQL'
+CREATE TABLE organization_budget_locks (
+    organization_id INTEGER PRIMARY KEY,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+SQL
+        );
+        $connection->executeStatement(
+            <<<'SQL'
+CREATE TABLE campaign_budget_locks (
+    organization_id INTEGER NOT NULL,
+    campaign_id INTEGER NOT NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (organization_id, campaign_id)
 )
 SQL
         );
@@ -277,6 +694,23 @@ SQL
         );
 
         return $connection;
+    }
+
+    private function insertCampaign(Connection $connection, int $organizationId, int $campaignId): void
+    {
+        $connection->insert('campaigns', [
+            'id' => $campaignId,
+            'organization_id' => $organizationId,
+            'name' => 'Budgeted campaign',
+            'status' => 'active',
+            'pricing_model' => 'cpc',
+            'bid_points' => 100,
+            'landing_url' => 'https://landing.example',
+            'creative_asset_id' => 1,
+            'starts_at' => null,
+            'ends_at' => null,
+            'targeting_json' => '{"devices":[],"geos":[],"site_ids":[],"slot_ids":[],"time_windows":[]}',
+        ]);
     }
 
     /**

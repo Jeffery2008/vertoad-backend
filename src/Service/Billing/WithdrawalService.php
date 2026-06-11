@@ -9,12 +9,16 @@ use InvalidArgumentException;
 use RuntimeException;
 use VertoAD\Domain\Billing\WithdrawalRequest;
 use VertoAD\Domain\Billing\WithdrawalStatus;
+use VertoAD\Domain\Ledger\LedgerDirection;
+use VertoAD\Domain\Ledger\PointsLedgerEntry;
 use VertoAD\Repository\Billing\WithdrawalRepository;
 use VertoAD\Repository\PointsLedgerRepositoryInterface;
 use VertoAD\Service\PointsLedgerService;
 
 final class WithdrawalService
 {
+    private const int IDEMPOTENCY_KEY_MAX_LENGTH = 160;
+
     public function __construct(
         private readonly WithdrawalRepository $repository,
         private readonly PointsLedgerService $ledger,
@@ -32,8 +36,12 @@ final class WithdrawalService
         string $payoutMethod,
         array $payoutAccount,
         ?string $notes,
+        string $idempotencyKey,
         DateTimeImmutable $now,
     ): WithdrawalRequest {
+        $payoutMethod = trim($payoutMethod);
+        $notes = $this->normalizeText($notes);
+        $idempotencyKey = $this->normalizeIdempotencyKey($idempotencyKey);
         $this->validateRequest($organizationId, $requestedByUserId, $pointsAmount, $payoutMethod);
 
         return $this->repository->transactional(function () use (
@@ -43,32 +51,42 @@ final class WithdrawalService
             $payoutMethod,
             $payoutAccount,
             $notes,
+            $idempotencyKey,
             $now,
         ): WithdrawalRequest {
             $this->repository->lockOrganizationForUpdate($organizationId);
-            if ($this->ledgerRepository->balanceForOrganization($organizationId, 'publisher_earnings') < $pointsAmount) {
-                throw new RuntimeException('insufficient_publisher_earnings');
+            $existing = $this->repository->findRequestByIdempotencyKey($organizationId, $idempotencyKey);
+            if ($existing !== null) {
+                $this->assertSameIdempotentRequest(
+                    $existing,
+                    $requestedByUserId,
+                    $pointsAmount,
+                    $payoutMethod,
+                    $payoutAccount,
+                    $notes,
+                );
+
+                return $existing;
             }
 
-            $ledgerEntry = $this->ledger->debit(
+            $ledgerEntry = $this->holdPublisherEarnings(
                 organizationId: $organizationId,
-                accountType: 'publisher_earnings',
-                accountId: null,
                 pointsAmount: $pointsAmount,
-                idempotencyKey: 'withdrawal-request:' . $organizationId . ':' . $requestedByUserId . ':' . $now->format('U.u'),
+                idempotencyKey: $this->ledgerIdempotencyKey('withdrawal-request', $organizationId, $idempotencyKey),
                 referenceType: 'withdrawal_request',
                 referenceId: null,
                 memo: 'Publisher withdrawal hold',
-                metadata: ['requested_by_user_id' => $requestedByUserId],
+                metadata: ['idempotency_key' => $idempotencyKey, 'requested_by_user_id' => $requestedByUserId],
             );
 
             $request = $this->repository->createRequest(
                 organizationId: $organizationId,
                 requestedByUserId: $requestedByUserId,
                 pointsAmount: $pointsAmount,
-                payoutMethod: trim($payoutMethod),
+                idempotencyKey: $idempotencyKey,
+                payoutMethod: $payoutMethod,
                 payoutAccount: $payoutAccount,
-                notes: $this->normalizeText($notes),
+                notes: $notes,
                 ledgerEntryId: $ledgerEntry->id,
                 now: $now,
             );
@@ -143,16 +161,15 @@ final class WithdrawalService
             }
 
             $this->repository->lockOrganizationForUpdate($request->organizationId);
-            if ($this->ledgerRepository->balanceForOrganization($request->organizationId, 'publisher_earnings') < $request->pointsAmount) {
-                throw new RuntimeException('insufficient_publisher_earnings');
-            }
-
-            $this->ledger->debit(
+            $ledgerEntry = $this->holdPublisherEarnings(
                 organizationId: $request->organizationId,
-                accountType: 'publisher_earnings',
-                accountId: null,
                 pointsAmount: $request->pointsAmount,
-                idempotencyKey: 'withdrawal-resubmit:' . $withdrawalRequestId . ':' . $now->format('U.u'),
+                idempotencyKey: $this->ledgerIdempotencyKey(
+                    'withdrawal-resubmit',
+                    $request->organizationId,
+                    (string) $withdrawalRequestId,
+                    $request->revokedAt?->format('U.u') ?? 'revoked',
+                ),
                 referenceType: 'withdrawal_request',
                 referenceId: $withdrawalRequestId,
                 memo: 'Publisher withdrawal resubmitted hold',
@@ -166,13 +183,17 @@ final class WithdrawalService
                 reviewerUserId: null,
                 reviewerNotes: $this->normalizeText($notes),
                 payoutAccount: $payoutAccount,
+                ledgerEntryId: (int) $ledgerEntry->id,
                 now: $now,
             );
             if ($updated === null) {
                 throw new RuntimeException('withdrawal_transition_not_allowed');
             }
 
-            $this->audit($updated, $actorUserId, 'resubmitted', $request->status, WithdrawalStatus::Requested, $notes, null, $now);
+            $this->audit($updated, $actorUserId, 'resubmitted', $request->status, WithdrawalStatus::Requested, $notes, [
+                'previous_ledger_entry_id' => $request->ledgerEntryId,
+                'ledger_entry_id' => $ledgerEntry->id,
+            ], $now);
 
             return $updated;
         });
@@ -218,6 +239,7 @@ final class WithdrawalService
                 reviewerUserId: $reviewerUserId,
                 reviewerNotes: $this->normalizeText($notes),
                 payoutAccount: null,
+                ledgerEntryId: null,
                 now: $now,
             );
 
@@ -239,11 +261,86 @@ final class WithdrawalService
         });
     }
 
+    /**
+     * @param array<string, mixed> $metadata
+     */
+    private function holdPublisherEarnings(
+        int $organizationId,
+        int $pointsAmount,
+        string $idempotencyKey,
+        ?string $referenceType,
+        ?int $referenceId,
+        string $memo,
+        array $metadata,
+    ): PointsLedgerEntry {
+        $entry = $this->ledgerRepository->tryDebit(new PointsLedgerEntry(
+            id: null,
+            organizationId: $organizationId,
+            accountType: 'publisher_earnings',
+            accountId: null,
+            pointsAmount: $pointsAmount,
+            direction: LedgerDirection::Debit,
+            balanceAfterPoints: null,
+            referenceType: $referenceType,
+            referenceId: $referenceId,
+            idempotencyKey: $idempotencyKey,
+            memo: $memo,
+            metadata: $metadata,
+        ));
+
+        if ($entry === null) {
+            throw new RuntimeException('insufficient_publisher_earnings');
+        }
+
+        return $entry;
+    }
+
     private function validateRequest(int $organizationId, int $requestedByUserId, int $pointsAmount, string $payoutMethod): void
     {
         if ($organizationId <= 0 || $requestedByUserId <= 0 || $pointsAmount <= 0 || trim($payoutMethod) === '') {
             throw new InvalidArgumentException('Withdrawal request is invalid.');
         }
+    }
+
+    /**
+     * @param array<string, mixed> $payoutAccount
+     */
+    private function assertSameIdempotentRequest(
+        WithdrawalRequest $existing,
+        int $requestedByUserId,
+        int $pointsAmount,
+        string $payoutMethod,
+        array $payoutAccount,
+        ?string $notes,
+    ): void {
+        if (
+            $existing->requestedByUserId !== $requestedByUserId
+            || $existing->pointsAmount !== $pointsAmount
+            || $existing->payoutMethod !== $payoutMethod
+            || $existing->payoutAccount != $payoutAccount
+            || $existing->applicantNotes !== $notes
+        ) {
+            throw new RuntimeException('withdrawal_idempotency_conflict');
+        }
+    }
+
+    private function normalizeIdempotencyKey(string $idempotencyKey): string
+    {
+        $idempotencyKey = trim($idempotencyKey);
+        if ($idempotencyKey === '') {
+            throw new InvalidArgumentException('Withdrawal idempotency key is required.');
+        }
+
+        if (strlen($idempotencyKey) > self::IDEMPOTENCY_KEY_MAX_LENGTH) {
+            throw new InvalidArgumentException('Withdrawal idempotency key must be at most 160 characters.');
+        }
+
+        return $idempotencyKey;
+    }
+
+    private function ledgerIdempotencyKey(string $prefix, int $organizationId, string ...$parts): string
+    {
+        return $prefix . ':' . $organizationId . ':' . hash('sha256', implode("\n", $parts));
     }
 
     private function restoreHeldPoints(WithdrawalRequest $request, int $actorUserId, string $reason): void

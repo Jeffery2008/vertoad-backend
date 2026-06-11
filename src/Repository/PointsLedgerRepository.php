@@ -5,17 +5,129 @@ declare(strict_types=1);
 namespace VertoAD\Repository;
 
 use Doctrine\DBAL\Connection;
+use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\DBAL\ParameterType;
+use Doctrine\DBAL\Platforms\SQLitePlatform;
+use InvalidArgumentException;
+use RuntimeException;
+use VertoAD\Domain\Ledger\InsufficientLedgerBalanceException;
 use VertoAD\Domain\Ledger\LedgerDirection;
 use VertoAD\Domain\Ledger\PointsLedgerEntry;
 
 final class PointsLedgerRepository implements PointsLedgerRepositoryInterface
 {
+    private ?bool $hasBalanceTable = null;
+
     public function __construct(private readonly Connection $connection)
     {
     }
 
     public function append(PointsLedgerEntry $entry): PointsLedgerEntry
+    {
+        $existing = $this->findByIdempotencyKey($entry->idempotencyKey);
+        if ($existing !== null) {
+            $this->assertSameIdempotentEntry($existing, $entry);
+
+            return $existing;
+        }
+
+        try {
+            return $this->connection->transactional(function () use ($entry): PointsLedgerEntry {
+                $existing = $this->findByIdempotencyKey($entry->idempotencyKey);
+                if ($existing !== null) {
+                    $this->assertSameIdempotentEntry($existing, $entry);
+
+                    return $existing;
+                }
+
+                $balanceAfterPoints = $this->nextBalanceAfter(
+                    $entry,
+                    failOnInsufficientDebit: $entry->direction === LedgerDirection::Debit,
+                );
+                $storedEntry = new PointsLedgerEntry(
+                    id: null,
+                    organizationId: $entry->organizationId,
+                    accountType: $entry->accountType,
+                    accountId: $entry->accountId,
+                    pointsAmount: $entry->pointsAmount,
+                    direction: $entry->direction,
+                    balanceAfterPoints: $balanceAfterPoints,
+                    referenceType: $entry->referenceType,
+                    referenceId: $entry->referenceId,
+                    idempotencyKey: $entry->idempotencyKey,
+                    memo: $entry->memo,
+                    metadata: $entry->metadata,
+                );
+
+                return $this->insertLedgerEntry($storedEntry);
+            });
+        } catch (UniqueConstraintViolationException $exception) {
+            $existing = $this->findByIdempotencyKey($entry->idempotencyKey);
+            if ($existing !== null) {
+                $this->assertSameIdempotentEntry($existing, $entry);
+
+                return $existing;
+            }
+
+            throw $exception;
+        }
+    }
+
+    public function tryDebit(PointsLedgerEntry $entry): ?PointsLedgerEntry
+    {
+        if ($entry->direction !== LedgerDirection::Debit) {
+            throw new InvalidArgumentException('tryDebit requires a debit ledger entry.');
+        }
+
+        $existing = $this->findByIdempotencyKey($entry->idempotencyKey);
+        if ($existing !== null) {
+            $this->assertSameIdempotentEntry($existing, $entry);
+
+            return $existing;
+        }
+
+        try {
+            return $this->connection->transactional(function () use ($entry): ?PointsLedgerEntry {
+                $existing = $this->findByIdempotencyKey($entry->idempotencyKey);
+                if ($existing !== null) {
+                    $this->assertSameIdempotentEntry($existing, $entry);
+
+                    return $existing;
+                }
+
+                $balanceAfterPoints = $this->nextBalanceAfter($entry, failOnInsufficientDebit: true);
+                $storedEntry = new PointsLedgerEntry(
+                    id: null,
+                    organizationId: $entry->organizationId,
+                    accountType: $entry->accountType,
+                    accountId: $entry->accountId,
+                    pointsAmount: $entry->pointsAmount,
+                    direction: $entry->direction,
+                    balanceAfterPoints: $balanceAfterPoints,
+                    referenceType: $entry->referenceType,
+                    referenceId: $entry->referenceId,
+                    idempotencyKey: $entry->idempotencyKey,
+                    memo: $entry->memo,
+                    metadata: $entry->metadata,
+                );
+
+                return $this->insertLedgerEntry($storedEntry);
+            });
+        } catch (InsufficientLedgerBalanceException) {
+            return null;
+        } catch (UniqueConstraintViolationException $exception) {
+            $existing = $this->findByIdempotencyKey($entry->idempotencyKey);
+            if ($existing !== null) {
+                $this->assertSameIdempotentEntry($existing, $entry);
+
+                return $existing;
+            }
+
+            throw $exception;
+        }
+    }
+
+    private function insertLedgerEntry(PointsLedgerEntry $entry): PointsLedgerEntry
     {
         $this->connection->insert(
             'ledger_entries',
@@ -213,6 +325,97 @@ final class PointsLedgerRepository implements PointsLedgerRepositoryInterface
             return 0;
         }
 
+        $accountType = trim($accountType);
+        if ($this->hasBalanceTableForRead()) {
+            $balance = $this->connection->createQueryBuilder()
+                ->select('balance_points')
+                ->from('ledger_account_balances')
+                ->where('organization_id = :organization_id')
+                ->andWhere('account_type = :account_type')
+                ->setParameter('organization_id', $organizationId)
+                ->setParameter('account_type', $accountType)
+                ->fetchOne();
+
+            if ($balance !== false && $balance !== null) {
+                return (int) $balance;
+            }
+        }
+
+        return $this->sumBalanceForOrganization($organizationId, $accountType);
+    }
+
+    private function nextBalanceAfter(PointsLedgerEntry $entry, bool $failOnInsufficientDebit = false): int
+    {
+        $this->requireBalanceTableForWrite();
+
+        $previousBalance = $this->lockedBalanceForAccount($entry->organizationId, $entry->accountType);
+        if ($failOnInsufficientDebit && $entry->direction === LedgerDirection::Debit && $previousBalance < $entry->pointsAmount) {
+            throw new InsufficientLedgerBalanceException();
+        }
+
+        $balanceAfterPoints = $this->applyDirection($previousBalance, $entry);
+
+        $this->connection->update(
+            'ledger_account_balances',
+            [
+                'balance_points' => $balanceAfterPoints,
+                'updated_at' => $this->nowSql(),
+            ],
+            [
+                'organization_id' => $entry->organizationId,
+                'account_type' => $entry->accountType,
+            ],
+            [
+                'balance_points' => ParameterType::INTEGER,
+                'updated_at' => ParameterType::STRING,
+                'organization_id' => ParameterType::INTEGER,
+                'account_type' => ParameterType::STRING,
+            ],
+        );
+
+        return $balanceAfterPoints;
+    }
+
+    private function lockedBalanceForAccount(int $organizationId, string $accountType): int
+    {
+        $this->ensureBalanceRow($organizationId, $accountType);
+        $sql = 'SELECT balance_points FROM ledger_account_balances WHERE organization_id = ? AND account_type = ?';
+        if ($this->supportsForUpdate()) {
+            $sql .= ' FOR UPDATE';
+        }
+
+        return (int) $this->connection->fetchOne($sql, [$organizationId, $accountType]);
+    }
+
+    private function ensureBalanceRow(int $organizationId, string $accountType): void
+    {
+        $existing = $this->connection->fetchOne(
+            'SELECT balance_points FROM ledger_account_balances WHERE organization_id = ? AND account_type = ?',
+            [$organizationId, $accountType],
+        );
+        if ($existing !== false && $existing !== null) {
+            return;
+        }
+
+        $currentBalance = $this->sumBalanceForOrganization($organizationId, $accountType);
+        if ($this->isSqlite()) {
+            $this->connection->executeStatement(
+                'INSERT OR IGNORE INTO ledger_account_balances (organization_id, account_type, balance_points, updated_at) VALUES (?, ?, ?, ?)',
+                [$organizationId, $accountType, $currentBalance, $this->nowSql()],
+            );
+
+            return;
+        }
+
+        $this->connection->executeStatement(
+            'INSERT INTO ledger_account_balances (organization_id, account_type, balance_points, updated_at) VALUES (?, ?, ?, ?) '
+                . 'ON DUPLICATE KEY UPDATE updated_at = updated_at',
+            [$organizationId, $accountType, $currentBalance, $this->nowSql()],
+        );
+    }
+
+    private function sumBalanceForOrganization(int $organizationId, string $accountType): int
+    {
         $balance = $this->connection->createQueryBuilder()
             ->select(
                 "COALESCE(SUM(CASE WHEN direction = 'credit' THEN points_amount ELSE -points_amount END), 0)",
@@ -221,10 +424,86 @@ final class PointsLedgerRepository implements PointsLedgerRepositoryInterface
             ->where('organization_id = :organization_id')
             ->andWhere('account_type = :account_type')
             ->setParameter('organization_id', $organizationId)
-            ->setParameter('account_type', trim($accountType))
+            ->setParameter('account_type', $accountType)
             ->fetchOne();
 
         return (int) $balance;
+    }
+
+    private function applyDirection(int $previousBalance, PointsLedgerEntry $entry): int
+    {
+        return match ($entry->direction) {
+            LedgerDirection::Credit => $previousBalance + $entry->pointsAmount,
+            LedgerDirection::Debit => $previousBalance - $entry->pointsAmount,
+        };
+    }
+
+    private function hasBalanceTableForRead(): bool
+    {
+        if ($this->hasBalanceTable !== null) {
+            return $this->hasBalanceTable;
+        }
+
+        try {
+            $this->hasBalanceTable = $this->connection->createSchemaManager()->tablesExist(['ledger_account_balances']);
+        } catch (\Throwable) {
+            $this->hasBalanceTable = false;
+        }
+
+        return $this->hasBalanceTable;
+    }
+
+    private function requireBalanceTableForWrite(): void
+    {
+        if ($this->hasBalanceTable !== null) {
+            if (!$this->hasBalanceTable) {
+                throw new RuntimeException('Ledger balance table is required for ledger writes.');
+            }
+
+            return;
+        }
+
+        try {
+            $this->hasBalanceTable = $this->connection->createSchemaManager()->tablesExist(['ledger_account_balances']);
+        } catch (\Throwable $exception) {
+            $this->hasBalanceTable = false;
+
+            throw new RuntimeException('Ledger balance table is required for ledger writes.', previous: $exception);
+        }
+
+        if (!$this->hasBalanceTable) {
+            throw new RuntimeException('Ledger balance table is required for ledger writes.');
+        }
+    }
+
+    private function supportsForUpdate(): bool
+    {
+        return !$this->isSqlite();
+    }
+
+    private function isSqlite(): bool
+    {
+        return $this->connection->getDatabasePlatform() instanceof SQLitePlatform;
+    }
+
+    private function nowSql(): string
+    {
+        return (new \DateTimeImmutable())->format('Y-m-d H:i:s');
+    }
+
+    private function assertSameIdempotentEntry(PointsLedgerEntry $existing, PointsLedgerEntry $requested): void
+    {
+        if (
+            $existing->organizationId !== $requested->organizationId
+            || $existing->accountType !== $requested->accountType
+            || $existing->accountId !== $requested->accountId
+            || $existing->pointsAmount !== $requested->pointsAmount
+            || $existing->direction !== $requested->direction
+            || $existing->referenceType !== $requested->referenceType
+            || $existing->referenceId !== $requested->referenceId
+        ) {
+            throw new InvalidArgumentException('Ledger idempotency key conflicts with an existing entry.');
+        }
     }
 
     /**

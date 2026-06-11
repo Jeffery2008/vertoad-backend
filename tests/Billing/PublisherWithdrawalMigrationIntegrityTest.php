@@ -20,6 +20,8 @@ final class PublisherWithdrawalMigrationIntegrityTest extends TestCase
         foreach ([
             'platform_points bigint not null',
             'unique key uq_publisher_earning_events_ledger (ledger_entry_id)',
+            'idempotency_key varchar(160) not null',
+            'unique key uq_withdrawal_requests_org_idempotency (organization_id, idempotency_key)',
             'unique key uq_withdrawal_requests_ledger (ledger_entry_id)',
             'constraint chk_revenue_share_rules_ratio check (share_ratio_bps between 0 and 10000)',
             "constraint chk_revenue_share_rules_scope check (scope in ('global', 'publisher', 'site', 'slot'))",
@@ -168,6 +170,7 @@ final class PublisherWithdrawalMigrationIntegrityTest extends TestCase
             'organization_id' => 42,
             'requested_by_user_id' => 7,
             'points_amount' => 100,
+            'idempotency_key' => 'withdrawal:migration:' . ($overrides['id'] ?? bin2hex(random_bytes(4))),
             'status' => 'requested',
             'payout_method' => 'bank_transfer',
             'payout_account_json' => '{"account_no":"x"}',

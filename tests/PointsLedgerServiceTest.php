@@ -6,6 +6,7 @@ namespace VertoAD\Tests;
 
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
+use VertoAD\Domain\Ledger\InsufficientLedgerBalanceException;
 use VertoAD\Domain\Ledger\LedgerDirection;
 use VertoAD\Domain\Ledger\PointsLedgerEntry;
 use VertoAD\Repository\PointsLedgerRepositoryInterface;
@@ -52,6 +53,13 @@ final class PointsLedgerServiceTest extends TestCase
     {
         $repository = new FakePointsLedgerRepository();
         $service = new PointsLedgerService($repository);
+        $service->credit(
+            organizationId: 10,
+            accountType: 'advertiser_balance',
+            accountId: 20,
+            pointsAmount: 55,
+            idempotencyKey: 'billing:event:seed',
+        );
 
         $first = $service->debit(
             organizationId: 10,
@@ -65,19 +73,71 @@ final class PointsLedgerServiceTest extends TestCase
             organizationId: 10,
             accountType: 'advertiser_balance',
             accountId: 20,
-            pointsAmount: 99,
+            pointsAmount: 55,
             idempotencyKey: 'billing:event:1',
         );
 
         self::assertSame($first, $second);
         self::assertSame(55, $second->pointsAmount);
-        self::assertCount(1, $repository->entries);
+        self::assertCount(2, $repository->entries);
+        self::assertGreaterThanOrEqual(1, $repository->tryDebitCalls);
+        self::assertSame(0, $repository->appendDebitCalls);
+    }
+
+    public function testDebitUsesAtomicTryDebitAndRejectsInsufficientBalance(): void
+    {
+        $repository = new FakePointsLedgerRepository();
+        $service = new PointsLedgerService($repository);
+
+        try {
+            $service->debit(
+                organizationId: 10,
+                accountType: 'advertiser_balance',
+                accountId: null,
+                pointsAmount: 1,
+                idempotencyKey: 'billing:event:insufficient',
+            );
+        } catch (InsufficientLedgerBalanceException $exception) {
+            self::assertSame('insufficient_ledger_balance', $exception->getMessage());
+            self::assertSame(1, $repository->tryDebitCalls);
+            self::assertSame(0, $repository->appendDebitCalls);
+            self::assertCount(0, $repository->entries);
+            return;
+        }
+
+        self::fail('Expected insufficient ledger balance exception.');
+    }
+
+    public function testIdempotencyKeyRejectsConflictingPayload(): void
+    {
+        $repository = new FakePointsLedgerRepository();
+        $service = new PointsLedgerService($repository);
+        $service->credit(10, 'advertiser_balance', 20, 55, 'billing:event:conflict-seed');
+        $service->debit(
+            organizationId: 10,
+            accountType: 'advertiser_balance',
+            accountId: 20,
+            pointsAmount: 55,
+            idempotencyKey: 'billing:event:conflict',
+        );
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Ledger idempotency key conflicts with an existing entry.');
+
+        $service->debit(
+            organizationId: 10,
+            accountType: 'advertiser_balance',
+            accountId: 20,
+            pointsAmount: 99,
+            idempotencyKey: 'billing:event:conflict',
+        );
     }
 
     public function testReverseCreatesOppositeDirectionEntryForOriginalLedgerEntry(): void
     {
         $repository = new FakePointsLedgerRepository();
         $service = new PointsLedgerService($repository);
+        $service->credit(10, 'advertiser_balance', 20, 250, 'click:charge:seed');
 
         $original = $service->debit(
             organizationId: 10,
@@ -114,7 +174,7 @@ final class PointsLedgerServiceTest extends TestCase
             ],
             $reversal->metadata,
         );
-        self::assertCount(2, $repository->entries);
+        self::assertCount(3, $repository->entries);
     }
 
     public function testAdjustmentRequiresReasonAndCreatesManualAdjustmentMetadata(): void
@@ -289,6 +349,7 @@ final class PointsLedgerServiceTest extends TestCase
     {
         $repository = new FakePointsLedgerRepository();
         $service = new PointsLedgerService($repository);
+        $service->credit(10, 'advertiser_balance', null, 100, 'original:double-reversal-seed');
         $original = $service->debit(10, 'advertiser_balance', null, 100, 'original:double-reversal');
         $service->reverse((int) $original->id, 'original:double-reversal:first', 'first reversal');
 
@@ -304,8 +365,48 @@ final class FakePointsLedgerRepository implements PointsLedgerRepositoryInterfac
     /** @var list<PointsLedgerEntry> */
     public array $entries = [];
 
+    public int $tryDebitCalls = 0;
+
+    public int $appendDebitCalls = 0;
+
     public function append(PointsLedgerEntry $entry): PointsLedgerEntry
     {
+        if ($entry->direction === LedgerDirection::Debit) {
+            ++$this->appendDebitCalls;
+        }
+
+        $stored = new PointsLedgerEntry(
+            id: count($this->entries) + 1,
+            organizationId: $entry->organizationId,
+            accountType: $entry->accountType,
+            accountId: $entry->accountId,
+            pointsAmount: $entry->pointsAmount,
+            direction: $entry->direction,
+            balanceAfterPoints: $entry->balanceAfterPoints,
+            referenceType: $entry->referenceType,
+            referenceId: $entry->referenceId,
+            idempotencyKey: $entry->idempotencyKey,
+            memo: $entry->memo,
+            metadata: $entry->metadata,
+        );
+
+        $this->entries[] = $stored;
+
+        return $stored;
+    }
+
+    public function tryDebit(PointsLedgerEntry $entry): ?PointsLedgerEntry
+    {
+        ++$this->tryDebitCalls;
+        $existing = $this->findByIdempotencyKey($entry->idempotencyKey);
+        if ($existing !== null) {
+            return $existing;
+        }
+
+        if ($this->balanceForOrganization($entry->organizationId, $entry->accountType) < $entry->pointsAmount) {
+            return null;
+        }
+
         $stored = new PointsLedgerEntry(
             id: count($this->entries) + 1,
             organizationId: $entry->organizationId,

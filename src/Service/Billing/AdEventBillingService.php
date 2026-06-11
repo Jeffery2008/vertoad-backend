@@ -118,11 +118,11 @@ final readonly class AdEventBillingService
 
     private function reservationId(BillableAdEvent $event): string
     {
-        return 'ad-event:' . $event->eventType . ':' . trim($event->eventId);
+        return 'ad-event:' . $event->eventType . ':' . trim($event->decisionId) . ':' . trim($event->eventId);
     }
 
     private function publisherEventId(BillableAdEvent $event): string
     {
-        return $event->eventType . ':' . trim($event->eventId);
+        return $event->eventType . ':' . trim($event->decisionId) . ':' . trim($event->eventId);
     }
 }

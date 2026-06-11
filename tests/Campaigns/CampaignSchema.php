@@ -18,6 +18,7 @@ final class CampaignSchema
                 organization_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT "draft",
+                pause_reason TEXT NULL,
                 pricing_model TEXT NOT NULL,
                 bid_points INTEGER NOT NULL,
                 landing_url TEXT NOT NULL,

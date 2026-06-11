@@ -10,6 +10,8 @@ interface PointsLedgerRepositoryInterface
 {
     public function append(PointsLedgerEntry $entry): PointsLedgerEntry;
 
+    public function tryDebit(PointsLedgerEntry $entry): ?PointsLedgerEntry;
+
     public function findById(int $id): ?PointsLedgerEntry;
 
     public function findByIdempotencyKey(string $idempotencyKey): ?PointsLedgerEntry;

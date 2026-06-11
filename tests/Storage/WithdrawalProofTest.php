@@ -26,7 +26,7 @@ final class WithdrawalProofTest extends TestCase
         $ledger->credit(42, 'publisher_earnings', null, 2000, 'earning:proof');
 
         $withdrawals = new WithdrawalService(new WithdrawalRepository($connection), $ledger, $ledgerRepository);
-        $request = $withdrawals->requestWithdrawal(42, 7, 1000, 'bank_transfer', ['account_no' => 'x'], null, new DateTimeImmutable('2026-06-08 12:00:00'));
+        $request = $withdrawals->requestWithdrawal(42, 7, 1000, 'bank_transfer', ['account_no' => 'x'], null, 'withdrawal:req:proof', new DateTimeImmutable('2026-06-08 12:00:00'));
         $withdrawals->markPaid($request->id ?? 0, 99, null, new DateTimeImmutable('2026-06-08 13:00:00'));
 
         $proofs = new WithdrawalProofService(

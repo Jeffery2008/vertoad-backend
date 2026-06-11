@@ -9,6 +9,26 @@ final class CreateCampaignBudgetPrimitives extends AbstractMigration
     public function up(): void
     {
         $this->execute(<<<'SQL'
+CREATE TABLE organization_budget_locks (
+    organization_id BIGINT UNSIGNED NOT NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (organization_id),
+    CONSTRAINT fk_organization_budget_locks_organization FOREIGN KEY (organization_id) REFERENCES organizations (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Per-advertiser budget serialization locks.'
+SQL);
+
+        $this->execute(<<<'SQL'
+CREATE TABLE campaign_budget_locks (
+    organization_id BIGINT UNSIGNED NOT NULL,
+    campaign_id BIGINT UNSIGNED NOT NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (organization_id, campaign_id),
+    CONSTRAINT fk_campaign_budget_locks_organization FOREIGN KEY (organization_id) REFERENCES organizations (id) ON DELETE CASCADE,
+    CONSTRAINT fk_campaign_budget_locks_campaign FOREIGN KEY (campaign_id) REFERENCES campaigns (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Per-campaign budget serialization locks.'
+SQL);
+
+        $this->execute(<<<'SQL'
 CREATE TABLE campaign_budget_caps (
     campaign_id BIGINT UNSIGNED NOT NULL,
     organization_id BIGINT UNSIGNED NOT NULL,
@@ -58,5 +78,7 @@ SQL);
     {
         $this->execute('DROP TABLE IF EXISTS spend_reservations');
         $this->execute('DROP TABLE IF EXISTS campaign_budget_caps');
+        $this->execute('DROP TABLE IF EXISTS campaign_budget_locks');
+        $this->execute('DROP TABLE IF EXISTS organization_budget_locks');
     }
 }

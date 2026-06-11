@@ -181,6 +181,18 @@ CREATE TABLE ledger_entries (
 SQL);
 
         $this->execute(<<<'SQL'
+CREATE TABLE ledger_account_balances (
+    organization_id BIGINT UNSIGNED NOT NULL,
+    account_type VARCHAR(64) NOT NULL,
+    balance_points BIGINT NOT NULL DEFAULT 0,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (organization_id, account_type),
+    CONSTRAINT fk_ledger_account_balances_organization FOREIGN KEY (organization_id) REFERENCES organizations (id) ON DELETE RESTRICT,
+    CONSTRAINT chk_ledger_account_balances_account_type CHECK (account_type IN ('advertiser_balance', 'publisher_earnings'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Current ledger account balances maintained transactionally with ledger_entries.'
+SQL);
+
+        $this->execute(<<<'SQL'
 CREATE TRIGGER trg_ledger_entries_no_update
 BEFORE UPDATE ON ledger_entries
 FOR EACH ROW
@@ -264,6 +276,7 @@ CREATE TABLE campaigns (
     organization_id BIGINT UNSIGNED NOT NULL,
     name VARCHAR(200) NOT NULL,
     status VARCHAR(32) NOT NULL DEFAULT 'draft',
+    pause_reason VARCHAR(160) NULL,
     objective VARCHAR(64) NOT NULL DEFAULT 'traffic',
     budget_total DECIMAL(18, 6) NULL,
     budget_daily DECIMAL(18, 6) NULL,
@@ -359,6 +372,7 @@ SQL);
         $this->execute('DROP TABLE IF EXISTS recharge_keys');
         $this->execute('DROP TRIGGER IF EXISTS trg_ledger_entries_no_delete');
         $this->execute('DROP TRIGGER IF EXISTS trg_ledger_entries_no_update');
+        $this->execute('DROP TABLE IF EXISTS ledger_account_balances');
         $this->execute('DROP TABLE IF EXISTS ledger_entries');
         $this->execute('DROP TABLE IF EXISTS audit_logs');
         $this->execute('DROP TABLE IF EXISTS system_config_versions');

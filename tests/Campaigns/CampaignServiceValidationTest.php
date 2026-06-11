@@ -183,6 +183,15 @@ final class CampaignServiceValidationTest extends TestCase
         $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
         CampaignSchema::create($connection);
         $connection->executeStatement(
+            'CREATE TABLE ledger_account_balances (
+                organization_id INTEGER NOT NULL,
+                account_type VARCHAR(64) NOT NULL,
+                balance_points INTEGER NOT NULL DEFAULT 0,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (organization_id, account_type)
+            )',
+        );
+        $connection->executeStatement(
             'CREATE TABLE ledger_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 organization_id INTEGER NOT NULL,
@@ -206,14 +215,16 @@ final class CampaignServiceValidationTest extends TestCase
     private function service(Connection $connection): CampaignService
     {
         $ledgerRepository = new PointsLedgerRepository($connection);
+        $campaignRepository = new CampaignRepository($connection);
 
         return new CampaignService(
-            new CampaignRepository($connection),
+            $campaignRepository,
             new ReviewRepository($connection),
             new CampaignBudgetService(
                 new CampaignBudgetRepository($connection),
                 new PointsLedgerService($ledgerRepository),
                 $ledgerRepository,
+                $campaignRepository,
             ),
         );
     }

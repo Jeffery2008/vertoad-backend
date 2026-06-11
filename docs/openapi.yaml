@@ -3975,6 +3975,7 @@ components:
             - organization_id
             - name
             - status
+            - pause_reason
             - pricing_model
             - bid_points
             - landing_url
@@ -3990,6 +3991,10 @@ components:
             organization_id:
               type: integer
               minimum: 1
+            pause_reason:
+              type:
+                - string
+                - "null"
             asset_id:
               type: integer
               minimum: 1
@@ -4594,7 +4599,12 @@ components:
         - points_amount
         - payout_method
         - payout_account
+        - idempotency_key
       properties:
+        idempotency_key:
+          type: string
+          minLength: 1
+          maxLength: 160
         points_amount:
           type: integer
           minimum: 1
@@ -4637,6 +4647,7 @@ components:
         - organization_id
         - requested_by_user_id
         - points_amount
+        - idempotency_key
         - status
         - payout_method
         - payout_account
@@ -4659,6 +4670,10 @@ components:
         points_amount:
           type: integer
           minimum: 1
+        idempotency_key:
+          type: string
+          minLength: 1
+          maxLength: 160
         status:
           type: string
           enum:
@@ -5172,6 +5187,13 @@ components:
             - no_eligible_ad
             - unverified_inventory
             - unsafe_landing_url
+            - budget_insufficient_balance
+            - budget_total_cap
+            - budget_daily_cap
+            - budget_hourly_cap
+            - frequency_cap_exceeded
+            - fraud_high_risk_viewer
+            - fraud_high_risk_slot
             - null
         iframe:
           type: object

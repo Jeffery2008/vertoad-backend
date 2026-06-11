@@ -140,6 +140,17 @@ final class BudgetCapTest extends TestCase
     {
         $connection->executeStatement(
             <<<'SQL'
+CREATE TABLE ledger_account_balances (
+    organization_id INTEGER NOT NULL,
+    account_type VARCHAR(64) NOT NULL,
+    balance_points INTEGER NOT NULL DEFAULT 0,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (organization_id, account_type)
+)
+SQL
+        );
+        $connection->executeStatement(
+            <<<'SQL'
 CREATE TABLE ledger_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     organization_id INTEGER NOT NULL,

@@ -22,6 +22,7 @@ final readonly class Campaign
         public ?DateTimeImmutable $endsAt,
         public CampaignTargeting $targeting,
         public ?CampaignBudgetCaps $budget,
+        public ?string $pauseReason = null,
     ) {
     }
 }

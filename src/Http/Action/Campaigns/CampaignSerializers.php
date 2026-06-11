@@ -17,6 +17,7 @@ final class CampaignSerializers
             'organization_id' => $campaign->organizationId,
             'name' => $campaign->name,
             'status' => $campaign->status->value,
+            'pause_reason' => $campaign->pauseReason,
             'pricing_model' => $campaign->pricingModel->value,
             'bid_points' => $campaign->bidPoints,
             'landing_url' => $campaign->landingUrl,

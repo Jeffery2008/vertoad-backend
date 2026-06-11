@@ -12,6 +12,7 @@ use VertoAD\Domain\Billing\BillableAdEvent;
 use VertoAD\Domain\Budget\CampaignBudgetCaps;
 use VertoAD\Domain\Budget\SpendReservation;
 use VertoAD\Domain\Budget\SpendReservationStatus;
+use VertoAD\Domain\Budget\SpendReservationTransition;
 use VertoAD\Domain\Serving\AdEvent;
 use VertoAD\Repository\Billing\RevenueShareRepository;
 use VertoAD\Repository\CampaignBudgetRepository;
@@ -131,6 +132,29 @@ final class AdEventBillingTest extends TestCase
         self::assertTrue($second->duplicate);
         self::assertSame(920, $ledgerRepository->balanceForOrganization(99));
         self::assertSame(40, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+    }
+
+    public function testSameEventIdAcrossDifferentDecisionsDoesNotShareBillingIdempotency(): void
+    {
+        $connection = $this->createConnection();
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        $ledger = new PointsLedgerService($ledgerRepository);
+        $ledger->credit(99, 'advertiser_balance', null, 1_000, 'recharge:advertiser-a');
+        $ledger->credit(100, 'advertiser_balance', null, 1_000, 'recharge:advertiser-b');
+        (new RevenueShareRepository($connection))->createRule('global', null, null, null, 5000, null, new DateTimeImmutable('2026-06-08 09:00:00'));
+        $service = $this->createService($connection);
+
+        $first = $service->bill($this->event('click', 'shared-event-id', 80, decisionId: 'decision-a', advertiserOrganizationId: 99, campaignId: 123));
+        $second = $service->bill($this->event('click', 'shared-event-id', 120, decisionId: 'decision-b', advertiserOrganizationId: 100, campaignId: 124));
+
+        self::assertTrue($first->billed);
+        self::assertTrue($second->billed);
+        self::assertFalse($second->duplicate);
+        self::assertSame(920, $ledgerRepository->balanceForOrganization(99));
+        self::assertSame(880, $ledgerRepository->balanceForOrganization(100));
+        self::assertSame(100, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+        self::assertSame(2, (int) $connection->fetchOne('SELECT COUNT(*) FROM spend_reservations'));
+        self::assertSame(2, (int) $connection->fetchOne('SELECT COUNT(*) FROM publisher_earning_events'));
     }
 
     public function testSkipsServingEventSnapshotMissingBillingMetadata(): void
@@ -371,17 +395,25 @@ SQL
         );
     }
 
-    private function event(string $type, string $id, int $costPoints, bool $valid = true): BillableAdEvent
+    private function event(
+        string $type,
+        string $id,
+        int $costPoints,
+        bool $valid = true,
+        string $decisionId = 'decision-1',
+        int $advertiserOrganizationId = 99,
+        int $campaignId = 123,
+    ): BillableAdEvent
     {
         return new BillableAdEvent(
             eventType: $type,
             eventId: $id,
-            decisionId: 'decision-1',
+            decisionId: $decisionId,
             siteId: 5,
             slotId: 10,
             publisherOrganizationId: 42,
-            advertiserOrganizationId: 99,
-            campaignId: 123,
+            advertiserOrganizationId: $advertiserOrganizationId,
+            campaignId: $campaignId,
             adId: 'ad-1',
             viewerId: 'viewer-1',
             costPoints: $costPoints,
@@ -407,6 +439,11 @@ SQL
         return new class implements CampaignBudgetRepositoryInterface {
             private ?SpendReservation $reservation = null;
 
+            public function transactional(callable $operation): mixed
+            {
+                return $operation();
+            }
+
             public function saveCaps(CampaignBudgetCaps $caps): CampaignBudgetCaps
             {
                 return $caps;
@@ -420,6 +457,10 @@ SQL
             public function findReservation(string $reservationId): ?SpendReservation
             {
                 return $this->reservation;
+            }
+
+            public function lockBudgetScope(int $organizationId, int $campaignId): void
+            {
             }
 
             public function createReservation(SpendReservation $reservation): SpendReservation
@@ -442,19 +483,19 @@ SQL
                 return $reservation;
             }
 
-            public function markCommitted(string $reservationId, int $ledgerEntryId, DateTimeImmutable $committedAt): ?SpendReservation
+            public function markCommitted(string $reservationId, int $ledgerEntryId, DateTimeImmutable $committedAt): SpendReservationTransition
             {
-                return $this->reservation;
+                return new SpendReservationTransition(false, $this->reservation);
             }
 
-            public function markReleased(string $reservationId, DateTimeImmutable $releasedAt): ?SpendReservation
+            public function markReleased(string $reservationId, DateTimeImmutable $releasedAt): SpendReservationTransition
             {
-                return $this->reservation;
+                return new SpendReservationTransition(false, $this->reservation);
             }
 
-            public function markExpired(string $reservationId, DateTimeImmutable $expiredAt): ?SpendReservation
+            public function markExpired(string $reservationId, DateTimeImmutable $expiredAt): SpendReservationTransition
             {
-                return $this->reservation;
+                return new SpendReservationTransition(false, $this->reservation);
             }
 
             public function activeReservedSpendForCampaign(int $organizationId, int $campaignId, DateTimeImmutable $at): int

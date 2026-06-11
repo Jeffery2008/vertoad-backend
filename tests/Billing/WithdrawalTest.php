@@ -11,8 +11,11 @@ use Doctrine\DBAL\Platforms\MySQLPlatform;
 use Doctrine\DBAL\Result;
 use PHPUnit\Framework\TestCase;
 use VertoAD\Domain\Billing\WithdrawalStatus;
+use VertoAD\Domain\Ledger\LedgerDirection;
+use VertoAD\Domain\Ledger\PointsLedgerEntry;
 use VertoAD\Repository\Billing\WithdrawalRepository;
 use VertoAD\Repository\PointsLedgerRepository;
+use VertoAD\Repository\PointsLedgerRepositoryInterface;
 use VertoAD\Service\Billing\WithdrawalService;
 use VertoAD\Service\PointsLedgerService;
 
@@ -35,20 +38,22 @@ final class WithdrawalTest extends TestCase
             payoutMethod: 'bank_transfer',
             payoutAccount: ['account_name' => 'Publisher Ltd', 'account_no' => '****1234'],
             notes: 'June earnings',
+            idempotencyKey: 'withdrawal:req:main',
             now: new DateTimeImmutable('2026-06-08 12:00:00'),
         );
         self::assertSame('requested', $request->status->value);
+        self::assertSame('withdrawal:req:main', $request->idempotencyKey);
         self::assertSame(2500, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
 
         $paid = $service->markPaid($request->id ?? 0, 99, 'paid manually', new DateTimeImmutable('2026-06-08 13:00:00'));
         self::assertSame('paid', $paid->status->value);
 
-        $rejectedRequest = $service->requestWithdrawal(42, 7, 500, 'bank_transfer', ['account_no' => 'x'], null, new DateTimeImmutable('2026-06-08 14:00:00'));
+        $rejectedRequest = $service->requestWithdrawal(42, 7, 500, 'bank_transfer', ['account_no' => 'x'], null, 'withdrawal:req:reject', new DateTimeImmutable('2026-06-08 14:00:00'));
         $rejected = $service->reject($rejectedRequest->id ?? 0, 99, 'bad account', new DateTimeImmutable('2026-06-08 14:30:00'));
         self::assertSame('rejected', $rejected->status->value);
         self::assertSame(2500, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
 
-        $revokedRequest = $service->requestWithdrawal(42, 7, 300, 'bank_transfer', ['account_no' => 'y'], null, new DateTimeImmutable('2026-06-08 15:00:00'));
+        $revokedRequest = $service->requestWithdrawal(42, 7, 300, 'bank_transfer', ['account_no' => 'y'], null, 'withdrawal:req:revoke', new DateTimeImmutable('2026-06-08 15:00:00'));
         $revoked = $service->revoke($revokedRequest->id ?? 0, 7, 'user cancelled', new DateTimeImmutable('2026-06-08 15:05:00'));
         self::assertSame('revoked', $revoked->status->value);
         self::assertSame(2500, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
@@ -61,6 +66,8 @@ final class WithdrawalTest extends TestCase
             new DateTimeImmutable('2026-06-08 15:10:00'),
         );
         self::assertSame('requested', $resubmitted->status->value);
+        self::assertNotSame($revokedRequest->ledgerEntryId, $resubmitted->ledgerEntryId);
+        self::assertSame($resubmitted->ledgerEntryId, (int) $connection->fetchOne('SELECT ledger_entry_id FROM withdrawal_requests WHERE id = ?', [$revokedRequest->id]));
         self::assertSame(2200, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
 
         $actions = array_column($connection->fetchAllAssociative('SELECT action FROM withdrawal_audit_events ORDER BY id'), 'action');
@@ -75,6 +82,61 @@ final class WithdrawalTest extends TestCase
         ], $actions);
     }
 
+    public function testRequestWithdrawalIsIdempotentByOrganizationScopedKey(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        BillingTask14Schema::create($connection);
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        $ledger = new PointsLedgerService($ledgerRepository);
+        $ledger->credit(42, 'publisher_earnings', null, 5000, 'earning:idempotent-withdrawal');
+        $ledger->credit(43, 'publisher_earnings', null, 5000, 'earning:idempotent-withdrawal-other-org');
+        $service = new WithdrawalService(new WithdrawalRepository($connection), $ledger, $ledgerRepository);
+
+        $first = $service->requestWithdrawal(42, 7, 1000, 'bank_transfer', ['account_no' => 'x'], 'first', 'withdrawal:req:stable', new DateTimeImmutable('2026-06-08 12:00:00'));
+        $second = $service->requestWithdrawal(42, 7, 1000, 'bank_transfer', ['account_no' => 'x'], 'first', 'withdrawal:req:stable', new DateTimeImmutable('2026-06-08 12:05:00'));
+        $otherOrganization = $service->requestWithdrawal(43, 8, 1000, 'bank_transfer', ['account_no' => 'x'], 'first', 'withdrawal:req:stable', new DateTimeImmutable('2026-06-08 12:06:00'));
+
+        self::assertSame($first->id, $second->id);
+        self::assertSame($first->ledgerEntryId, $second->ledgerEntryId);
+        self::assertSame($first->requestedAt->format('Y-m-d H:i:s'), $second->requestedAt->format('Y-m-d H:i:s'));
+        self::assertNotSame($first->id, $otherOrganization->id);
+        self::assertSame(4000, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+        self::assertSame(4000, $ledgerRepository->balanceForOrganization(43, 'publisher_earnings'));
+        self::assertSame(2, (int) $connection->fetchOne('SELECT COUNT(*) FROM withdrawal_requests'));
+        self::assertSame(2, (int) $connection->fetchOne("SELECT COUNT(*) FROM ledger_entries WHERE idempotency_key LIKE 'withdrawal-request:%'"));
+        self::assertSame(2, (int) $connection->fetchOne("SELECT COUNT(*) FROM withdrawal_audit_events WHERE action = 'requested'"));
+
+        $conflict = $this->captureValidation(
+            fn () => $service->requestWithdrawal(42, 7, 1200, 'bank_transfer', ['account_no' => 'x'], 'first', 'withdrawal:req:stable', new DateTimeImmutable('2026-06-08 12:10:00')),
+        );
+
+        self::assertSame('withdrawal_idempotency_conflict', $conflict->getMessage());
+        self::assertSame(4000, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+        self::assertSame(2, (int) $connection->fetchOne('SELECT COUNT(*) FROM withdrawal_requests'));
+    }
+
+    public function testWithdrawalRequestRejectsBlankAndTooLongIdempotencyKeys(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        BillingTask14Schema::create($connection);
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        $ledger = new PointsLedgerService($ledgerRepository);
+        $ledger->credit(42, 'publisher_earnings', null, 5000, 'earning:idempotency-validation');
+        $service = new WithdrawalService(new WithdrawalRepository($connection), $ledger, $ledgerRepository);
+
+        $blank = $this->captureInvalidArgument(
+            fn () => $service->requestWithdrawal(42, 7, 1000, 'bank_transfer', ['account_no' => 'x'], null, '   ', new DateTimeImmutable('2026-06-08 12:00:00')),
+        );
+        self::assertSame('Withdrawal idempotency key is required.', $blank->getMessage());
+
+        $tooLong = $this->captureInvalidArgument(
+            fn () => $service->requestWithdrawal(42, 7, 1000, 'bank_transfer', ['account_no' => 'x'], null, str_repeat('w', 161), new DateTimeImmutable('2026-06-08 12:00:00')),
+        );
+        self::assertSame('Withdrawal idempotency key must be at most 160 characters.', $tooLong->getMessage());
+        self::assertSame(0, (int) $connection->fetchOne('SELECT COUNT(*) FROM withdrawal_requests'));
+        self::assertSame(5000, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+    }
+
     public function testWithdrawalRequestRejectsInsufficientPublisherEarningsAndIllegalTransitions(): void
     {
         $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
@@ -85,11 +147,14 @@ final class WithdrawalTest extends TestCase
         $service = new WithdrawalService(new WithdrawalRepository($connection), $ledger, $ledgerRepository);
 
         $insufficient = $this->captureValidation(
-            fn () => $service->requestWithdrawal(42, 7, 101, 'bank_transfer', ['account_no' => 'x'], null, new DateTimeImmutable('2026-06-08 12:00:00')),
+            fn () => $service->requestWithdrawal(42, 7, 101, 'bank_transfer', ['account_no' => 'x'], null, 'withdrawal:req:insufficient', new DateTimeImmutable('2026-06-08 12:00:00')),
         );
         self::assertSame('insufficient_publisher_earnings', $insufficient->getMessage());
+        self::assertSame(1, (int) $connection->fetchOne('SELECT COUNT(*) FROM ledger_entries'));
+        self::assertSame(0, (int) $connection->fetchOne('SELECT COUNT(*) FROM withdrawal_requests'));
+        self::assertSame(0, (int) $connection->fetchOne('SELECT COUNT(*) FROM withdrawal_audit_events'));
 
-        $request = $service->requestWithdrawal(42, 7, 100, 'bank_transfer', ['account_no' => 'x'], null, new DateTimeImmutable('2026-06-08 12:01:00'));
+        $request = $service->requestWithdrawal(42, 7, 100, 'bank_transfer', ['account_no' => 'x'], null, 'withdrawal:req:paid-illegal', new DateTimeImmutable('2026-06-08 12:01:00'));
         $paid = $service->markPaid($request->id ?? 0, 99, null, new DateTimeImmutable('2026-06-08 12:02:00'));
         self::assertSame('paid', $paid->status->value);
 
@@ -112,9 +177,11 @@ final class WithdrawalTest extends TestCase
 
         self::assertNull($repository->findRequest(0));
         self::assertNull($repository->findProof(0));
+        self::assertNull($repository->findRequestByIdempotencyKey(0, 'withdrawal:req:invalid-org'));
+        self::assertNull($repository->findRequestByIdempotencyKey(42, '   '));
 
         try {
-            $service->requestWithdrawal(0, 7, 100, 'bank_transfer', ['account_no' => 'x'], null, new DateTimeImmutable('2026-06-08 12:00:00'));
+            $service->requestWithdrawal(0, 7, 100, 'bank_transfer', ['account_no' => 'x'], null, 'withdrawal:req:invalid-org', new DateTimeImmutable('2026-06-08 12:00:00'));
         } catch (\InvalidArgumentException $exception) {
             self::assertSame('Withdrawal request is invalid.', $exception->getMessage());
             return;
@@ -132,7 +199,7 @@ final class WithdrawalTest extends TestCase
         $ledger->credit(42, 'publisher_earnings', null, 300, 'earning:resubmit-small');
         $service = new WithdrawalService(new WithdrawalRepository($connection), $ledger, $ledgerRepository);
 
-        $request = $service->requestWithdrawal(42, 7, 300, 'bank_transfer', ['account_no' => 'x'], '   ', new DateTimeImmutable('2026-06-08 12:00:00'));
+        $request = $service->requestWithdrawal(42, 7, 300, 'bank_transfer', ['account_no' => 'x'], '   ', 'withdrawal:req:resubmit-insufficient', new DateTimeImmutable('2026-06-08 12:00:00'));
         $service->revoke($request->id ?? 0, 7, '   ', new DateTimeImmutable('2026-06-08 12:01:00'));
         $ledger->debit(42, 'publisher_earnings', null, 300, 'external:publisher-adjustment');
 
@@ -141,6 +208,43 @@ final class WithdrawalTest extends TestCase
         );
 
         self::assertSame('insufficient_publisher_earnings', $insufficient->getMessage());
+        self::assertSame('revoked', (string) $connection->fetchOne('SELECT status FROM withdrawal_requests WHERE id = ?', [$request->id]));
+        self::assertSame(4, (int) $connection->fetchOne('SELECT COUNT(*) FROM ledger_entries'));
+        self::assertSame(2, (int) $connection->fetchOne('SELECT COUNT(*) FROM withdrawal_audit_events'));
+    }
+
+    public function testRequestWithdrawalUsesAtomicTryDebitHold(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        BillingTask14Schema::create($connection);
+        $ledgerRepository = new RecordingWithdrawalLedgerRepository();
+        $service = new WithdrawalService(
+            new WithdrawalRepository($connection),
+            new PointsLedgerService($ledgerRepository),
+            $ledgerRepository,
+        );
+
+        $request = $service->requestWithdrawal(
+            organizationId: 42,
+            requestedByUserId: 7,
+            pointsAmount: 450,
+            payoutMethod: 'bank_transfer',
+            payoutAccount: ['account_no' => 'x'],
+            notes: null,
+            idempotencyKey: 'withdrawal:req:recording-ledger',
+            now: new DateTimeImmutable('2026-06-08 12:00:00'),
+        );
+
+        self::assertSame(1, $ledgerRepository->tryDebitCalls);
+        self::assertSame(0, $ledgerRepository->appendCalls);
+        self::assertSame('requested', $request->status->value);
+        self::assertSame(700, $request->ledgerEntryId);
+        self::assertSame(42, $ledgerRepository->lastTryDebit?->organizationId);
+        self::assertSame('publisher_earnings', $ledgerRepository->lastTryDebit?->accountType);
+        self::assertSame(450, $ledgerRepository->lastTryDebit?->pointsAmount);
+        self::assertSame(LedgerDirection::Debit, $ledgerRepository->lastTryDebit?->direction);
+        self::assertSame('withdrawal_request', $ledgerRepository->lastTryDebit?->referenceType);
+        self::assertNull($ledgerRepository->lastTryDebit?->referenceId);
     }
 
     public function testResubmitRollsBackLedgerDebitWhenStateUpdateFails(): void
@@ -152,7 +256,7 @@ final class WithdrawalTest extends TestCase
         $ledger->credit(42, 'publisher_earnings', null, 1000, 'earning:resubmit-rollback');
         $service = new WithdrawalService(new WithdrawalRepository($connection), $ledger, $ledgerRepository);
 
-        $request = $service->requestWithdrawal(42, 7, 400, 'bank_transfer', ['account_no' => 'x'], null, new DateTimeImmutable('2026-06-08 12:00:00'));
+        $request = $service->requestWithdrawal(42, 7, 400, 'bank_transfer', ['account_no' => 'x'], null, 'withdrawal:req:resubmit-rollback', new DateTimeImmutable('2026-06-08 12:00:00'));
         $service->revoke($request->id ?? 0, 7, 'cancelled', new DateTimeImmutable('2026-06-08 12:01:00'));
         $connection->executeStatement(
             <<<'SQL'
@@ -210,6 +314,7 @@ SQL
                 payoutMethod: 'bank_transfer',
                 payoutAccount: ['account_no' => 'x'],
                 notes: null,
+                idempotencyKey: 'withdrawal:req:insert-rollback',
                 now: new DateTimeImmutable('2026-06-08 12:00:00'),
             );
         } catch (\Throwable) {
@@ -231,7 +336,7 @@ SQL
         $ledger->credit(42, 'publisher_earnings', null, 1000, 'earning:idempotent-status');
         $service = new WithdrawalService(new WithdrawalRepository($connection), $ledger, $ledgerRepository);
 
-        $rejectedRequest = $service->requestWithdrawal(42, 7, 400, 'bank_transfer', ['account_no' => 'x'], null, new DateTimeImmutable('2026-06-08 12:00:00'));
+        $rejectedRequest = $service->requestWithdrawal(42, 7, 400, 'bank_transfer', ['account_no' => 'x'], null, 'withdrawal:req:repeat-reject', new DateTimeImmutable('2026-06-08 12:00:00'));
         $firstReject = $service->reject($rejectedRequest->id ?? 0, 99, 'bad account', new DateTimeImmutable('2026-06-08 12:01:00'));
         $secondReject = $service->reject($rejectedRequest->id ?? 0, 99, 'bad account', new DateTimeImmutable('2026-06-08 12:02:00'));
 
@@ -239,7 +344,7 @@ SQL
         self::assertSame('rejected', $secondReject->status->value);
         self::assertSame(1000, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
 
-        $revokedRequest = $service->requestWithdrawal(42, 7, 300, 'bank_transfer', ['account_no' => 'y'], null, new DateTimeImmutable('2026-06-08 12:03:00'));
+        $revokedRequest = $service->requestWithdrawal(42, 7, 300, 'bank_transfer', ['account_no' => 'y'], null, 'withdrawal:req:repeat-revoke', new DateTimeImmutable('2026-06-08 12:03:00'));
         $firstRevoke = $service->revoke($revokedRequest->id ?? 0, 7, 'cancelled', new DateTimeImmutable('2026-06-08 12:04:00'));
         $secondRevoke = $service->revoke($revokedRequest->id ?? 0, 7, 'cancelled', new DateTimeImmutable('2026-06-08 12:05:00'));
 
@@ -260,7 +365,7 @@ SQL
         $ledger->credit(42, 'publisher_earnings', null, 1000, 'earning:idempotent-paid');
         $service = new WithdrawalService(new WithdrawalRepository($connection), $ledger, $ledgerRepository);
 
-        $request = $service->requestWithdrawal(42, 7, 400, 'bank_transfer', ['account_no' => 'x'], null, new DateTimeImmutable('2026-06-08 12:00:00'));
+        $request = $service->requestWithdrawal(42, 7, 400, 'bank_transfer', ['account_no' => 'x'], null, 'withdrawal:req:repeat-paid', new DateTimeImmutable('2026-06-08 12:00:00'));
         $firstPaid = $service->markPaid($request->id ?? 0, 99, 'paid', new DateTimeImmutable('2026-06-08 12:01:00'));
         $secondPaid = $service->markPaid($request->id ?? 0, 99, 'paid', new DateTimeImmutable('2026-06-08 12:02:00'));
 
@@ -280,6 +385,7 @@ SQL
             organizationId: 42,
             requestedByUserId: 7,
             pointsAmount: 500,
+            idempotencyKey: 'withdrawal:req:repository-state',
             payoutMethod: 'bank_transfer',
             payoutAccount: ['account_no' => 'x'],
             notes: null,
@@ -294,6 +400,7 @@ SQL
             reviewerUserId: 99,
             reviewerNotes: 'bad account',
             payoutAccount: null,
+            ledgerEntryId: null,
             now: new DateTimeImmutable('2026-06-08 12:01:00'),
         );
         self::assertSame('rejected', $updated?->status->value);
@@ -305,6 +412,7 @@ SQL
             reviewerUserId: null,
             reviewerNotes: 'late cancel',
             payoutAccount: null,
+            ledgerEntryId: null,
             now: new DateTimeImmutable('2026-06-08 12:02:00'),
         );
 
@@ -336,7 +444,7 @@ SQL
         $ledger->credit(42, 'publisher_earnings', null, 1000, 'earning:stale-transition');
         $service = new WithdrawalService(new WithdrawalRepository($connection), $ledger, $ledgerRepository);
 
-        $request = $service->requestWithdrawal(42, 7, 400, 'bank_transfer', ['account_no' => 'x'], null, new DateTimeImmutable('2026-06-08 12:00:00'));
+        $request = $service->requestWithdrawal(42, 7, 400, 'bank_transfer', ['account_no' => 'x'], null, 'withdrawal:req:stale-paid-different', new DateTimeImmutable('2026-06-08 12:00:00'));
         $this->installWithdrawalStatusRaceTrigger($connection, 'requested', 'paid', 'rejected');
         $stale = $this->captureValidation(fn () => $service->markPaid($request->id ?? 0, 99, 'paid', new DateTimeImmutable('2026-06-08 12:01:00')));
 
@@ -354,7 +462,7 @@ SQL
         $ledger->credit(42, 'publisher_earnings', null, 1000, 'earning:stale-target');
         $service = new WithdrawalService(new WithdrawalRepository($connection), $ledger, $ledgerRepository);
 
-        $request = $service->requestWithdrawal(42, 7, 400, 'bank_transfer', ['account_no' => 'x'], null, new DateTimeImmutable('2026-06-08 12:00:00'));
+        $request = $service->requestWithdrawal(42, 7, 400, 'bank_transfer', ['account_no' => 'x'], null, 'withdrawal:req:stale-paid-target', new DateTimeImmutable('2026-06-08 12:00:00'));
         $this->installWithdrawalStatusRaceTrigger($connection, 'requested', 'paid', 'paid');
         $paid = $service->markPaid($request->id ?? 0, 99, 'paid', new DateTimeImmutable('2026-06-08 12:01:00'));
 
@@ -373,7 +481,7 @@ SQL
         $ledger->credit(42, 'publisher_earnings', null, 1000, 'earning:stale-resubmit');
         $service = new WithdrawalService(new WithdrawalRepository($connection), $ledger, $ledgerRepository);
 
-        $request = $service->requestWithdrawal(42, 7, 400, 'bank_transfer', ['account_no' => 'x'], null, new DateTimeImmutable('2026-06-08 12:00:00'));
+        $request = $service->requestWithdrawal(42, 7, 400, 'bank_transfer', ['account_no' => 'x'], null, 'withdrawal:req:stale-resubmit', new DateTimeImmutable('2026-06-08 12:00:00'));
         $service->revoke($request->id ?? 0, 7, 'cancelled', new DateTimeImmutable('2026-06-08 12:01:00'));
         $this->installWithdrawalStatusRaceTrigger($connection, 'revoked', 'requested', 'paid');
 
@@ -417,5 +525,94 @@ SQL,
         }
 
         self::fail('Expected withdrawal validation failure.');
+    }
+
+    private function captureInvalidArgument(callable $operation): \InvalidArgumentException
+    {
+        try {
+            $operation();
+        } catch (\InvalidArgumentException $exception) {
+            return $exception;
+        }
+
+        self::fail('Expected invalid argument failure.');
+    }
+}
+
+final class RecordingWithdrawalLedgerRepository implements PointsLedgerRepositoryInterface
+{
+    public int $tryDebitCalls = 0;
+
+    public int $appendCalls = 0;
+
+    public ?PointsLedgerEntry $lastTryDebit = null;
+
+    public function append(PointsLedgerEntry $entry): PointsLedgerEntry
+    {
+        ++$this->appendCalls;
+
+        return new PointsLedgerEntry(
+            id: 701,
+            organizationId: $entry->organizationId,
+            accountType: $entry->accountType,
+            accountId: $entry->accountId,
+            pointsAmount: $entry->pointsAmount,
+            direction: $entry->direction,
+            balanceAfterPoints: 0,
+            referenceType: $entry->referenceType,
+            referenceId: $entry->referenceId,
+            idempotencyKey: $entry->idempotencyKey,
+            memo: $entry->memo,
+            metadata: $entry->metadata,
+        );
+    }
+
+    public function tryDebit(PointsLedgerEntry $entry): ?PointsLedgerEntry
+    {
+        ++$this->tryDebitCalls;
+        $this->lastTryDebit = $entry;
+
+        return new PointsLedgerEntry(
+            id: 700,
+            organizationId: $entry->organizationId,
+            accountType: $entry->accountType,
+            accountId: $entry->accountId,
+            pointsAmount: $entry->pointsAmount,
+            direction: $entry->direction,
+            balanceAfterPoints: 0,
+            referenceType: $entry->referenceType,
+            referenceId: $entry->referenceId,
+            idempotencyKey: $entry->idempotencyKey,
+            memo: $entry->memo,
+            metadata: $entry->metadata,
+        );
+    }
+
+    public function findById(int $id): ?PointsLedgerEntry
+    {
+        return null;
+    }
+
+    public function findByIdempotencyKey(string $idempotencyKey): ?PointsLedgerEntry
+    {
+        return null;
+    }
+
+    public function findReversalForEntry(int $entryId): ?PointsLedgerEntry
+    {
+        return null;
+    }
+
+    /**
+     * @return list<PointsLedgerEntry>
+     */
+    public function listForOrganization(int $organizationId, int $limit = 50, ?string $accountType = null): array
+    {
+        return [];
+    }
+
+    public function balanceForOrganization(int $organizationId, string $accountType = 'advertiser_balance'): int
+    {
+        return 0;
     }
 }

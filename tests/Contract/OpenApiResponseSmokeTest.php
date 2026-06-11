@@ -213,6 +213,28 @@ final class OpenApiResponseSmokeTest extends TestCase
         );
     }
 
+    public function testAdDecisionReasonEnumDocumentsAllServingNoFillReasons(): void
+    {
+        $schemaBlock = $this->yamlNestedBlock($this->openApi(), 4, 'AdDecisionData');
+        self::assertNotNull($schemaBlock, 'AdDecisionData schema must be documented.');
+
+        foreach ([
+            'no_eligible_ad',
+            'unverified_inventory',
+            'unsafe_landing_url',
+            'budget_insufficient_balance',
+            'budget_total_cap',
+            'budget_daily_cap',
+            'budget_hourly_cap',
+            'frequency_cap_exceeded',
+            'fraud_high_risk_viewer',
+            'fraud_high_risk_slot',
+            'null',
+        ] as $reason) {
+            self::assertStringContainsString('- ' . $reason, $schemaBlock);
+        }
+    }
+
     private function healthApp(): App
     {
         return $this->app(static function (App $app): void {

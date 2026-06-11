@@ -1041,10 +1041,23 @@ final class BillingRouteIntegrationTest extends TestCase
             'payout_method' => 'bank_transfer',
             'payout_account' => ['account_no' => '****1234'],
             'notes' => 'route payout',
+            'idempotency_key' => 'withdrawal:route:request:1',
         ], $token);
 
         self::assertSame('requested', $requested['data']['status']);
         self::assertSame(1000, $requested['data']['points_amount']);
+        self::assertSame('withdrawal:route:request:1', $requested['data']['idempotency_key']);
+
+        $requestedAgain = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals?organization_id=99', [
+            'points_amount' => 1000,
+            'payout_method' => 'bank_transfer',
+            'payout_account' => ['account_no' => '****1234'],
+            'notes' => 'route payout',
+            'idempotency_key' => 'withdrawal:route:request:1',
+        ], $token);
+        self::assertSame($requested['data']['id'], $requestedAgain['data']['id']);
+        self::assertSame($requested['data']['ledger_entry_id'], $requestedAgain['data']['ledger_entry_id']);
+        self::assertSame(2000, (new PointsLedgerRepository($connection))->balanceForOrganization(99, 'publisher_earnings'));
 
         $proofIntent = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs?organization_id=99', [
             'filename' => 'receipt.pdf',
@@ -1072,6 +1085,7 @@ final class BillingRouteIntegrationTest extends TestCase
             'points_amount' => 500,
             'payout_method' => 'bank_transfer',
             'payout_account' => ['account_no' => '****5678'],
+            'idempotency_key' => 'withdrawal:route:request:2',
         ], $token);
         $rejected = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $second['data']['id'] . '/reject?organization_id=99', [
             'notes' => 'bad account',
@@ -1082,6 +1096,7 @@ final class BillingRouteIntegrationTest extends TestCase
             'points_amount' => 300,
             'payout_method' => 'bank_transfer',
             'payout_account' => ['account_no' => '****9999'],
+            'idempotency_key' => 'withdrawal:route:request:3',
         ], $token);
         $revoked = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $third['data']['id'] . '/revoke?organization_id=99', [], $token);
         self::assertSame('revoked', $revoked['data']['status']);
@@ -1123,6 +1138,7 @@ final class BillingRouteIntegrationTest extends TestCase
             'points_amount' => '100',
             'payout_method' => 'bank_transfer',
             'payout_account' => ['account_no' => 'x'],
+            'idempotency_key' => 'withdrawal:route:error:wrong-type',
         ], $token);
         self::assertSame('invalid_request', $wrongType['error']['code']);
 
@@ -1130,13 +1146,22 @@ final class BillingRouteIntegrationTest extends TestCase
             'points_amount' => 100,
             'payout_method' => 'bank_transfer',
             'payout_account' => 'x',
+            'idempotency_key' => 'withdrawal:route:error:wrong-account',
         ], $token);
         self::assertSame('invalid_request', $wrongAccountType['error']['code']);
+
+        $missingIdempotencyKey = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals?organization_id=99', [
+            'points_amount' => 100,
+            'payout_method' => 'bank_transfer',
+            'payout_account' => ['account_no' => 'x'],
+        ], $token);
+        self::assertSame('invalid_request', $missingIdempotencyKey['error']['code']);
 
         $insufficient = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals?organization_id=99', [
             'points_amount' => 100,
             'payout_method' => 'bank_transfer',
             'payout_account' => ['account_no' => 'x'],
+            'idempotency_key' => 'withdrawal:route:error:insufficient',
         ], $token);
         self::assertSame('withdrawal_rejected', $insufficient['error']['code']);
 
@@ -1146,6 +1171,7 @@ final class BillingRouteIntegrationTest extends TestCase
             'payout_method' => 'bank_transfer',
             'payout_account' => ['account_no' => 'x'],
             'notes' => null,
+            'idempotency_key' => 'withdrawal:route:error:paid',
         ], $token);
         $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/paid?organization_id=99', [], $token);
 
@@ -1464,6 +1490,15 @@ final class BillingRouteIntegrationTest extends TestCase
             )',
         );
         $connection->executeStatement(
+            'CREATE TABLE ledger_account_balances (
+                organization_id INTEGER NOT NULL,
+                account_type TEXT NOT NULL,
+                balance_points INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (organization_id, account_type)
+            )',
+        );
+        $connection->executeStatement(
             'CREATE TABLE recharge_keys (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 organization_id INTEGER NULL,
@@ -1500,6 +1535,7 @@ final class BillingRouteIntegrationTest extends TestCase
                 organization_id INTEGER NOT NULL,
                 requested_by_user_id INTEGER NOT NULL,
                 points_amount INTEGER NOT NULL,
+                idempotency_key VARCHAR(160) NOT NULL,
                 status TEXT NOT NULL,
                 payout_method TEXT NOT NULL,
                 payout_account_json TEXT NOT NULL,
@@ -1512,7 +1548,12 @@ final class BillingRouteIntegrationTest extends TestCase
                 paid_at TEXT NULL,
                 rejected_at TEXT NULL,
                 revoked_at TEXT NULL,
-                resubmitted_at TEXT NULL
+                resubmitted_at TEXT NULL,
+                UNIQUE (organization_id, idempotency_key),
+                UNIQUE (ledger_entry_id),
+                FOREIGN KEY (ledger_entry_id) REFERENCES ledger_entries (id) ON DELETE RESTRICT,
+                CHECK (points_amount > 0),
+                CHECK (status IN (\'requested\', \'paid\', \'rejected\', \'revoked\'))
             )',
         );
         $connection->executeStatement(

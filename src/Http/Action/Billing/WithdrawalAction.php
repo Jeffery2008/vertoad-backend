@@ -38,6 +38,7 @@ final readonly class WithdrawalAction
                 payoutMethod: $this->stringField($body, 'payout_method'),
                 payoutAccount: $this->arrayField($body, 'payout_account'),
                 notes: $this->optionalStringField($body, 'notes'),
+                idempotencyKey: $this->stringField($body, 'idempotency_key'),
                 now: new DateTimeImmutable(),
             );
         } catch (InvalidArgumentException $exception) {

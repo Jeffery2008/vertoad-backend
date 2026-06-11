@@ -42,6 +42,7 @@ final class BillingSerializers
             'organization_id' => $request->organizationId,
             'requested_by_user_id' => $request->requestedByUserId,
             'points_amount' => $request->pointsAmount,
+            'idempotency_key' => $request->idempotencyKey,
             'status' => $request->status->value,
             'payout_method' => $request->payoutMethod,
             'payout_account' => $request->payoutAccount,

@@ -58,6 +58,8 @@ final class CampaignRouteIntegrationTest extends TestCase
 
         self::assertSame('v1', $created['meta']['api_version']);
         self::assertSame('draft', $created['data']['status']);
+        self::assertArrayHasKey('pause_reason', $created['data']);
+        self::assertNull($created['data']['pause_reason']);
         self::assertSame('cpm', $created['data']['pricing_model']);
         self::assertSame(120, $created['data']['bid_points']);
         self::assertSame(['desktop', 'mobile'], $created['data']['targeting']['devices']);
@@ -67,9 +69,11 @@ final class CampaignRouteIntegrationTest extends TestCase
         $listed = $this->handleJson($app, 'GET', '/api/v1/campaigns?organization_id=99', null, 'valid-token');
         self::assertCount(1, $listed['data']);
         self::assertSame($created['data']['id'], $listed['data'][0]['id']);
+        self::assertNull($listed['data'][0]['pause_reason']);
 
         $fetched = $this->handleJson($app, 'GET', '/api/v1/campaigns/' . $created['data']['id'] . '?organization_id=99', null, 'valid-token');
         self::assertSame('Launch campaign', $fetched['data']['name']);
+        self::assertNull($fetched['data']['pause_reason']);
 
         $updated = $this->handleJson($app, 'PATCH', '/api/v1/campaigns/' . $created['data']['id'] . '?organization_id=99', [
             'name' => 'Launch campaign updated',
@@ -87,6 +91,16 @@ final class CampaignRouteIntegrationTest extends TestCase
         self::assertSame('cpc', $updated['data']['pricing_model']);
         self::assertSame(45, $updated['data']['bid_points']);
         self::assertSame(9_000, $updated['data']['budget']['total_cap_points']);
+        self::assertNull($updated['data']['pause_reason']);
+
+        self::assertTrue((new CampaignRepository($connection))->pauseIfActive(
+            99,
+            (int) $created['data']['id'],
+            'total_cap_exhausted',
+        ));
+        $autoPaused = $this->handleJson($app, 'GET', '/api/v1/campaigns/' . $created['data']['id'] . '?organization_id=99', null, 'valid-token');
+        self::assertSame('paused', $autoPaused['data']['status']);
+        self::assertSame('total_cap_exhausted', $autoPaused['data']['pause_reason']);
     }
 
     public function testActivationRequiresApprovedCreativeReview(): void
@@ -261,7 +275,8 @@ final class CampaignRouteIntegrationTest extends TestCase
                 CampaignBudgetRepositoryInterface $budgets,
                 PointsLedgerService $ledger,
                 PointsLedgerRepositoryInterface $ledgerRepository,
-            ): CampaignBudgetService => new CampaignBudgetService($budgets, $ledger, $ledgerRepository),
+                CampaignRepositoryInterface $campaigns,
+            ): CampaignBudgetService => new CampaignBudgetService($budgets, $ledger, $ledgerRepository, $campaigns),
             CampaignService::class => static fn (
                 CampaignRepositoryInterface $campaigns,
                 ReviewRepositoryInterface $reviews,
@@ -287,6 +302,15 @@ final class CampaignRouteIntegrationTest extends TestCase
     {
         $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
         CampaignSchema::create($connection);
+        $connection->executeStatement(
+            'CREATE TABLE ledger_account_balances (
+                organization_id INTEGER NOT NULL,
+                account_type VARCHAR(64) NOT NULL,
+                balance_points INTEGER NOT NULL DEFAULT 0,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (organization_id, account_type)
+            )',
+        );
         $connection->executeStatement(
             'CREATE TABLE ledger_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
