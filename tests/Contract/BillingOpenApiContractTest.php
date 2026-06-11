@@ -69,12 +69,16 @@ final class BillingOpenApiContractTest extends TestCase
 
         foreach ([
             'operationId: createLedgerAdjustment',
+            'x-permissions:',
+            '- billing.ledger.adjust.platform',
             'billing.ledger.adjust.platform',
             'OrganizationId',
             'LedgerAdjustmentRequest',
             'LedgerEntryData',
             '"200":',
             '"201":',
+            '"400":',
+            '"401":',
             '"403":',
             '"409":',
             '"422":',
@@ -84,12 +88,17 @@ final class BillingOpenApiContractTest extends TestCase
 
         foreach ([
             'operationId: reverseLedgerEntry',
+            'x-permissions:',
+            '- billing.ledger.adjust.platform',
             'billing.ledger.adjust.platform',
             'name: entry_id',
             'LedgerReversalRequest',
             'LedgerEntryData',
             '"200":',
             '"201":',
+            '"400":',
+            '"401":',
+            '"403":',
             '"404":',
             '"409":',
             '"422":',
@@ -108,7 +117,26 @@ final class BillingOpenApiContractTest extends TestCase
         self::assertStringContainsString('enum:', $adjustmentSchema);
         self::assertStringContainsString('credit', $adjustmentSchema);
         self::assertStringContainsString('debit', $adjustmentSchema);
+        self::assertStringContainsString('advertiser_balance', $adjustmentSchema);
+        self::assertStringContainsString('publisher_earnings', $adjustmentSchema);
+        self::assertStringContainsString('maxLength: 160', $adjustmentSchema);
+        self::assertStringContainsString('maxLength: 240', $adjustmentSchema);
+        self::assertStringContainsString('maxLength: 160', $reversalSchema);
+        self::assertStringContainsString('maxLength: 240', $reversalSchema);
         self::assertStringContainsString('$ref: "#/components/schemas/PointsLedgerEntry"', $entryDataSchema);
+
+        foreach (['200', '201'] as $status) {
+            self::assertStringContainsString('LedgerEntryData', $this->responseBlock($adjustmentPath, $status));
+            self::assertStringContainsString('LedgerEntryData', $this->responseBlock($reversalPath, $status));
+        }
+
+        foreach (['400', '401', '403', '409', '422'] as $status) {
+            self::assertStringContainsString('#/components/responses/Error', $this->responseBlock($adjustmentPath, $status));
+        }
+
+        foreach (['400', '401', '403', '404', '409', '422'] as $status) {
+            self::assertStringContainsString('#/components/responses/Error', $this->responseBlock($reversalPath, $status));
+        }
     }
 
     private function block(string $document, string $start, string $end): string
@@ -119,5 +147,33 @@ final class BillingOpenApiContractTest extends TestCase
         self::assertNotFalse($endOffset, $end);
 
         return substr($document, $startOffset, $endOffset - $startOffset);
+    }
+
+    private function responseBlock(string $operationBlock, string $status): string
+    {
+        $lines = preg_split('/\R/', $operationBlock);
+        self::assertIsArray($lines);
+
+        $capturing = false;
+        $block = [];
+        foreach ($lines as $line) {
+            if (preg_match('/^\s{8}"?' . preg_quote($status, '/') . '"?:\s*$/', $line) === 1) {
+                $capturing = true;
+                $block[] = $line;
+                continue;
+            }
+
+            if ($capturing && preg_match('/^\s{8}(?:"?\d{3}"?|default):\s*$/', $line) === 1) {
+                break;
+            }
+
+            if ($capturing) {
+                $block[] = $line;
+            }
+        }
+
+        self::assertNotSame([], $block, $status);
+
+        return implode(PHP_EOL, $block);
     }
 }

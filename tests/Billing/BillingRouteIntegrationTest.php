@@ -559,7 +559,7 @@ final class BillingRouteIntegrationTest extends TestCase
         ]);
         $token = $login['data']['token']['access_token'];
 
-        $adjustment = $this->handleJson($app, 'POST', '/api/v1/billing/ledger/adjustments?organization_id=10', [
+        $adjustmentResponse = $this->handleJsonResponse($app, 'POST', '/api/v1/billing/ledger/adjustments?organization_id=10', [
             'account_type' => 'advertiser_balance',
             'account_id' => null,
             'points_amount' => '450',
@@ -570,6 +570,8 @@ final class BillingRouteIntegrationTest extends TestCase
             'CF-Connecting-IP' => '203.0.113.88',
             'User-Agent' => 'LedgerAdmin/1.0',
         ]);
+        self::assertSame(201, $adjustmentResponse['status']);
+        $adjustment = $adjustmentResponse['body'];
 
         self::assertSame(10, $adjustment['data']['ledger_entry']['organization_id']);
         self::assertSame('advertiser_balance', $adjustment['data']['ledger_entry']['account_type']);
@@ -583,17 +585,19 @@ final class BillingRouteIntegrationTest extends TestCase
         self::assertSame(1, $adjustment['data']['ledger_entry']['metadata']['actor_user_id']);
         self::assertStringNotContainsString('idempotency_key', json_encode($adjustment, JSON_THROW_ON_ERROR));
 
-        $duplicate = $this->handleJson($app, 'POST', '/api/v1/billing/ledger/adjustments?organization_id=10', [
+        $duplicateResponse = $this->handleJsonResponse($app, 'POST', '/api/v1/billing/ledger/adjustments?organization_id=10', [
             'account_type' => 'advertiser_balance',
             'points_amount' => 999,
             'direction' => 'debit',
             'idempotency_key' => 'ops:ledger-adjust:route-1',
             'reason' => 'duplicate submission',
         ], $token);
+        self::assertSame(200, $duplicateResponse['status']);
+        $duplicate = $duplicateResponse['body'];
         self::assertSame($adjustment['data']['ledger_entry']['id'], $duplicate['data']['ledger_entry']['id']);
         self::assertSame(450, $duplicate['data']['ledger_entry']['points_amount']);
 
-        $reversal = $this->handleJson(
+        $reversalResponse = $this->handleJsonResponse(
             $app,
             'POST',
             '/api/v1/billing/ledger/' . $adjustment['data']['ledger_entry']['id'] . '/reversals?organization_id=10',
@@ -608,6 +612,8 @@ final class BillingRouteIntegrationTest extends TestCase
                 'User-Agent' => 'LedgerAdmin/1.0',
             ],
         );
+        self::assertSame(201, $reversalResponse['status']);
+        $reversal = $reversalResponse['body'];
 
         self::assertSame(10, $reversal['data']['ledger_entry']['organization_id']);
         self::assertSame('debit', $reversal['data']['ledger_entry']['direction']);
@@ -621,7 +627,7 @@ final class BillingRouteIntegrationTest extends TestCase
             $reversal['data']['ledger_entry']['metadata']['reverses_ledger_entry_id'],
         );
 
-        $reversalReplay = $this->handleJson(
+        $reversalReplayResponse = $this->handleJsonResponse(
             $app,
             'POST',
             '/api/v1/billing/ledger/' . $adjustment['data']['ledger_entry']['id'] . '/reversals?organization_id=10',
@@ -631,10 +637,12 @@ final class BillingRouteIntegrationTest extends TestCase
             ],
             $token,
         );
+        self::assertSame(200, $reversalReplayResponse['status']);
+        $reversalReplay = $reversalReplayResponse['body'];
         self::assertSame($reversal['data']['ledger_entry']['id'], $reversalReplay['data']['ledger_entry']['id']);
         self::assertSame(450, $reversalReplay['data']['ledger_entry']['points_amount']);
 
-        $duplicateReversal = $this->handleJson(
+        $duplicateReversalResponse = $this->handleJsonResponse(
             $app,
             'POST',
             '/api/v1/billing/ledger/' . $adjustment['data']['ledger_entry']['id'] . '/reversals?organization_id=10',
@@ -644,6 +652,8 @@ final class BillingRouteIntegrationTest extends TestCase
             ],
             $token,
         );
+        self::assertSame(409, $duplicateReversalResponse['status']);
+        $duplicateReversal = $duplicateReversalResponse['body'];
         self::assertSame('ledger_reversal_conflict', $duplicateReversal['error']['code']);
 
         $auditRows = $connection->fetchAllAssociative('SELECT action, subject_type, subject_id, actor_user_id, organization_id, ip_address, user_agent, metadata_json FROM audit_logs ORDER BY id ASC');
@@ -864,13 +874,15 @@ final class BillingRouteIntegrationTest extends TestCase
         self::assertSame('idempotency_key must be at most 160 characters.', $tooLongReversalIdempotencyKey['error']['message']);
 
         $ledger->credit(10, 'advertiser_balance', null, 1, 'ops:ledger-adjust:conflicting-key');
-        $conflictingAdjustmentKey = $this->handleJson($app, 'POST', '/api/v1/billing/ledger/adjustments?organization_id=10', [
+        $conflictingAdjustmentKeyResponse = $this->handleJsonResponse($app, 'POST', '/api/v1/billing/ledger/adjustments?organization_id=10', [
             'account_type' => 'advertiser_balance',
             'points_amount' => 100,
             'direction' => 'credit',
             'idempotency_key' => 'ops:ledger-adjust:conflicting-key',
             'reason' => 'attempt conflicting adjustment key reuse',
         ], $token);
+        self::assertSame(409, $conflictingAdjustmentKeyResponse['status']);
+        $conflictingAdjustmentKey = $conflictingAdjustmentKeyResponse['body'];
         self::assertSame('ledger_idempotency_conflict', $conflictingAdjustmentKey['error']['code']);
 
         $adjustment = $ledger->adjust(
@@ -884,7 +896,7 @@ final class BillingRouteIntegrationTest extends TestCase
         );
         self::assertSame('adjustment', $adjustment->metadata['entry_kind'] ?? null);
 
-        $reusedKey = $this->handleJson(
+        $reusedKeyResponse = $this->handleJsonResponse(
             $app,
             'POST',
             '/api/v1/billing/ledger/' . $original->id . '/reversals?organization_id=10',
@@ -894,6 +906,8 @@ final class BillingRouteIntegrationTest extends TestCase
             ],
             $token,
         );
+        self::assertSame(409, $reusedKeyResponse['status']);
+        $reusedKey = $reusedKeyResponse['body'];
         self::assertSame('ledger_idempotency_conflict', $reusedKey['error']['code']);
 
         self::assertSame(0, (int) $connection->fetchOne("SELECT COUNT(*) FROM audit_logs WHERE action LIKE 'billing.ledger.%'"));
@@ -1192,6 +1206,22 @@ final class BillingRouteIntegrationTest extends TestCase
         array $serverParams = [],
         array $headers = [],
     ): array {
+        return $this->handleJsonResponse($app, $method, $uri, $payload, $bearerToken, $serverParams, $headers)['body'];
+    }
+
+    /**
+     * @param array<string, mixed>|null $payload
+     * @return array{status: int, body: array<string, mixed>}
+     */
+    private function handleJsonResponse(
+        \Slim\App $app,
+        string $method,
+        string $uri,
+        ?array $payload = null,
+        ?string $bearerToken = null,
+        array $serverParams = [],
+        array $headers = [],
+    ): array {
         $request = (new ServerRequestFactory())->createServerRequest($method, $uri, $serverParams);
         if ($payload !== null) {
             $request = $request->withParsedBody($payload);
@@ -1205,10 +1235,11 @@ final class BillingRouteIntegrationTest extends TestCase
             $request = $request->withHeader((string) $name, (string) $value);
         }
 
-        $decoded = json_decode((string) $app->handle($request)->getBody(), true, flags: JSON_THROW_ON_ERROR);
+        $response = $app->handle($request);
+        $decoded = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
         self::assertIsArray($decoded);
 
-        return $decoded;
+        return ['status' => $response->getStatusCode(), 'body' => $decoded];
     }
 
     private function createApp(

@@ -11,6 +11,8 @@ use VertoAD\Repository\PointsLedgerRepositoryInterface;
 
 final class PointsLedgerService
 {
+    private const int REASON_MAX_LENGTH = 240;
+
     public function __construct(private readonly PointsLedgerRepositoryInterface $repository)
     {
     }
@@ -82,10 +84,7 @@ final class PointsLedgerService
             throw new InvalidArgumentException('Original ledger entry was not found.');
         }
 
-        $reason = trim($reason);
-        if ($reason === '') {
-            throw new InvalidArgumentException('Ledger reversal reason is required.');
-        }
+        $reason = $this->normalizeReason($reason, 'Ledger reversal reason is required.');
 
         $existing = $this->repository->findByIdempotencyKey(trim($idempotencyKey));
         if ($existing !== null) {
@@ -125,10 +124,7 @@ final class PointsLedgerService
         string $reason,
         ?int $actorUserId = null,
     ): PointsLedgerEntry {
-        $reason = trim($reason);
-        if ($reason === '') {
-            throw new InvalidArgumentException('Ledger adjustment reason is required.');
-        }
+        $reason = $this->normalizeReason($reason, 'Ledger adjustment reason is required.');
 
         return $this->append(
             organizationId: $organizationId,
@@ -173,7 +169,8 @@ final class PointsLedgerService
             return $existing;
         }
 
-        $previousBalance = $this->repository->balanceForOrganization($organizationId, trim($accountType));
+        $accountType = $this->normalizeAccountType($accountType);
+        $previousBalance = $this->repository->balanceForOrganization($organizationId, $accountType);
         $balanceAfterPoints = match ($direction) {
             LedgerDirection::Credit => $previousBalance + $pointsAmount,
             LedgerDirection::Debit => $previousBalance - $pointsAmount,
@@ -182,7 +179,7 @@ final class PointsLedgerService
         return $this->repository->append(new PointsLedgerEntry(
             id: null,
             organizationId: $organizationId,
-            accountType: trim($accountType),
+            accountType: $accountType,
             accountId: $accountId,
             pointsAmount: $pointsAmount,
             direction: $direction,
@@ -193,6 +190,30 @@ final class PointsLedgerService
             memo: $this->normalizeNullableText($memo),
             metadata: $this->normalizeMetadata($metadata),
         ));
+    }
+
+    private function normalizeAccountType(string $accountType): string
+    {
+        $accountType = trim($accountType);
+
+        return match ($accountType) {
+            'advertiser_balance', 'publisher_earnings' => $accountType,
+            default => throw new InvalidArgumentException('Ledger account type must be either advertiser_balance or publisher_earnings.'),
+        };
+    }
+
+    private function normalizeReason(string $reason, string $blankMessage): string
+    {
+        $reason = trim($reason);
+        if ($reason === '') {
+            throw new InvalidArgumentException($blankMessage);
+        }
+
+        if (strlen($reason) > self::REASON_MAX_LENGTH) {
+            throw new InvalidArgumentException('Ledger reason must be at most 240 characters.');
+        }
+
+        return $reason;
     }
 
     private function normalizeNullableText(?string $value): ?string

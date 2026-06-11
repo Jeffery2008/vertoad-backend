@@ -191,6 +191,53 @@ final class PointsLedgerServiceTest extends TestCase
         );
     }
 
+    public function testAdjustmentRejectsReasonLongerThanAuditStoragePolicy(): void
+    {
+        $service = new PointsLedgerService(new FakePointsLedgerRepository());
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Ledger reason must be at most 240 characters.');
+
+        $service->adjust(
+            organizationId: 10,
+            accountType: 'publisher_earnings',
+            accountId: 33,
+            pointsAmount: 500,
+            direction: LedgerDirection::Credit,
+            idempotencyKey: 'manual:adjustment:long-reason',
+            reason: str_repeat('x', 241),
+        );
+    }
+
+    public function testReverseRejectsReasonLongerThanAuditStoragePolicy(): void
+    {
+        $repository = new FakePointsLedgerRepository();
+        $service = new PointsLedgerService($repository);
+        $original = $service->credit(10, 'advertiser_balance', null, 100, 'original:long-reason');
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Ledger reason must be at most 240 characters.');
+
+        $service->reverse((int) $original->id, 'original:long-reason:reverse', str_repeat('x', 241));
+    }
+
+    public function testRejectsUnsupportedAccountTypeBeforeAppending(): void
+    {
+        $repository = new FakePointsLedgerRepository();
+        $service = new PointsLedgerService($repository);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Ledger account type must be either advertiser_balance or publisher_earnings.');
+
+        $service->credit(
+            organizationId: 10,
+            accountType: 'settlement',
+            accountId: null,
+            pointsAmount: 100,
+            idempotencyKey: 'bad:account-type',
+        );
+    }
+
     public function testRejectsZeroPointsBeforeAppending(): void
     {
         $repository = new FakePointsLedgerRepository();
