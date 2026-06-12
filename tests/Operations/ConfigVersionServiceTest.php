@@ -51,6 +51,7 @@ final class ConfigVersionServiceTest extends TestCase
                 ['../secrets', ['enabled' => true]],
                 ['security.rate_limit', []],
                 ['security.rate_limit', ['password' => 'must-not-store-secret']],
+                ['security.rate_limit', ['nested' => ['authorization_header' => 'Bearer must-not-store']]],
             ] as [$key, $value]
         ) {
             try {
@@ -168,6 +169,53 @@ final class ConfigVersionServiceTest extends TestCase
         self::assertSame($this->validAssetUploadPolicyConfig(), $this->value($created, 'value'));
     }
 
+    public function testAiReviewPolicyVersionAcceptsValidNonSecretPolicy(): void
+    {
+        $service = new ConfigVersionService(new InMemoryConfigVersionRepository(), new AuditLogService(new ConfigAuditRepository()));
+
+        $created = $service->createVersion('review.ai_policy', $this->validAiReviewPolicyConfig(), 7);
+
+        self::assertSame(1, $this->value($created, 'version_number'));
+        self::assertSame('review.ai_policy', $this->value($created, 'config_key'));
+        self::assertSame($this->validAiReviewPolicyConfig(), $this->value($created, 'value'));
+    }
+
+    public function testAiReviewPolicyVersionsRejectInvalidOrSecretValues(): void
+    {
+        $service = new ConfigVersionService(new InMemoryConfigVersionRepository(), new AuditLogService(new ConfigAuditRepository()));
+        $valid = $this->validAiReviewPolicyConfig();
+
+        foreach (
+            [
+                'arbitrary object' => ['enabled' => true],
+                'secret api key' => [...$valid, 'api_key' => 'must-stay-in-env'],
+                'camel case api key' => [...$valid, 'apiKey' => 'must-stay-in-env'],
+                'derived api key name' => [...$valid, 'provider_api_key' => 'must-stay-in-env'],
+                'unknown policy field' => [...$valid, 'unexpected' => 'must-not-persist'],
+                'disabled wrong type' => [...$valid, 'enabled' => 'true'],
+                'unsupported provider' => [...$valid, 'provider' => 'deterministic'],
+                'invalid base url' => [...$valid, 'base_url' => 'ftp://ai.example.test/v1'],
+                'blank model' => [...$valid, 'model' => ''],
+                'blank prompt' => [...$valid, 'prompt' => ''],
+                'zero timeout' => [...$valid, 'timeout_seconds' => 0],
+                'zero max input' => [...$valid, 'max_input_tokens' => 0],
+                'zero max output' => [...$valid, 'max_output_tokens' => 0],
+                'temperature above range' => [...$valid, 'temperature' => 2.01],
+            ] as $case => $value
+        ) {
+            try {
+                $service->createVersion('review.ai_policy', $value, 7);
+                self::fail('Invalid review.ai_policy value must be rejected: ' . $case);
+            } catch (\InvalidArgumentException $exception) {
+                if ($case === 'secret api key' || $case === 'camel case api key' || $case === 'derived api key name') {
+                    self::assertSame('Secret config values must stay in environment secrets.', $exception->getMessage());
+                } else {
+                    self::assertStringStartsWith('Invalid review.ai_policy ', $exception->getMessage());
+                }
+            }
+        }
+    }
+
     public function testAssetUploadPolicyRollbackRejectsInvalidHistoricalPolicyWithoutAppendingVersion(): void
     {
         $repository = new InMemoryConfigVersionRepository();
@@ -256,6 +304,24 @@ final class ConfigVersionServiceTest extends TestCase
                     ],
                 ],
             ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function validAiReviewPolicyConfig(): array
+    {
+        return [
+            'enabled' => true,
+            'provider' => 'openai_compatible',
+            'base_url' => 'https://api.openai.example/v1',
+            'model' => 'review-model',
+            'prompt' => 'Return strict JSON with risk_score, risk_labels, reasons, and recommendation.',
+            'timeout_seconds' => 60,
+            'max_input_tokens' => 12000,
+            'max_output_tokens' => 2000,
+            'temperature' => 0.2,
         ];
     }
 }

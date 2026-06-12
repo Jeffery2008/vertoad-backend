@@ -170,6 +170,23 @@ VALUES
         @super_admin_user_id
     ),
     (
+        'cfgv_bootstrap_review_ai_policy_v1',
+        'review.ai_policy',
+        1,
+        JSON_OBJECT(
+            'enabled', true,
+            'provider', 'openai_compatible',
+            'base_url', 'https://api.openai.com/v1',
+            'model', 'gpt-4.1-mini',
+            'prompt', 'Return strict JSON with risk_score, risk_labels, reasons, and recommendation for VertoAD creative policy review.',
+            'timeout_seconds', 60,
+            'max_input_tokens', 12000,
+            'max_output_tokens', 2000,
+            'temperature', 0.2
+        ),
+        @super_admin_user_id
+    ),
+    (
         'cfgv_bootstrap_assets_upload_policy_v1',
         'assets.upload_policy',
         1,

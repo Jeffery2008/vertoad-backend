@@ -138,6 +138,41 @@ final class OpenAiCompatibleCreativeReviewProviderTest extends TestCase
         self::assertSame(['Provider response type mismatch.'], $result->reasons);
     }
 
+    public function testMaxInputTokensLimitsSerializedUserReviewPayload(): void
+    {
+        $captured = [];
+        $provider = new OpenAiCompatibleCreativeReviewProvider([
+            'base_url' => 'https://ai.example.test/v1',
+            'api_key' => 'unit-test-ai-review-key',
+            'model' => 'review-model',
+            'max_input_tokens' => 80,
+        ], function (string $url, array $payload, array $headers, int $timeoutSeconds) use (&$captured): array {
+            $captured = $payload['messages'][1]['content'];
+
+            return [
+                'status' => 200,
+                'body' => json_encode([
+                    'choices' => [[
+                        'message' => [
+                            'content' => json_encode([
+                                'risk_score' => 0.1,
+                                'risk_labels' => ['manual_review'],
+                                'reasons' => ['Input accepted.'],
+                            ], JSON_THROW_ON_ERROR),
+                        ],
+                    ]],
+                ], JSON_THROW_ON_ERROR),
+            ];
+        });
+
+        $provider->review($this->input(copy: str_repeat('Launch offer ', 80)));
+
+        self::assertIsString($captured);
+        self::assertLessThanOrEqual(320, strlen($captured));
+        self::assertStringEndsWith('...', $captured);
+        self::assertStringContainsString('"copy"', $captured);
+    }
+
     public function testMapsProviderHttpAndMalformedResponsesToHumanReviewSafeErrors(): void
     {
         $httpFailure = $this->providerReturning(503, '{"error":"down"}')->review($this->input());

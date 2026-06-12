@@ -16,6 +16,7 @@ final readonly class OpenAiCompatibleCreativeReviewProvider implements CreativeR
     private string $model;
     private string $prompt;
     private int $timeoutSeconds;
+    private int $maxInputTokens;
     private int $maxOutputTokens;
     private float $temperature;
 
@@ -31,6 +32,7 @@ final readonly class OpenAiCompatibleCreativeReviewProvider implements CreativeR
         $this->prompt = $this->optionalString($config['prompt'] ?? null)
             ?? 'You are VertoAD creative safety reviewer. Return strict JSON with risk_score, risk_labels, reasons, and recommendation.';
         $this->timeoutSeconds = max(1, (int) ($config['timeout_seconds'] ?? 60));
+        $this->maxInputTokens = max(1, (int) ($config['max_input_tokens'] ?? 12000));
         $this->maxOutputTokens = max(1, (int) ($config['max_output_tokens'] ?? 2000));
         $this->temperature = (float) ($config['temperature'] ?? 0.2);
         $this->transport = Closure::fromCallable($transport ?? self::httpTransport());
@@ -151,20 +153,34 @@ final readonly class OpenAiCompatibleCreativeReviewProvider implements CreativeR
                 ],
                 [
                     'role' => 'user',
-                    'content' => json_encode([
+                    'content' => $this->boundedUserContent([
                         'asset_id' => $input->assetId,
                         'asset_type' => $input->assetType,
                         'object_key' => $input->objectKey,
                         'content_type' => $input->contentType,
                         'landing_url' => $input->landingUrl,
                         'copy' => $input->copy,
-                    ], JSON_THROW_ON_ERROR),
+                    ]),
                 ],
             ],
             'response_format' => ['type' => 'json_object'],
             'max_tokens' => $this->maxOutputTokens,
             'temperature' => $this->temperature,
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function boundedUserContent(array $payload): string
+    {
+        $json = json_encode($payload, JSON_THROW_ON_ERROR);
+        $maxBytes = $this->maxInputTokens * 4;
+        if (strlen($json) <= $maxBytes) {
+            return $json;
+        }
+
+        return substr($json, 0, max(0, $maxBytes - 3)) . '...';
     }
 
     private function providerError(string $reason, int $status): AiReviewResult

@@ -64,6 +64,17 @@ final class ConfigCacheRefreshJobTest extends TestCase
                     'min_visible_ms' => 1000,
                     'repeat_click_window_seconds' => 30,
                 ],
+                'review.ai_policy' => [
+                    'enabled' => true,
+                    'provider' => 'openai_compatible',
+                    'base_url' => 'https://api.openai.example/v1',
+                    'model' => 'review-model',
+                    'prompt' => 'Return strict JSON.',
+                    'timeout_seconds' => 60,
+                    'max_input_tokens' => 12000,
+                    'max_output_tokens' => 2000,
+                    'temperature' => 0.2,
+                ],
                 'assets.upload_policy' => $assetPolicy,
             ]),
             $redis,
@@ -75,7 +86,7 @@ final class ConfigCacheRefreshJobTest extends TestCase
 
         self::assertSame('config-cache-refresh', $job->name());
         self::assertSame('completed', $result->status);
-        self::assertSame(5, $result->metrics['refreshed'] ?? null);
+        self::assertSame(6, $result->metrics['refreshed'] ?? null);
         self::assertSame([
             [
                 "return {redis.call('SETEX', KEYS[1], ARGV[1], ARGV[2])}",
@@ -96,6 +107,11 @@ final class ConfigCacheRefreshJobTest extends TestCase
                 "return {redis.call('SETEX', KEYS[1], ARGV[1], ARGV[2])}",
                 ['vertoad:test:config:serving.event_validation'],
                 ['3600', '{"min_visible_ratio":0.5,"min_visible_ms":1000,"repeat_click_window_seconds":30}'],
+            ],
+            [
+                "return {redis.call('SETEX', KEYS[1], ARGV[1], ARGV[2])}",
+                ['vertoad:test:config:review.ai_policy'],
+                ['3600', '{"enabled":true,"provider":"openai_compatible","base_url":"https:\/\/api.openai.example\/v1","model":"review-model","prompt":"Return strict JSON.","timeout_seconds":60,"max_input_tokens":12000,"max_output_tokens":2000,"temperature":0.2}'],
             ],
             [
                 "return {redis.call('SETEX', KEYS[1], ARGV[1], ARGV[2])}",

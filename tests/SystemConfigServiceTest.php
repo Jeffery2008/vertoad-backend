@@ -7,6 +7,7 @@ namespace VertoAD\Tests;
 use PHPUnit\Framework\TestCase;
 use VertoAD\Domain\Assets\AssetType;
 use VertoAD\Domain\Assets\AssetUploadPolicy;
+use VertoAD\Domain\Review\AiReviewPolicy;
 use VertoAD\Domain\Serving\ServingEventPolicy;
 use VertoAD\Infrastructure\Security\RateLimitPolicy;
 use VertoAD\Repository\SystemConfigRepositoryInterface;
@@ -295,6 +296,74 @@ final class SystemConfigServiceTest extends TestCase
         self::assertTrue($policy->matchesMagic('image/png', "\x89PNG\r\n\x1A\npayload"));
     }
 
+    public function testAiReviewPolicyUsesConfiguredOpenAiCompatibleSettings(): void
+    {
+        $repository = new ArraySystemConfigRepository([
+            'review.ai_policy' => [
+                'enabled' => true,
+                'provider' => 'openai_compatible',
+                'base_url' => 'https://ai.example.test/v1/',
+                'model' => 'review-model',
+                'prompt' => 'Return strict JSON.',
+                'timeout_seconds' => 12,
+                'max_input_tokens' => 4096,
+                'max_output_tokens' => 321,
+                'temperature' => 0.4,
+            ],
+        ]);
+
+        $policy = (new SystemConfigService($repository))->aiReviewPolicy();
+
+        self::assertInstanceOf(AiReviewPolicy::class, $policy);
+        self::assertTrue($policy->enabled);
+        self::assertSame('openai_compatible', $policy->provider);
+        self::assertSame('https://ai.example.test/v1', $policy->baseUrl);
+        self::assertSame('review-model', $policy->model);
+        self::assertSame('Return strict JSON.', $policy->prompt);
+        self::assertSame(12, $policy->timeoutSeconds);
+        self::assertSame(4096, $policy->maxInputTokens);
+        self::assertSame(321, $policy->maxOutputTokens);
+        self::assertSame(0.4, $policy->temperature);
+        self::assertSame(['review.ai_policy'], $repository->queries);
+    }
+
+    public function testAiReviewPolicyFallsBackToDisabledLocalPolicyWhenConfigIsMissing(): void
+    {
+        $policy = (new SystemConfigService(new ArraySystemConfigRepository()))->aiReviewPolicy();
+
+        self::assertFalse($policy->enabled);
+        self::assertSame('openai_compatible', $policy->provider);
+        self::assertSame('deterministic-v1', $policy->model);
+    }
+
+    public function testAiReviewPolicyRejectsInvalidConfiguredValues(): void
+    {
+        foreach (
+            [
+                ['provider' => 'openai_compatible', 'base_url' => 'https://ai.example.test/v1', 'model' => 'review-model', 'prompt' => 'Return JSON.', 'timeout_seconds' => 60, 'max_input_tokens' => 12000, 'max_output_tokens' => 2000, 'temperature' => 0.2],
+                ['enabled' => true, 'provider' => 'unknown', 'base_url' => 'https://ai.example.test/v1', 'model' => 'review-model', 'prompt' => 'Return JSON.', 'timeout_seconds' => 60, 'max_input_tokens' => 12000, 'max_output_tokens' => 2000, 'temperature' => 0.2],
+                ['enabled' => true, 'provider' => 'openai_compatible', 'base_url' => 'not-a-url', 'model' => 'review-model', 'prompt' => 'Return JSON.', 'timeout_seconds' => 60, 'max_input_tokens' => 12000, 'max_output_tokens' => 2000, 'temperature' => 0.2],
+                ['enabled' => true, 'provider' => 'openai_compatible', 'base_url' => 'https://ai.example.test/v1', 'model' => '', 'prompt' => 'Return JSON.', 'timeout_seconds' => 60, 'max_input_tokens' => 12000, 'max_output_tokens' => 2000, 'temperature' => 0.2],
+                ['enabled' => true, 'provider' => 'openai_compatible', 'base_url' => 'https://ai.example.test/v1', 'model' => 'review-model', 'prompt' => '', 'timeout_seconds' => 60, 'max_input_tokens' => 12000, 'max_output_tokens' => 2000, 'temperature' => 0.2],
+                ['enabled' => true, 'provider' => 'openai_compatible', 'base_url' => 'https://ai.example.test/v1', 'model' => 'review-model', 'prompt' => 'Return JSON.', 'timeout_seconds' => 0, 'max_input_tokens' => 12000, 'max_output_tokens' => 2000, 'temperature' => 0.2],
+                ['enabled' => true, 'provider' => 'openai_compatible', 'base_url' => 'https://ai.example.test/v1', 'model' => 'review-model', 'prompt' => 'Return JSON.', 'timeout_seconds' => 60, 'max_input_tokens' => 0, 'max_output_tokens' => 2000, 'temperature' => 0.2],
+                ['enabled' => true, 'provider' => 'openai_compatible', 'base_url' => 'https://ai.example.test/v1', 'model' => 'review-model', 'prompt' => 'Return JSON.', 'timeout_seconds' => 60, 'max_input_tokens' => 12000, 'max_output_tokens' => 0, 'temperature' => 0.2],
+                ['enabled' => true, 'provider' => 'openai_compatible', 'base_url' => 'https://ai.example.test/v1', 'model' => 'review-model', 'prompt' => 'Return JSON.', 'timeout_seconds' => 60, 'max_input_tokens' => 12000, 'max_output_tokens' => 2000, 'temperature' => 2.1],
+            ] as $value
+        ) {
+            $service = new SystemConfigService(new ArraySystemConfigRepository([
+                'review.ai_policy' => $value,
+            ]));
+
+            try {
+                $service->aiReviewPolicy();
+                self::fail('Invalid review.ai_policy value must be rejected.');
+            } catch (\UnexpectedValueException $exception) {
+                self::assertStringStartsWith('Invalid review.ai_policy ', $exception->getMessage());
+            }
+        }
+    }
+
     public function testAssetUploadPolicyRejectsInvalidConfiguredValues(): void
     {
         $validType = [
@@ -484,6 +553,13 @@ final class SystemConfigServiceTest extends TestCase
             self::fail('Production runtime config must not silently fall back when asset upload policy is missing.');
         } catch (\RuntimeException $exception) {
             self::assertSame('Missing required system config: assets.upload_policy.', $exception->getMessage());
+        }
+
+        try {
+            $service->aiReviewPolicy();
+            self::fail('Production runtime config must not silently fall back when AI review policy is missing.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('Missing required system config: review.ai_policy.', $exception->getMessage());
         }
     }
 

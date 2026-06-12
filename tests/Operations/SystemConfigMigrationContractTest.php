@@ -54,6 +54,10 @@ final class SystemConfigMigrationContractTest extends TestCase
         self::assertStringContainsString("'min_visible_ratio', 0.5", $bootstrapSql);
         self::assertStringContainsString("'min_visible_ms', 1000", $bootstrapSql);
         self::assertStringContainsString("'repeat_click_window_seconds', 30", $bootstrapSql);
+        self::assertStringContainsString("'review.ai_policy'", $bootstrapSql);
+        self::assertStringContainsString("'provider', 'openai_compatible'", $bootstrapSql);
+        self::assertStringContainsString("'max_input_tokens', 12000", $bootstrapSql);
+        self::assertStringNotContainsString('AI_REVIEW_API_KEY', $bootstrapSql);
         self::assertStringContainsString("'assets.upload_policy'", $bootstrapSql);
         self::assertStringContainsString("'upload_intent_ttl_seconds', 900", $bootstrapSql);
         self::assertStringContainsString("'blocked_extensions', JSON_ARRAY('html', 'htm', 'js', 'mjs', 'svg')", $bootstrapSql);

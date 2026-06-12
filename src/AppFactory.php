@@ -268,8 +268,10 @@ final class AppFactory
                 ): AssetUploadService => new AssetUploadService($repository, $signer, $inspector, $configs->assetUploadPolicy()),
                 ReviewRepositoryInterface::class => static fn (Connection $connection): ReviewRepositoryInterface =>
                     new ReviewRepository($connection),
-                CreativeReviewProviderInterface::class => static fn (): CreativeReviewProviderInterface =>
-                    self::creativeReviewProvider($settings),
+                CreativeReviewProviderInterface::class => static fn (
+                    SystemConfigService $configs,
+                ): CreativeReviewProviderInterface =>
+                    self::creativeReviewProvider($settings, $configs),
                 ReviewService::class => static fn (
                     ReviewRepositoryInterface $repository,
                     CreativeReviewProviderInterface $provider,
@@ -491,7 +493,16 @@ final class AppFactory
                 SystemConfigService::class => static fn (SystemConfigRepositoryInterface $repository): SystemConfigService =>
                     new SystemConfigService($repository, self::localFallbackAllowed($settings)),
                 RuntimeConfigHealthCheck::class => static fn (SystemConfigService $configs): RuntimeConfigHealthCheck =>
-                    RuntimeConfigHealthCheck::fromSystemConfig($configs),
+                    RuntimeConfigHealthCheck::fromSystemConfig(
+                        $configs,
+                        self::localFallbackAllowed($settings)
+                            ? null
+                            : static function () use ($settings): string {
+                                $config = $settings['ai_review'] ?? [];
+
+                                return is_array($config) ? (string) ($config['api_key'] ?? '') : '';
+                            },
+                    ),
                 CronLockStoreInterface::class => static fn (): CronLockStoreInterface =>
                     self::cronLockStore($settings),
                 EventConsumptionJob::class => static fn (
@@ -726,25 +737,27 @@ final class AppFactory
     }
 
     /** @param array<string, mixed> $settings */
-    private static function creativeReviewProvider(array $settings): CreativeReviewProviderInterface
+    private static function creativeReviewProvider(array $settings, SystemConfigService $configs): CreativeReviewProviderInterface
     {
-        $config = $settings['ai_review'] ?? [];
-        $hasCompleteConfig = is_array($config)
-            && trim((string) ($config['base_url'] ?? '')) !== ''
-            && trim((string) ($config['api_key'] ?? '')) !== ''
-            && trim((string) ($config['model'] ?? '')) !== '';
+        $policy = $configs->aiReviewPolicy();
+        $secretConfig = $settings['ai_review'] ?? [];
+        $apiKey = is_array($secretConfig) ? trim((string) ($secretConfig['api_key'] ?? '')) : '';
 
-        if ($hasCompleteConfig) {
-            return new OpenAiCompatibleCreativeReviewProvider($config);
+        if ($policy->enabled && $apiKey !== '') {
+            return new OpenAiCompatibleCreativeReviewProvider($policy->toProviderConfig($apiKey));
         }
 
         if (!self::localFallbackAllowed($settings)) {
-            throw new \RuntimeException('AI_REVIEW_BASE_URL, AI_REVIEW_API_KEY, and AI_REVIEW_MODEL are required outside local/testing.');
+            if (!$policy->enabled) {
+                throw new \RuntimeException('review.ai_policy must enable AI review outside local/testing.');
+            }
+
+            throw new \RuntimeException('AI_REVIEW_API_KEY is required outside local/testing.');
         }
 
         return new DeterministicCreativeReviewProvider([
             'provider' => 'openai-compatible-deterministic',
-            'model' => is_array($config) ? (string) ($config['model'] ?? 'deterministic-v1') : 'deterministic-v1',
+            'model' => $policy->model,
         ]);
     }
 

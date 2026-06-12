@@ -1238,8 +1238,8 @@ paths:
       tags:
         - Review
       operationId: startCreativeAiReview
-      summary: Start deterministic AI pre-review for a creative asset.
-      description: Creates a review record for a pending-review asset, records deterministic AI risk metadata, and leaves the review awaiting human decision.
+      summary: Start AI pre-review for a creative asset.
+      description: Creates a review record for a pending-review asset, evaluates it with the configured OpenAI-compatible `review.ai_policy` provider outside local/test environments, records AI risk metadata, and leaves the review awaiting human decision.
       security:
         - BearerAuth: []
       parameters:
@@ -2966,6 +2966,7 @@ paths:
         - Operations
       operationId: listConfigVersions
       summary: List config versions for a key.
+      description: Lists audited configuration versions for business-policy keys such as `security.rate_limit`, `serving.event_validation`, `assets.upload_policy`, and `review.ai_policy`. Secret material such as API keys is never returned through config versions.
       security:
         - BearerAuth: []
       parameters:
@@ -3004,6 +3005,7 @@ paths:
         - Operations
       operationId: createConfigVersion
       summary: Create a new config version.
+      description: Creates an audited business configuration version. `review.ai_policy` stores the OpenAI-compatible provider base URL, model, prompt, timeout, token limits, temperature, and enabled state; `AI_REVIEW_API_KEY` stays in environment secrets and is rejected if submitted in the config value.
       security:
         - BearerAuth: []
       requestBody:
@@ -6047,6 +6049,7 @@ components:
           minimum: 1
         value:
           type: object
+          description: Versioned business configuration value. For `review.ai_policy`, include `enabled`, `provider`, `base_url`, `model`, `prompt`, `timeout_seconds`, `max_input_tokens`, `max_output_tokens`, and `temperature`; do not include provider API keys or other secrets.
           additionalProperties: true
         created_by_user_id:
           type: integer

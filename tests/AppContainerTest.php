@@ -661,6 +661,16 @@ PHP);
             'attribution' => [
                 'default_window_seconds' => 999,
             ],
+            'ai_review' => [
+                'api_key' => 'unit-test-ai-review-key',
+                'base_url' => 'https://settings-should-not-win.example.test/v1',
+                'model' => 'settings-should-not-win',
+                'prompt' => 'Settings prompt should not win.',
+                'timeout_seconds' => 99,
+                'max_input_tokens' => 99,
+                'max_output_tokens' => 99,
+                'temperature' => 0.99,
+            ],
         ], 'vertoad-appfactory-system-config-');
 
         try {
@@ -677,6 +687,17 @@ PHP);
                 'min_visible_ms' => 1500,
                 'repeat_click_window_seconds' => 45,
             ]);
+            $this->insertSystemConfig($connection, 'review.ai_policy', 1, [
+                'enabled' => true,
+                'provider' => 'openai_compatible',
+                'base_url' => 'https://ai-from-db.example.test/v1/',
+                'model' => 'review-model-from-db',
+                'prompt' => 'Return strict JSON from DB policy.',
+                'timeout_seconds' => 13,
+                'max_input_tokens' => 4096,
+                'max_output_tokens' => 654,
+                'temperature' => 0.35,
+            ]);
             $this->insertSystemConfig($connection, 'assets.upload_policy', 1, $this->assetUploadPolicyConfig([
                 'upload_intent_ttl_seconds' => 120,
                 'image_max_bytes' => 2048,
@@ -689,6 +710,7 @@ PHP);
             $attribution = $container?->get(AttributionService::class);
             $serving = $container?->get(AdServingService::class);
             $assetUploads = $container?->get(AssetUploadService::class);
+            $reviewProvider = $container?->get(CreativeReviewProviderInterface::class);
 
             self::assertInstanceOf(RateLimitPolicy::class, $policy);
             self::assertSame(7, $policy->limit);
@@ -706,6 +728,15 @@ PHP);
             self::assertSame(2048, $assetPolicy->maxBytes(AssetType::Image));
             self::assertSame(512, $assetPolicy->maxWidth(AssetType::Image));
             self::assertSame(512, $assetPolicy->maxHeight(AssetType::Image));
+            self::assertInstanceOf(OpenAiCompatibleCreativeReviewProvider::class, $reviewProvider);
+            self::assertSame('https://ai-from-db.example.test/v1', $this->privateStringProperty($reviewProvider, 'baseUrl'));
+            self::assertSame('unit-test-ai-review-key', $this->privateStringProperty($reviewProvider, 'apiKey'));
+            self::assertSame('review-model-from-db', $this->privateStringProperty($reviewProvider, 'model'));
+            self::assertSame('Return strict JSON from DB policy.', $this->privateStringProperty($reviewProvider, 'prompt'));
+            self::assertSame(13, $this->privateIntProperty($reviewProvider, 'timeoutSeconds'));
+            self::assertSame(4096, $this->privateIntProperty($reviewProvider, 'maxInputTokens'));
+            self::assertSame(654, $this->privateIntProperty($reviewProvider, 'maxOutputTokens'));
+            self::assertSame(0.35, $this->privateFloatProperty($reviewProvider, 'temperature'));
         } finally {
             $this->removeTemporaryAppBasePath($basePath);
             @unlink($databasePath);
@@ -744,6 +775,9 @@ PHP);
                 'token' => '',
                 'allowed_ips' => [],
                 'jobs' => [],
+            ],
+            'ai_review' => [
+                'api_key' => 'unit-test-ai-review-key',
             ],
         ], 'vertoad-appfactory-system-config-missing-');
 
@@ -785,6 +819,13 @@ PHP);
                 self::fail('Production asset upload service must require versioned system config.');
             } catch (\RuntimeException $exception) {
                 self::assertSame('Missing required system config: assets.upload_policy.', $exception->getMessage());
+            }
+
+            try {
+                $container?->get(CreativeReviewProviderInterface::class);
+                self::fail('Production AI review provider must require versioned system config.');
+            } catch (\RuntimeException $exception) {
+                self::assertSame('Missing required system config: review.ai_policy.', $exception->getMessage());
             }
         } finally {
             $this->removeTemporaryAppBasePath($basePath);
@@ -859,6 +900,190 @@ PHP);
             self::assertSame('Missing required system config: assets.upload_policy.', $payload['error']['message']);
             self::assertSame('v1', $payload['meta']['api_version']);
             self::assertNotEmpty($payload['request_id']);
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
+            @unlink($databasePath);
+        }
+    }
+
+    public function testProductionHealthRouteReportsDegradedWhenAiReviewSecretIsMissing(): void
+    {
+        $databasePath = sys_get_temp_dir() . '/vertoad-health-ai-secret-' . bin2hex(random_bytes(4)) . '.sqlite';
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ],
+            'redis' => [
+                'driver' => 'predis',
+                'password' => 'unit-test-redis-secret',
+                'prefix' => 'vertoad:test:',
+            ],
+            'storage' => [
+                's3' => [
+                    'endpoint' => 'https://r2.example.test',
+                    'bucket' => 'creative-assets',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                    'path_style_endpoint' => true,
+                    'public_base_url' => 'https://assets.example.test',
+                ],
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+            'ai_review' => [
+                'api_key' => '',
+            ],
+        ], 'vertoad-appfactory-health-ai-secret-');
+
+        try {
+            $connection = \Doctrine\DBAL\DriverManager::getConnection([
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ]);
+            $this->createSystemConfigSchema($connection);
+            $this->insertSystemConfig($connection, 'security.rate_limit', 1, ['limit' => 60, 'window_seconds' => 60]);
+            $this->insertSystemConfig($connection, 'attribution.default_window_seconds', 1, ['seconds' => 604800]);
+            $this->insertSystemConfig($connection, 'serving.event_validation', 1, [
+                'min_visible_ratio' => 0.5,
+                'min_visible_ms' => 1000,
+                'repeat_click_window_seconds' => 30,
+            ]);
+            $this->insertSystemConfig($connection, 'review.ai_policy', 1, [
+                'enabled' => true,
+                'provider' => 'openai_compatible',
+                'base_url' => 'https://ai.example.test/v1',
+                'model' => 'review-model',
+                'prompt' => 'Return JSON.',
+                'timeout_seconds' => 60,
+                'max_input_tokens' => 12000,
+                'max_output_tokens' => 2000,
+                'temperature' => 0.2,
+            ]);
+            $this->insertSystemConfig($connection, 'assets.upload_policy', 1, $this->assetUploadPolicyConfig());
+
+            $configPath = $basePath . '/config/routes.php';
+            file_put_contents($configPath, <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+use Slim\App;
+use VertoAD\Http\Action\HealthAction;
+
+return static function (App $app): void {
+    $app->get('/api/v1/health', HealthAction::class);
+};
+PHP);
+
+            $app = AppFactory::create($basePath);
+            $request = (new ServerRequestFactory())->createServerRequest('GET', '/api/v1/health');
+            $response = $app->handle($request);
+            $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+            self::assertSame(503, $response->getStatusCode());
+            self::assertSame('runtime_config_unhealthy', $payload['error']['code']);
+            self::assertSame('AI_REVIEW_API_KEY is required outside local/testing.', $payload['error']['message']);
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
+            @unlink($databasePath);
+        }
+    }
+
+    public function testProductionHealthRouteReportsDegradedWhenAiReviewPolicyIsDisabled(): void
+    {
+        $databasePath = sys_get_temp_dir() . '/vertoad-health-ai-disabled-' . bin2hex(random_bytes(4)) . '.sqlite';
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ],
+            'redis' => [
+                'driver' => 'predis',
+                'password' => 'unit-test-redis-secret',
+                'prefix' => 'vertoad:test:',
+            ],
+            'storage' => [
+                's3' => [
+                    'endpoint' => 'https://r2.example.test',
+                    'bucket' => 'creative-assets',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                    'path_style_endpoint' => true,
+                    'public_base_url' => 'https://assets.example.test',
+                ],
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+            'ai_review' => [
+                'api_key' => 'unit-test-ai-review-key',
+            ],
+        ], 'vertoad-appfactory-health-ai-disabled-');
+
+        try {
+            $connection = \Doctrine\DBAL\DriverManager::getConnection([
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ]);
+            $this->createSystemConfigSchema($connection);
+            $this->insertSystemConfig($connection, 'security.rate_limit', 1, ['limit' => 60, 'window_seconds' => 60]);
+            $this->insertSystemConfig($connection, 'attribution.default_window_seconds', 1, ['seconds' => 604800]);
+            $this->insertSystemConfig($connection, 'serving.event_validation', 1, [
+                'min_visible_ratio' => 0.5,
+                'min_visible_ms' => 1000,
+                'repeat_click_window_seconds' => 30,
+            ]);
+            $this->insertSystemConfig($connection, 'review.ai_policy', 1, [
+                'enabled' => false,
+                'provider' => 'openai_compatible',
+                'base_url' => 'https://ai.example.test/v1',
+                'model' => 'review-model',
+                'prompt' => 'Return JSON.',
+                'timeout_seconds' => 60,
+                'max_input_tokens' => 12000,
+                'max_output_tokens' => 2000,
+                'temperature' => 0.2,
+            ]);
+            $this->insertSystemConfig($connection, 'assets.upload_policy', 1, $this->assetUploadPolicyConfig());
+
+            $configPath = $basePath . '/config/routes.php';
+            file_put_contents($configPath, <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+use Slim\App;
+use VertoAD\Http\Action\HealthAction;
+
+return static function (App $app): void {
+    $app->get('/api/v1/health', HealthAction::class);
+};
+PHP);
+
+            $app = AppFactory::create($basePath);
+            $request = (new ServerRequestFactory())->createServerRequest('GET', '/api/v1/health');
+            $response = $app->handle($request);
+            $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+            self::assertSame(503, $response->getStatusCode());
+            self::assertSame('runtime_config_unhealthy', $payload['error']['code']);
+            self::assertSame('review.ai_policy must enable AI review outside local/testing.', $payload['error']['message']);
         } finally {
             $this->removeTemporaryAppBasePath($basePath);
             @unlink($databasePath);
@@ -1134,42 +1359,75 @@ PHP);
 
     public function testContainerSelectsAiReviewProviderFromConfigurationCompleteness(): void
     {
-        $basePaths = [];
+        $localFallbackBasePath = $this->temporaryAppBasePath([
+            'api_key' => '',
+        ]);
+        $databasePath = sys_get_temp_dir() . '/vertoad-ai-review-policy-' . bin2hex(random_bytes(4)) . '.sqlite';
+        $policyBasePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'testing',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+            'ai_review' => [
+                'api_key' => 'unit-test-ai-review-key',
+                'base_url' => 'https://settings-should-not-win.example.test/v1',
+                'model' => 'settings-should-not-win',
+                'prompt' => 'Settings prompt should not win.',
+            ],
+        ], 'vertoad-appfactory-ai-policy-');
+
         try {
-            $basePaths[] = $this->temporaryAppBasePath([
-                'base_url' => '',
-                'api_key' => '',
-                'model' => 'deterministic-from-config',
-            ]);
-            $fallbackContainer = AppFactory::create($basePaths[0])->getContainer();
+            $fallbackContainer = AppFactory::create($localFallbackBasePath)->getContainer();
             self::assertInstanceOf(
                 DeterministicCreativeReviewProvider::class,
                 $fallbackContainer?->get(CreativeReviewProviderInterface::class),
             );
 
-            $basePaths[] = $this->temporaryAppBasePath([
-                'base_url' => 'https://ai.example.test/v1',
-                'api_key' => 'unit-test-ai-review-key',
-                'model' => 'review-model',
-                'prompt' => 'Return JSON.',
+            $connection = \Doctrine\DBAL\DriverManager::getConnection([
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
             ]);
-            $openAiContainer = AppFactory::create($basePaths[1])->getContainer();
+            $this->createSystemConfigSchema($connection);
+            $this->insertSystemConfig($connection, 'review.ai_policy', 1, [
+                'enabled' => true,
+                'provider' => 'openai_compatible',
+                'base_url' => 'https://ai-policy.example.test/v1/',
+                'model' => 'review-model-from-policy',
+                'prompt' => 'Return JSON from policy.',
+                'timeout_seconds' => 14,
+                'max_input_tokens' => 2048,
+                'max_output_tokens' => 512,
+                'temperature' => 0.25,
+            ]);
+
+            $openAiContainer = AppFactory::create($policyBasePath)->getContainer();
+            $provider = $openAiContainer?->get(CreativeReviewProviderInterface::class);
             self::assertInstanceOf(
                 OpenAiCompatibleCreativeReviewProvider::class,
-                $openAiContainer?->get(CreativeReviewProviderInterface::class),
+                $provider,
             );
+            self::assertSame('https://ai-policy.example.test/v1', $this->privateStringProperty($provider, 'baseUrl'));
+            self::assertSame('review-model-from-policy', $this->privateStringProperty($provider, 'model'));
         } finally {
-            foreach ($basePaths as $basePath) {
-                @unlink($basePath . '/config/routes.php');
-                @unlink($basePath . '/config/settings.php');
-                @rmdir($basePath . '/config');
-                @rmdir($basePath);
-            }
+            $this->removeTemporaryAppBasePath($localFallbackBasePath);
+            $this->removeTemporaryAppBasePath($policyBasePath);
+            @unlink($databasePath);
         }
     }
 
     public function testAiReviewProviderRequiresCompleteConfigurationOutsideLocalTesting(): void
     {
+        $databasePath = sys_get_temp_dir() . '/vertoad-ai-review-secret-' . bin2hex(random_bytes(4)) . '.sqlite';
         $basePath = $this->temporaryAppBasePathWithSettings([
             'app' => [
                 'env' => 'prod',
@@ -1178,7 +1436,7 @@ PHP);
             ],
             'database' => [
                 'driver' => 'pdo_sqlite',
-                'memory' => true,
+                'path' => $databasePath,
             ],
             'cron' => [
                 'token' => '',
@@ -1186,24 +1444,90 @@ PHP);
                 'jobs' => [],
             ],
             'ai_review' => [
-                'base_url' => 'https://ai.example.test/v1',
                 'api_key' => '',
-                'model' => 'review-model',
             ],
         ], 'vertoad-appfactory-ai-prod-');
 
         try {
+            $connection = \Doctrine\DBAL\DriverManager::getConnection([
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ]);
+            $this->createSystemConfigSchema($connection);
+            $this->insertSystemConfig($connection, 'review.ai_policy', 1, [
+                'enabled' => true,
+                'provider' => 'openai_compatible',
+                'base_url' => 'https://ai.example.test/v1',
+                'model' => 'review-model',
+                'prompt' => 'Return JSON.',
+                'timeout_seconds' => 60,
+                'max_input_tokens' => 12000,
+                'max_output_tokens' => 2000,
+                'temperature' => 0.2,
+            ]);
+
             $container = AppFactory::create($basePath)->getContainer();
 
             $this->expectException(\RuntimeException::class);
-            $this->expectExceptionMessage('AI_REVIEW_BASE_URL, AI_REVIEW_API_KEY, and AI_REVIEW_MODEL are required outside local/testing.');
+            $this->expectExceptionMessage('AI_REVIEW_API_KEY is required outside local/testing.');
 
             $container?->get(CreativeReviewProviderInterface::class);
         } finally {
-            @unlink($basePath . '/config/routes.php');
-            @unlink($basePath . '/config/settings.php');
-            @rmdir($basePath . '/config');
-            @rmdir($basePath);
+            $this->removeTemporaryAppBasePath($basePath);
+            @unlink($databasePath);
+        }
+    }
+
+    public function testAiReviewProviderRejectsDisabledPolicyOutsideLocalTesting(): void
+    {
+        $databasePath = sys_get_temp_dir() . '/vertoad-ai-review-disabled-' . bin2hex(random_bytes(4)) . '.sqlite';
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+            'ai_review' => [
+                'api_key' => 'unit-test-ai-review-key',
+            ],
+        ], 'vertoad-appfactory-ai-disabled-');
+
+        try {
+            $connection = \Doctrine\DBAL\DriverManager::getConnection([
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ]);
+            $this->createSystemConfigSchema($connection);
+            $this->insertSystemConfig($connection, 'review.ai_policy', 1, [
+                'enabled' => false,
+                'provider' => 'openai_compatible',
+                'base_url' => 'https://ai.example.test/v1',
+                'model' => 'review-model',
+                'prompt' => 'Return JSON.',
+                'timeout_seconds' => 60,
+                'max_input_tokens' => 12000,
+                'max_output_tokens' => 2000,
+                'temperature' => 0.2,
+            ]);
+
+            $container = AppFactory::create($basePath)->getContainer();
+
+            $this->expectException(\RuntimeException::class);
+            $this->expectExceptionMessage('review.ai_policy must enable AI review outside local/testing.');
+
+            $container?->get(CreativeReviewProviderInterface::class);
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
+            @unlink($databasePath);
         }
     }
 
@@ -1271,6 +1595,22 @@ PHP);
         $reflection->setAccessible(true);
 
         return $reflection->getValue($object);
+    }
+
+    private function privateStringProperty(object $object, string $property): string
+    {
+        $reflection = new \ReflectionProperty($object, $property);
+        $reflection->setAccessible(true);
+
+        return (string) $reflection->getValue($object);
+    }
+
+    private function privateFloatProperty(object $object, string $property): float
+    {
+        $reflection = new \ReflectionProperty($object, $property);
+        $reflection->setAccessible(true);
+
+        return (float) $reflection->getValue($object);
     }
 
     private function createSystemConfigSchema(Connection $connection): void

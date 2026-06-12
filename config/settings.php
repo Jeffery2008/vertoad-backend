@@ -121,13 +121,6 @@ return [
         ],
     ],
     'ai_review' => [
-        'base_url' => getenv('AI_REVIEW_BASE_URL') ?: '',
         'api_key' => getenv('AI_REVIEW_API_KEY') ?: '',
-        'model' => getenv('AI_REVIEW_MODEL') ?: '',
-        'prompt' => getenv('AI_REVIEW_PROMPT') ?: '',
-        'timeout_seconds' => (int) (getenv('AI_REVIEW_TIMEOUT_SECONDS') ?: 60),
-        'max_input_tokens' => (int) (getenv('AI_REVIEW_MAX_INPUT_TOKENS') ?: 12000),
-        'max_output_tokens' => (int) (getenv('AI_REVIEW_MAX_OUTPUT_TOKENS') ?: 2000),
-        'temperature' => (float) (getenv('AI_REVIEW_TEMPERATURE') ?: 0.2),
     ],
 ];

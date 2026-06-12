@@ -10,12 +10,14 @@ use VertoAD\Domain\Assets\AssetType;
 use VertoAD\Domain\Assets\AssetUploadPolicy;
 use RuntimeException;
 use VertoAD\Domain\Operations\ConfigVersion;
+use VertoAD\Domain\Review\AiReviewPolicy;
 use VertoAD\Repository\Operations\ConfigVersionRepositoryInterface;
 use VertoAD\Service\AuditLogService;
 
 final readonly class ConfigVersionService
 {
     private const ASSET_UPLOAD_POLICY_KEY = 'assets.upload_policy';
+    private const AI_REVIEW_POLICY_KEY = 'review.ai_policy';
     private const REQUIRED_BLOCKED_EXTENSIONS = ['html', 'htm', 'js', 'mjs', 'svg'];
     private const REQUIRED_BLOCKED_CONTENT_TYPES = ['text/html', 'application/javascript', 'text/javascript', 'image/svg+xml'];
 
@@ -106,7 +108,7 @@ final readonly class ConfigVersionService
 
         foreach ($value as $key => $item) {
             $normalized = strtolower((string) $key);
-            if (str_contains($normalized, 'password') || str_contains($normalized, 'secret') || str_contains($normalized, 'token')) {
+            if ($this->isSecretKey($normalized)) {
                 throw new InvalidArgumentException('Secret config values must stay in environment secrets.');
             }
 
@@ -118,6 +120,10 @@ final readonly class ConfigVersionService
         if ($configKey === self::ASSET_UPLOAD_POLICY_KEY) {
             $this->assertValidAssetUploadPolicy($value);
         }
+
+        if ($configKey === self::AI_REVIEW_POLICY_KEY) {
+            $this->assertValidAiReviewPolicy($value);
+        }
     }
 
     /**
@@ -127,7 +133,7 @@ final readonly class ConfigVersionService
     {
         foreach ($value as $key => $item) {
             $normalized = strtolower((string) $key);
-            if (str_contains($normalized, 'password') || str_contains($normalized, 'secret') || str_contains($normalized, 'token')) {
+            if ($this->isSecretKey($normalized)) {
                 throw new InvalidArgumentException('Secret config values must stay in environment secrets.');
             }
 
@@ -135,6 +141,20 @@ final readonly class ConfigVersionService
                 $this->assertNoSecretKeys($item);
             }
         }
+    }
+
+    private function isSecretKey(string $normalized): bool
+    {
+        if (in_array($normalized, ['max_input_tokens', 'max_output_tokens'], true)) {
+            return false;
+        }
+
+        $compact = preg_replace('/[^a-z0-9]+/', '', $normalized) ?? $normalized;
+        if (str_contains($compact, 'password') || str_contains($compact, 'secret') || str_contains($compact, 'token')) {
+            return true;
+        }
+
+        return str_contains($compact, 'apikey') || str_contains($compact, 'authorization');
     }
 
     /**
@@ -170,6 +190,18 @@ final readonly class ConfigVersionService
                     throw new InvalidArgumentException('Invalid assets.upload_policy cannot allow blocked content type ' . $contentType . '.');
                 }
             }
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     */
+    private function assertValidAiReviewPolicy(array $value): void
+    {
+        try {
+            AiReviewPolicy::fromArray($value);
+        } catch (InvalidArgumentException $exception) {
+            throw new InvalidArgumentException('Invalid review.ai_policy ' . $exception->getMessage(), 0, $exception);
         }
     }
 }
