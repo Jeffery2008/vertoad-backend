@@ -12,6 +12,7 @@ use Slim\App;
 use Slim\Psr7\Factory\ResponseFactory;
 use Slim\Psr7\Factory\ServerRequestFactory;
 use VertoAD\Domain\Auth\AuthenticatedUser;
+use VertoAD\Domain\Auth\OAuthAccessTokenContext;
 use VertoAD\Domain\Auth\OrganizationMembership;
 use VertoAD\Domain\Auth\Permission;
 use VertoAD\Http\Auth\PermissionRequirement;
@@ -143,6 +144,26 @@ final class RequirePermissionMiddlewareTest extends TestCase
         self::assertSame('ops.dashboard.read.platform', $deniedPayload['required_permission'] ?? null);
     }
 
+    public function testPlatformPermissionDeniesOAuthClientEvenWithMatchingScope(): void
+    {
+        $denied = $this->processPlatformPermission(new RequestUserContext(
+            organizationId: 10,
+            oauthToken: new OAuthAccessTokenContext(
+                accessTokenId: 601,
+                clientId: 501,
+                clientIdentifier: 'vocl_ops_client',
+                organizationId: 10,
+                user: null,
+                scopes: ['ops.dashboard.read.platform'],
+            ),
+        ));
+        $payload = json_decode((string) $denied->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame(403, $denied->getStatusCode());
+        self::assertSame('permission_required', $payload['code'] ?? null);
+        self::assertSame('ops.dashboard.read.platform', $payload['required_permission'] ?? null);
+    }
+
     public function testPlatformPermissionRequiresScopeForNonSuperAdmins(): void
     {
         $denied = $this->processPlatformPermission(
@@ -153,6 +174,29 @@ final class RequirePermissionMiddlewareTest extends TestCase
         self::assertSame(400, $denied->getStatusCode());
         self::assertSame('organization_scope_required', $payload['code'] ?? null);
         self::assertSame('ops.dashboard.read.platform', $payload['required_permission'] ?? null);
+    }
+
+    public function testDeniesOAuthClientWhenRouteOrganizationDoesNotMatchTokenOrganization(): void
+    {
+        $response = $this->handleProbe(
+            new RequestUserContext(
+                organizationId: 99,
+                oauthToken: new OAuthAccessTokenContext(
+                    accessTokenId: 602,
+                    clientId: 502,
+                    clientIdentifier: 'vocl_ledger_client',
+                    organizationId: 99,
+                    user: null,
+                    scopes: [Permission::LedgerRead],
+                ),
+            ),
+            [],
+        );
+        $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame(403, $response->getStatusCode());
+        self::assertSame('organization_scope_mismatch', $payload['error']['code'] ?? null);
+        self::assertSame(Permission::LedgerRead, $payload['error']['required_permission'] ?? null);
     }
 
     public function testAllowsIntegerRouteOrganizationAttribute(): void

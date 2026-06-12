@@ -6,6 +6,7 @@ namespace VertoAD\Repository;
 
 use DateTimeImmutable;
 use VertoAD\Domain\Auth\AuthenticatedUser;
+use VertoAD\Domain\Auth\OAuthAccessTokenContext;
 use VertoAD\Domain\Auth\OAuthClient;
 
 interface OAuthTokenRepositoryInterface
@@ -64,6 +65,8 @@ interface OAuthTokenRepositoryInterface
     public function isAccessTokenActive(string $accessTokenHash, DateTimeImmutable $now): bool;
 
     public function findActiveUserByAccessTokenHash(string $accessTokenHash, DateTimeImmutable $now): ?AuthenticatedUser;
+
+    public function findActiveAccessTokenContext(string $accessTokenHash, DateTimeImmutable $now): ?OAuthAccessTokenContext;
 
     /**
      * @return array{authorization_codes_deleted:int, access_tokens_deleted:int, refresh_tokens_deleted:int}

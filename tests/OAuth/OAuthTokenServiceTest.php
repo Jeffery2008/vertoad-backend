@@ -178,6 +178,22 @@ final class OAuthTokenServiceTest extends TestCase
         self::assertSame('campaign.read.own report.read.own', $token['scope']);
         self::assertNull($connection->fetchOne('SELECT user_id FROM oauth_access_tokens'));
 
+        $request = (new ServerRequestFactory())
+            ->createServerRequest('GET', '/api/v1/reports/dashboard')
+            ->withHeader('Authorization', 'Bearer ' . $token['access_token']);
+        $context = RequestUserContext::fromRequest(
+            (new BearerTokenAuthenticator(new FirstPartySessionRepository($connection), new OAuthTokenRepository($connection)))
+                ->authenticate($request, new DateTimeImmutable('2026-06-08 10:00:01')),
+        );
+
+        self::assertTrue($context->isAuthenticated());
+        self::assertNull($context->user);
+        self::assertSame(99, $context->organizationId);
+        self::assertNotNull($context->oauthToken);
+        self::assertSame($client->id, $context->oauthToken->clientId);
+        self::assertSame($client->clientIdentifier, $context->oauthToken->clientIdentifier);
+        self::assertTrue($context->hasOAuthScope('report.read.own'));
+
         $this->expectExceptionMessage('OAuth scope is not allowed');
         $service->token([
             'grant_type' => 'client_credentials',
@@ -185,6 +201,64 @@ final class OAuthTokenServiceTest extends TestCase
             'client_secret' => 'plain-secret',
             'scope' => 'admin.root',
         ], new DateTimeImmutable('2026-06-08 10:00:01'));
+    }
+
+    public function testRepositoryCompatibilityLookupReturnsActiveUserForUserAccessToken(): void
+    {
+        $connection = $this->createConnection();
+        $service = $this->createService($connection);
+        $client = $this->storeClient($connection, ['authorization_code', 'refresh_token']);
+        $now = new DateTimeImmutable('2026-06-08 10:00:00');
+        $this->grantAllConsent($connection, $client, $now);
+        $authorization = $service->authorize(7, 99, $client->clientIdentifier, 'https://app.example.com/oauth/callback', [], $this->pkceChallenge('verifier'), 'S256', $now);
+        $token = $service->token([
+            'grant_type' => 'authorization_code',
+            'client_id' => $client->clientIdentifier,
+            'code' => $authorization['code'],
+            'redirect_uri' => 'https://app.example.com/oauth/callback',
+            'code_verifier' => 'verifier',
+        ], $now->modify('+1 second'));
+
+        $user = (new OAuthTokenRepository($connection))->findActiveUserByAccessTokenHash(
+            hash('sha256', $token['access_token']),
+            $now->modify('+2 seconds'),
+        );
+
+        self::assertNotNull($user);
+        self::assertSame(7, $user->id);
+        self::assertSame('owner@example.com', $user->email);
+        self::assertFalse($user->isSuperAdmin);
+    }
+
+    public function testRepositoryFallsBackToClientOrganizationForMachineTokenWithoutTokenOrganization(): void
+    {
+        $connection = $this->createConnection();
+        $client = $this->storeClient($connection, ['client_credentials']);
+        $repository = new OAuthTokenRepository($connection);
+        $now = new DateTimeImmutable('2026-06-08 10:00:00');
+
+        $accessTokenId = $repository->createAccessToken(
+            $client,
+            null,
+            null,
+            null,
+            hash('sha256', 'fallback-organization-token'),
+            ['report.read.own'],
+            $now->modify('+15 minutes'),
+        );
+
+        $context = $repository->findActiveAccessTokenContext(
+            hash('sha256', 'fallback-organization-token'),
+            $now->modify('+1 second'),
+        );
+
+        self::assertNotNull($context);
+        self::assertSame($accessTokenId, $context->accessTokenId);
+        self::assertSame($client->id, $context->clientId);
+        self::assertSame($client->clientIdentifier, $context->clientIdentifier);
+        self::assertSame(99, $context->organizationId);
+        self::assertNull($context->user);
+        self::assertSame(['report.read.own'], $context->scopes);
     }
 
     public function testRefreshTokenRotatesAndReuseIsRejected(): void

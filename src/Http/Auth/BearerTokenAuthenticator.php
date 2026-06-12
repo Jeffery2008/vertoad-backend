@@ -27,15 +27,23 @@ final readonly class BearerTokenAuthenticator
 
         $tokenHash = hash('sha256', $token);
         $now ??= new DateTimeImmutable();
-        $user = $this->sessions->findActiveUserByTokenHash($tokenHash, $now)
-            ?? $this->oauthTokens?->findActiveUserByAccessTokenHash($tokenHash, $now);
-        if ($user === null) {
+        $sessionUser = $this->sessions->findActiveUserByTokenHash($tokenHash, $now);
+        if ($sessionUser !== null) {
+            return $request->withAttribute(RequestUserContext::ATTRIBUTE, new RequestUserContext(
+                user: $sessionUser,
+                organizationId: $this->organizationId($request),
+            ));
+        }
+
+        $oauthToken = $this->oauthTokens?->findActiveAccessTokenContext($tokenHash, $now);
+        if ($oauthToken === null) {
             return $request->withAttribute(RequestUserContext::ATTRIBUTE, new RequestUserContext());
         }
 
         return $request->withAttribute(RequestUserContext::ATTRIBUTE, new RequestUserContext(
-            user: $user,
-            organizationId: $this->organizationId($request),
+            user: $oauthToken->user,
+            organizationId: $oauthToken->organizationId,
+            oauthToken: $oauthToken,
         ));
     }
 

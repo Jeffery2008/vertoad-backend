@@ -10,8 +10,11 @@ final class CreateAttributionConversionTables extends AbstractMigration
     {
         $this->execute(<<<'SQL'
 CREATE TABLE attribution_conversions (
-    event_id VARCHAR(160) NOT NULL,
+    event_id VARCHAR(255) NOT NULL,
     conversion_id VARCHAR(160) NOT NULL,
+    organization_id BIGINT UNSIGNED NULL,
+    oauth_client_id BIGINT UNSIGNED NULL,
+    recorded_by_user_id BIGINT UNSIGNED NULL,
     attributed TINYINT(1) NOT NULL,
     click_event_id VARCHAR(160) NULL,
     decision_id VARCHAR(160) NULL,
@@ -23,9 +26,14 @@ CREATE TABLE attribution_conversions (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (event_id),
     UNIQUE KEY uq_attribution_conversions_conversion_id (conversion_id),
+    KEY idx_attribution_conversions_organization_created (organization_id, created_at),
+    KEY idx_attribution_conversions_oauth_client_created (oauth_client_id, created_at),
     KEY idx_attribution_conversions_click_event (click_event_id),
     KEY idx_attribution_conversions_decision (decision_id),
     KEY idx_attribution_conversions_campaign_created (campaign_id, created_at),
+    CONSTRAINT fk_attribution_conversions_organization FOREIGN KEY (organization_id) REFERENCES organizations (id) ON DELETE SET NULL,
+    CONSTRAINT fk_attribution_conversions_oauth_client FOREIGN KEY (oauth_client_id) REFERENCES oauth_clients (id) ON DELETE SET NULL,
+    CONSTRAINT fk_attribution_conversions_recorded_by_user FOREIGN KEY (recorded_by_user_id) REFERENCES users (id) ON DELETE SET NULL,
     CONSTRAINT fk_attribution_conversions_decision FOREIGN KEY (decision_id) REFERENCES ad_serving_decisions (decision_id) ON DELETE SET NULL,
     CONSTRAINT fk_attribution_conversions_campaign FOREIGN KEY (campaign_id) REFERENCES campaigns (id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci

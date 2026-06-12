@@ -21,9 +21,14 @@ final readonly class AttributionService
     /**
      * @param array<string, mixed> $payload
      */
-    public function recordServerApiConversion(array $payload): ConversionAttributionResult
+    public function recordServerApiConversion(
+        array $payload,
+        int $organizationId,
+        ?int $oauthClientId,
+        ?int $recordedByUserId,
+    ): ConversionAttributionResult
     {
-        return $this->recordConversion($payload, 'server_api');
+        return $this->recordConversion($payload, 'server_api', $organizationId, $oauthClientId, $recordedByUserId);
     }
 
     /**
@@ -31,19 +36,29 @@ final readonly class AttributionService
      */
     public function recordBrowserPixelConversion(array $payload): ConversionAttributionResult
     {
-        return $this->recordConversion($payload, 'browser_pixel');
+        return $this->recordConversion($payload, 'browser_pixel', null, null, null);
     }
 
     /**
      * @param array<string, mixed> $payload
      */
-    private function recordConversion(array $payload, string $source): ConversionAttributionResult
+    private function recordConversion(
+        array $payload,
+        string $source,
+        ?int $organizationId,
+        ?int $oauthClientId,
+        ?int $recordedByUserId,
+    ): ConversionAttributionResult
     {
         $eventId = $this->requiredString($payload, 'event_id');
-        $stored = $this->events->findConversion($eventId);
+        $scopedEventId = $this->scopedEventId($source, $organizationId, $eventId);
+        $stored = $this->events->findConversion($scopedEventId);
         if ($stored !== null) {
             return new ConversionAttributionResult(
                 conversionId: $stored->conversionId,
+                organizationId: $stored->organizationId,
+                oauthClientId: $stored->oauthClientId,
+                recordedByUserId: $stored->recordedByUserId,
                 attributed: $stored->attributed,
                 duplicate: true,
                 clickEventId: $stored->clickEventId,
@@ -62,9 +77,18 @@ final readonly class AttributionService
         $occurredAt = $this->occurredAt($payload);
         $windowSeconds = $this->intValue($payload, 'window_seconds', $this->defaultWindowSeconds);
         $click = $this->events->findLastClick($viewerId, $occurredAt, $windowSeconds);
+        if ($click !== null
+            && $organizationId !== null
+            && $click['decision']->advertiserOrganizationId !== $organizationId
+        ) {
+            $click = null;
+        }
 
-        return $this->events->recordConversion($eventId, new ConversionAttributionResult(
-            conversionId: 'conversion_' . sha1($eventId),
+        return $this->events->recordConversion($scopedEventId, new ConversionAttributionResult(
+            conversionId: 'conversion_' . sha1($scopedEventId),
+            organizationId: $organizationId,
+            oauthClientId: $oauthClientId,
+            recordedByUserId: $recordedByUserId,
             attributed: $click !== null,
             duplicate: false,
             clickEventId: $click['click_event_id'] ?? null,
@@ -75,6 +99,11 @@ final readonly class AttributionService
             conversionName: $conversionName,
             valuePoints: $valuePoints,
         ));
+    }
+
+    private function scopedEventId(string $source, ?int $organizationId, string $eventId): string
+    {
+        return $source . ':' . ($organizationId === null ? 'public' : (string) $organizationId) . ':' . $eventId;
     }
 
     /**

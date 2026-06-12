@@ -26,7 +26,7 @@ final readonly class RequirePermissionMiddleware implements MiddlewareInterface
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
         $context = RequestUserContext::fromRequest($request);
-        if ($context->user === null) {
+        if (!$context->isAuthenticated()) {
             return $this->errorResponse(
                 401,
                 'authentication_required',
@@ -34,9 +34,27 @@ final readonly class RequirePermissionMiddleware implements MiddlewareInterface
             );
         }
 
+        if ($context->oauthToken !== null && !$context->hasOAuthScope($this->requirement->permission)) {
+            return $this->errorResponse(
+                403,
+                'permission_required',
+                'The OAuth access token is missing the required scope.',
+                ['required_permission' => $this->requirement->permission],
+            );
+        }
+
         if ($this->requirement->platform) {
-            if ($context->user->isSuperAdmin) {
+            if ($context->user?->isSuperAdmin === true) {
                 return $handler->handle($request);
+            }
+
+            if ($context->user === null) {
+                return $this->errorResponse(
+                    403,
+                    'permission_required',
+                    'The authenticated OAuth client is not allowed to access this platform endpoint.',
+                    ['required_permission' => $this->requirement->permission],
+                );
             }
 
             if ($context->organizationId === null) {
@@ -69,6 +87,19 @@ final readonly class RequirePermissionMiddleware implements MiddlewareInterface
                 'An organization scope is required for this endpoint.',
                 ['required_permission' => $this->requirement->permission],
             );
+        }
+
+        if ($context->oauthToken !== null && $context->oauthToken->organizationId !== $organizationId) {
+            return $this->errorResponse(
+                403,
+                'organization_scope_mismatch',
+                'The OAuth access token is not scoped to the requested organization.',
+                ['required_permission' => $this->requirement->permission],
+            );
+        }
+
+        if ($context->user === null) {
+            return $handler->handle($request);
         }
 
         $decision = $this->tenantAccess->decide($context->user, $organizationId, $this->requirement->permission);

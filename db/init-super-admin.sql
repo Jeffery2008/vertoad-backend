@@ -85,6 +85,7 @@ VALUES
     ('webhook.delivery.read.own', 'View own webhook deliveries.'),
     ('webhook.delivery.read.platform', 'View webhook deliveries across the platform.'),
     ('webhook.delivery.retry.platform', 'Retry webhook deliveries across the platform.'),
+    ('attribution.conversion.write.own', 'Record own organization server-side conversion events.'),
     ('support.ticket.read.own', 'View own organization support tickets.'),
     ('support.ticket.read.assigned', 'View assigned support tickets.'),
     ('support.ticket.read.escalated', 'View escalated support tickets.'),

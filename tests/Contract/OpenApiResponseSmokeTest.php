@@ -13,6 +13,7 @@ use Slim\Factory\AppFactory as SlimAppFactory;
 use Slim\Psr7\Factory\ServerRequestFactory;
 use Slim\Routing\RouteCollectorProxy;
 use VertoAD\Domain\Auth\AuthenticatedUser;
+use VertoAD\Domain\Auth\OAuthAccessTokenContext;
 use VertoAD\Domain\Auth\OAuthClient;
 use VertoAD\Domain\Auth\OrganizationMembership;
 use VertoAD\Domain\Serving\AdCandidate;
@@ -343,6 +344,11 @@ final class OpenApiResponseSmokeTest extends TestCase
             }
 
             public function findActiveUserByAccessTokenHash(string $accessTokenHash, DateTimeImmutable $now): ?AuthenticatedUser
+            {
+                throw new \LogicException('Not used by this contract smoke.');
+            }
+
+            public function findActiveAccessTokenContext(string $accessTokenHash, DateTimeImmutable $now): ?OAuthAccessTokenContext
             {
                 throw new \LogicException('Not used by this contract smoke.');
             }

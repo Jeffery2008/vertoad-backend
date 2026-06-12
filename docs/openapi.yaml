@@ -2653,8 +2653,11 @@ paths:
         - Attribution
       operationId: createServerApiConversion
       summary: Record a server API conversion.
-      description: Records an idempotent conversion event and applies last_click attribution within the configured window.
-      security: []
+      description: Records an idempotent conversion event for the authenticated organization and applies last_click attribution within the configured window. Client Credentials access tokens use the OAuth client's organization binding; first-party user tokens must include an organization scope. Idempotency is scoped by source, organization, and event_id so different advertiser organizations may reuse their own business identifiers safely.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - attribution.conversion.write.own
       requestBody:
         required: true
         content:
@@ -2673,6 +2676,12 @@ paths:
                     properties:
                       data:
                         $ref: "#/components/schemas/ConversionData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
         "422":
           $ref: "#/components/responses/Error"
         default:
@@ -5677,6 +5686,9 @@ components:
       type: object
       required:
         - conversion_id
+        - organization_id
+        - oauth_client_id
+        - recorded_by_user_id
         - source
         - conversion_name
         - value_points
@@ -5685,6 +5697,24 @@ components:
         conversion_id:
           type: string
           minLength: 1
+        organization_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+          description: Authenticated advertiser organization for server_api conversions; null for browser_pixel conversions.
+        oauth_client_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+          description: OAuth client that recorded the server_api conversion when a Client Credentials token is used.
+        recorded_by_user_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+          description: First-party user that recorded the conversion when a user-bound token is used.
         source:
           type: string
           enum:

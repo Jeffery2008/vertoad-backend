@@ -83,6 +83,9 @@ final readonly class DatabaseAttributionEventRepository implements AttributionEv
         $row = $this->connection->createQueryBuilder()
             ->select(
                 'conversion_id',
+                'organization_id',
+                'oauth_client_id',
+                'recorded_by_user_id',
                 'attributed',
                 'click_event_id',
                 'decision_id',
@@ -106,6 +109,9 @@ final readonly class DatabaseAttributionEventRepository implements AttributionEv
             $this->connection->insert('attribution_conversions', [
                 'event_id' => trim($eventId),
                 'conversion_id' => $result->conversionId,
+                'organization_id' => $result->organizationId,
+                'oauth_client_id' => $result->oauthClientId,
+                'recorded_by_user_id' => $result->recordedByUserId,
                 'attributed' => $result->attributed ? 1 : 0,
                 'click_event_id' => $result->clickEventId,
                 'decision_id' => $result->decisionId,
@@ -156,6 +162,9 @@ final readonly class DatabaseAttributionEventRepository implements AttributionEv
     {
         return new ConversionAttributionResult(
             conversionId: (string) $row['conversion_id'],
+            organizationId: $row['organization_id'] === null ? null : (int) $row['organization_id'],
+            oauthClientId: $row['oauth_client_id'] === null ? null : (int) $row['oauth_client_id'],
+            recordedByUserId: $row['recorded_by_user_id'] === null ? null : (int) $row['recorded_by_user_id'],
             attributed: (bool) $row['attributed'],
             duplicate: $duplicate,
             clickEventId: $row['click_event_id'] === null ? null : (string) $row['click_event_id'],

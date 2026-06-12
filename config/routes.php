@@ -268,7 +268,9 @@ return static function (App $app): void {
     $app->get('/api/v1/webhooks/deliveries', ListOwnWebhookDeliveriesAction::class)
         ->add($permission('webhook.delivery.read.own'))
         ->add(AuthenticateRequestMiddleware::class);
-    $app->post('/api/v1/attribution/conversions', ServerConversionAction::class);
+    $app->post('/api/v1/attribution/conversions', ServerConversionAction::class)
+        ->add($permission('attribution.conversion.write.own'))
+        ->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/attribution/pixel', ConversionPixelAction::class);
     $app->post('/api/v1/archive/jobs', CreateArchiveJobAction::class)
         ->add($platformPermission('archive.job.create.platform'))

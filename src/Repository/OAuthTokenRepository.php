@@ -9,6 +9,7 @@ use DateInterval;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\ParameterType;
 use VertoAD\Domain\Auth\AuthenticatedUser;
+use VertoAD\Domain\Auth\OAuthAccessTokenContext;
 use VertoAD\Domain\Auth\OAuthClient;
 
 final readonly class OAuthTokenRepository implements OAuthTokenRepositoryInterface
@@ -218,19 +219,54 @@ final readonly class OAuthTokenRepository implements OAuthTokenRepositoryInterfa
 
     public function findActiveUserByAccessTokenHash(string $accessTokenHash, DateTimeImmutable $now): ?AuthenticatedUser
     {
+        return $this->findActiveAccessTokenContext($accessTokenHash, $now)?->user;
+    }
+
+    public function findActiveAccessTokenContext(string $accessTokenHash, DateTimeImmutable $now): ?OAuthAccessTokenContext
+    {
         $row = $this->connection->createQueryBuilder()
-            ->select('u.id', 'u.email')
+            ->select(
+                'at.id AS access_token_id',
+                'at.client_id',
+                'at.user_id',
+                'at.organization_id',
+                'at.scopes_json',
+                'c.client_identifier',
+                'c.organization_id AS client_organization_id',
+                'u.id AS hydrated_user_id',
+                'u.email AS hydrated_user_email',
+            )
             ->from('oauth_access_tokens', 'at')
-            ->innerJoin('at', 'users', 'u', 'u.id = at.user_id')
+            ->innerJoin('at', 'oauth_clients', 'c', 'c.id = at.client_id')
+            ->leftJoin('at', 'users', 'u', 'u.id = at.user_id')
             ->where('at.access_token_identifier = :token_hash')
             ->andWhere('at.revoked_at IS NULL')
             ->andWhere('at.expires_at > :now')
-            ->andWhere("u.status = 'active'")
+            ->andWhere('c.revoked_at IS NULL')
+            ->andWhere("(at.user_id IS NULL OR u.status = 'active')")
             ->setParameter('token_hash', $accessTokenHash)
             ->setParameter('now', $this->format($now))
             ->fetchAssociative();
 
-        return $row === false ? null : new AuthenticatedUser((int) $row['id'], (string) $row['email'], false);
+        if ($row === false) {
+            return null;
+        }
+
+        $user = $row['hydrated_user_id'] === null
+            ? null
+            : new AuthenticatedUser((int) $row['hydrated_user_id'], (string) $row['hydrated_user_email'], false);
+        $organizationId = $row['organization_id'] === null
+            ? ($row['client_organization_id'] === null ? null : (int) $row['client_organization_id'])
+            : (int) $row['organization_id'];
+
+        return new OAuthAccessTokenContext(
+            accessTokenId: (int) $row['access_token_id'],
+            clientId: (int) $row['client_id'],
+            clientIdentifier: (string) $row['client_identifier'],
+            organizationId: $organizationId,
+            user: $user,
+            scopes: $this->decodeList((string) ($row['scopes_json'] ?? '[]')),
+        );
     }
 
     public function cleanupExpiredTokens(DateTimeImmutable $now, int $retentionSeconds): array

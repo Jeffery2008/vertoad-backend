@@ -65,6 +65,7 @@ final class PermissionInventory
                 ['webhook.delivery.read.own', 'View own webhook deliveries.', false],
                 ['webhook.delivery.read.platform', 'View webhook deliveries across the platform.', false],
                 ['webhook.delivery.retry.platform', 'Retry webhook deliveries across the platform.', true],
+                ['attribution.conversion.write.own', 'Record own organization server-side conversion events.', false],
                 ['support.ticket.read.own', 'View own organization support tickets.', false],
                 ['support.ticket.read.assigned', 'View assigned support tickets.', false],
                 ['support.ticket.read.escalated', 'View escalated support tickets.', false],

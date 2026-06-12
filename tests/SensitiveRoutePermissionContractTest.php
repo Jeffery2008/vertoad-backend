@@ -71,6 +71,7 @@ final class SensitiveRoutePermissionContractTest extends TestCase
             ['POST', '/api/v1/webhooks/endpoints/{endpoint_id}/rotate-secret', 'webhook.secret.rotate.own', 'permission'],
             ['POST', '/api/v1/webhooks/endpoints/{endpoint_id}/test', 'webhook.write.own', 'permission'],
             ['GET', '/api/v1/webhooks/deliveries', 'webhook.delivery.read.own', 'permission'],
+            ['POST', '/api/v1/attribution/conversions', 'attribution.conversion.write.own', 'permission'],
             ['POST', '/api/v1/archive/jobs', 'archive.job.create.platform', 'platformPermission'],
             ['GET', '/api/v1/archive/manifests/{manifest_id}', 'archive.manifest.read.platform', 'platformPermission'],
             ['POST', '/api/v1/archive/cold-queries', 'archive.cold_query.create.platform', 'platformPermission'],

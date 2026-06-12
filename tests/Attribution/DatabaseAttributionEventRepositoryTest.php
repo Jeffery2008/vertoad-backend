@@ -93,6 +93,9 @@ final class DatabaseAttributionEventRepositoryTest extends TestCase
         $repository = new DatabaseAttributionEventRepository($connection);
         $result = new ConversionAttributionResult(
             conversionId: 'conversion_1',
+            organizationId: 40,
+            oauthClientId: 501,
+            recordedByUserId: null,
             attributed: true,
             duplicate: false,
             clickEventId: 'click-1',
@@ -107,6 +110,9 @@ final class DatabaseAttributionEventRepositoryTest extends TestCase
         $stored = $repository->recordConversion('conv-1', $result);
         $duplicateWrite = $repository->recordConversion('conv-1', new ConversionAttributionResult(
             conversionId: 'conversion_other',
+            organizationId: 40,
+            oauthClientId: 502,
+            recordedByUserId: 7,
             attributed: false,
             duplicate: false,
             clickEventId: null,
@@ -122,6 +128,9 @@ final class DatabaseAttributionEventRepositoryTest extends TestCase
         self::assertSame('conversion_1', $stored->conversionId);
         self::assertSame('conversion_1', $duplicateWrite->conversionId);
         self::assertNotNull($loaded);
+        self::assertSame(40, $loaded->organizationId);
+        self::assertSame(501, $loaded->oauthClientId);
+        self::assertNull($loaded->recordedByUserId);
         self::assertTrue($loaded->attributed);
         self::assertFalse($loaded->duplicate);
         self::assertSame('click-1', $loaded->clickEventId);
@@ -151,17 +160,19 @@ final class DatabaseAttributionEventRepositoryTest extends TestCase
             'conversion_name' => 'purchase',
             'value_points' => 900,
             'occurred_at' => '2026-06-08T11:00:00+00:00',
-        ]);
+        ], organizationId: 40, oauthClientId: 501, recordedByUserId: null);
         $second = (new AttributionService(new DatabaseAttributionEventRepository($connection), defaultWindowSeconds: 86400))
             ->recordServerApiConversion([
                 'event_id' => 'conv-service',
                 'viewer_id' => 'viewer-1',
                 'conversion_name' => 'purchase',
                 'occurred_at' => '2026-06-08T11:05:00+00:00',
-            ]);
+            ], organizationId: 40, oauthClientId: 501, recordedByUserId: null);
 
         self::assertTrue($first->attributed);
         self::assertFalse($first->duplicate);
+        self::assertSame(40, $first->organizationId);
+        self::assertSame(501, $first->oauthClientId);
         self::assertSame('click-service', $first->clickEventId);
         self::assertSame('decision-service', $first->decisionId);
         self::assertSame(300, $first->campaignId);
@@ -178,6 +189,9 @@ final class DatabaseAttributionEventRepositoryTest extends TestCase
             'CREATE TABLE attribution_conversions (
                 event_id VARCHAR(160) PRIMARY KEY,
                 conversion_id VARCHAR(160) NOT NULL,
+                organization_id INTEGER NULL,
+                oauth_client_id INTEGER NULL,
+                recorded_by_user_id INTEGER NULL,
                 attributed INTEGER NOT NULL,
                 click_event_id VARCHAR(160) NULL,
                 decision_id VARCHAR(160) NULL,

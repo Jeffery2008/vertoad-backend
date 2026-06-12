@@ -15,6 +15,9 @@ final readonly class AttributionSerializers
     {
         return [
             'conversion_id' => $result->conversionId,
+            'organization_id' => $result->organizationId,
+            'oauth_client_id' => $result->oauthClientId,
+            'recorded_by_user_id' => $result->recordedByUserId,
             'source' => $result->source,
             'conversion_name' => $result->conversionName,
             'value_points' => $result->valuePoints,

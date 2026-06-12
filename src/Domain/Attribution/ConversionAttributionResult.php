@@ -8,6 +8,9 @@ final readonly class ConversionAttributionResult
 {
     public function __construct(
         public string $conversionId,
+        public ?int $organizationId,
+        public ?int $oauthClientId,
+        public ?int $recordedByUserId,
         public bool $attributed,
         public bool $duplicate,
         public ?string $clickEventId,
