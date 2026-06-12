@@ -318,9 +318,10 @@ final class AppFactory
                     new DatabaseAttributionEventRepository($connection),
                 AttributionService::class => static fn (
                     AttributionEventRepositoryInterface $events,
+                    SystemConfigService $configs,
                 ): AttributionService => new AttributionService(
                     $events,
-                    (int) ($settings['attribution']['default_window_seconds'] ?? 604800),
+                    $configs->attributionDefaultWindowSeconds(),
                 ),
                 ArchiveRepositoryInterface::class => static fn (Connection $connection): ArchiveRepositoryInterface =>
                     new DatabaseArchiveRepository($connection),
@@ -470,7 +471,7 @@ final class AppFactory
                 SystemConfigRepositoryInterface::class => static fn (Connection $connection): SystemConfigRepositoryInterface =>
                     new SystemConfigRepository($connection),
                 SystemConfigService::class => static fn (SystemConfigRepositoryInterface $repository): SystemConfigService =>
-                    new SystemConfigService($repository),
+                    new SystemConfigService($repository, self::localFallbackAllowed($settings)),
                 CronLockStoreInterface::class => static fn (): CronLockStoreInterface =>
                     self::cronLockStore($settings),
                 EventConsumptionJob::class => static fn (
@@ -595,10 +596,8 @@ final class AppFactory
                 RateLimitStoreInterface::class => static fn (): RateLimitStoreInterface =>
                     self::rateLimitStore($settings),
                 RateLimiter::class => static fn (RateLimitStoreInterface $store): RateLimiter => new RateLimiter($store),
-                RateLimitPolicy::class => static fn (): RateLimitPolicy => new RateLimitPolicy(
-                    (int) ($settings['security']['rate_limit']['limit'] ?? 60),
-                    (int) ($settings['security']['rate_limit']['window_seconds'] ?? 60),
-                ),
+                RateLimitPolicy::class => static fn (SystemConfigService $configs): RateLimitPolicy =>
+                    $configs->rateLimitPolicy(),
                 RateLimitMiddleware::class => static fn (
                     RateLimiter $limiter,
                     RateLimitPolicy $policy,

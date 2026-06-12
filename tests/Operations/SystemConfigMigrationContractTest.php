@@ -41,6 +41,18 @@ final class SystemConfigMigrationContractTest extends TestCase
         );
     }
 
+    public function testBootstrapSeedsRequiredRuntimeBusinessConfigVersions(): void
+    {
+        $bootstrapSql = (string) file_get_contents(dirname(__DIR__, 2) . '/db/init-super-admin.sql');
+
+        self::assertStringContainsString('INSERT INTO system_config_versions', $bootstrapSql);
+        self::assertStringContainsString("'security.rate_limit'", $bootstrapSql);
+        self::assertStringContainsString("JSON_OBJECT('limit', 60, 'window_seconds', 60)", $bootstrapSql);
+        self::assertStringContainsString("'attribution.default_window_seconds'", $bootstrapSql);
+        self::assertStringContainsString("JSON_OBJECT('seconds', 604800)", $bootstrapSql);
+        self::assertStringContainsString('@super_admin_user_id', $bootstrapSql);
+    }
+
     private function migrationSql(): string
     {
         $migrationDir = dirname(__DIR__, 2) . '/db/migrations';

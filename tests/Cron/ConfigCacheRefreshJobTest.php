@@ -17,6 +17,7 @@ final class ConfigCacheRefreshJobTest extends TestCase
         $job = new ConfigCacheRefreshJob(
             new StaticSystemConfigRepository([
                 'billing.default_revenue_share' => ['publisher_percent' => 70],
+                'attribution.default_window_seconds' => ['seconds' => 604800],
                 'security.rate_limit' => ['limit' => 60, 'window_seconds' => 60],
             ]),
             $redis,
@@ -28,12 +29,17 @@ final class ConfigCacheRefreshJobTest extends TestCase
 
         self::assertSame('config-cache-refresh', $job->name());
         self::assertSame('completed', $result->status);
-        self::assertSame(2, $result->metrics['refreshed'] ?? null);
+        self::assertSame(3, $result->metrics['refreshed'] ?? null);
         self::assertSame([
             [
                 "return {redis.call('SETEX', KEYS[1], ARGV[1], ARGV[2])}",
                 ['vertoad:test:config:billing.default_revenue_share'],
                 ['3600', '{"publisher_percent":70}'],
+            ],
+            [
+                "return {redis.call('SETEX', KEYS[1], ARGV[1], ARGV[2])}",
+                ['vertoad:test:config:attribution.default_window_seconds'],
+                ['3600', '{"seconds":604800}'],
             ],
             [
                 "return {redis.call('SETEX', KEYS[1], ARGV[1], ARGV[2])}",

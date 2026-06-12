@@ -136,6 +136,29 @@ ON DUPLICATE KEY UPDATE role_id = role_id;
 INSERT INTO user_roles (user_id, role_id, organization_id)
 VALUES (@super_admin_user_id, @super_admin_role_id, NULL);
 
+INSERT INTO system_config_versions (
+    version_id,
+    config_key,
+    version,
+    value_json,
+    created_by_user_id
+)
+VALUES
+    (
+        'cfgv_bootstrap_security_rate_limit_v1',
+        'security.rate_limit',
+        1,
+        JSON_OBJECT('limit', 60, 'window_seconds', 60),
+        @super_admin_user_id
+    ),
+    (
+        'cfgv_bootstrap_attribution_default_window_seconds_v1',
+        'attribution.default_window_seconds',
+        1,
+        JSON_OBJECT('seconds', 604800),
+        @super_admin_user_id
+    );
+
 INSERT INTO audit_logs (organization_id, actor_user_id, action, subject_type, subject_id, metadata_json)
 VALUES (
     @admin_organization_id,

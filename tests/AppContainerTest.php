@@ -614,6 +614,111 @@ PHP);
         }
     }
 
+    public function testRuntimePoliciesUseVersionedSystemConfigInsteadOfSettingsFallbacks(): void
+    {
+        $databasePath = sys_get_temp_dir() . '/vertoad-system-config-' . bin2hex(random_bytes(4)) . '.sqlite';
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+            'security' => [
+                'rate_limit' => [
+                    'limit' => 999,
+                    'window_seconds' => 999,
+                ],
+            ],
+            'attribution' => [
+                'default_window_seconds' => 999,
+            ],
+        ], 'vertoad-appfactory-system-config-');
+
+        try {
+            $connection = \Doctrine\DBAL\DriverManager::getConnection([
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ]);
+            $this->createSystemConfigSchema($connection);
+            $this->insertSystemConfig($connection, 'security.rate_limit', 1, ['limit' => 30, 'window_seconds' => 10]);
+            $this->insertSystemConfig($connection, 'security.rate_limit', 2, ['limit' => 7, 'window_seconds' => 3]);
+            $this->insertSystemConfig($connection, 'attribution.default_window_seconds', 1, ['seconds' => 3600]);
+
+            $container = AppFactory::create($basePath)->getContainer();
+            $policy = $container?->get(RateLimitPolicy::class);
+            $attribution = $container?->get(AttributionService::class);
+
+            self::assertInstanceOf(RateLimitPolicy::class, $policy);
+            self::assertSame(7, $policy->limit);
+            self::assertSame(3, $policy->windowSeconds);
+            self::assertInstanceOf(AttributionService::class, $attribution);
+            self::assertSame(3600, $this->privateIntProperty($attribution, 'defaultWindowSeconds'));
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
+            @unlink($databasePath);
+        }
+    }
+
+    public function testProductionRuntimeConfigResolutionFailsWhenRequiredSystemConfigIsMissing(): void
+    {
+        $databasePath = sys_get_temp_dir() . '/vertoad-system-config-missing-' . bin2hex(random_bytes(4)) . '.sqlite';
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+        ], 'vertoad-appfactory-system-config-missing-');
+
+        try {
+            $connection = \Doctrine\DBAL\DriverManager::getConnection([
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ]);
+            $this->createSystemConfigSchema($connection);
+
+            $container = AppFactory::create($basePath)->getContainer();
+
+            try {
+                $container?->get(RateLimitPolicy::class);
+                self::fail('Production rate limit policy must require versioned system config.');
+            } catch (\RuntimeException $exception) {
+                self::assertSame('Missing required system config: security.rate_limit.', $exception->getMessage());
+            }
+
+            try {
+                $container?->get(AttributionService::class);
+                self::fail('Production attribution service must require versioned system config.');
+            } catch (\RuntimeException $exception) {
+                self::assertSame(
+                    'Missing required system config: attribution.default_window_seconds.',
+                    $exception->getMessage(),
+                );
+            }
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
+            @unlink($databasePath);
+        }
+    }
+
     public function testProductionRequiresExplicitArchiveRuntimeAdapters(): void
     {
         $basePath = $this->temporaryAppBasePathWithSettings([
@@ -914,6 +1019,35 @@ PHP);
         $reflection->setAccessible(true);
 
         return (int) $reflection->getValue($object);
+    }
+
+    private function createSystemConfigSchema(Connection $connection): void
+    {
+        $connection->executeStatement(
+            'CREATE TABLE system_config_versions (
+                version_id VARCHAR(80) PRIMARY KEY,
+                config_key VARCHAR(160) NOT NULL,
+                version INTEGER NOT NULL,
+                value_json TEXT NOT NULL,
+                created_by_user_id INTEGER NOT NULL,
+                created_at DATETIME NOT NULL
+            )'
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     */
+    private function insertSystemConfig(Connection $connection, string $key, int $version, array $value): void
+    {
+        $connection->insert('system_config_versions', [
+            'version_id' => 'cfgv_' . sha1($key . ':' . $version),
+            'config_key' => $key,
+            'version' => $version,
+            'value_json' => json_encode($value, JSON_THROW_ON_ERROR),
+            'created_by_user_id' => 1,
+            'created_at' => '2026-06-12 00:00:00',
+        ]);
     }
 
     private function defineFakeRedisIfMissing(): void
