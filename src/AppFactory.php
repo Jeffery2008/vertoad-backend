@@ -692,12 +692,17 @@ final class AppFactory
     private static function creativeReviewProvider(array $settings): CreativeReviewProviderInterface
     {
         $config = $settings['ai_review'] ?? [];
-        if (is_array($config)
-            && (string) ($config['base_url'] ?? '') !== ''
-            && (string) ($config['api_key'] ?? '') !== ''
-            && (string) ($config['model'] ?? '') !== ''
-        ) {
+        $hasCompleteConfig = is_array($config)
+            && trim((string) ($config['base_url'] ?? '')) !== ''
+            && trim((string) ($config['api_key'] ?? '')) !== ''
+            && trim((string) ($config['model'] ?? '')) !== '';
+
+        if ($hasCompleteConfig) {
             return new OpenAiCompatibleCreativeReviewProvider($config);
+        }
+
+        if (!self::localFallbackAllowed($settings)) {
+            throw new \RuntimeException('AI_REVIEW_BASE_URL, AI_REVIEW_API_KEY, and AI_REVIEW_MODEL are required outside local/testing.');
         }
 
         return new DeterministicCreativeReviewProvider([

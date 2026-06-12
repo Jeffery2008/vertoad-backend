@@ -819,6 +819,45 @@ PHP);
         }
     }
 
+    public function testAiReviewProviderRequiresCompleteConfigurationOutsideLocalTesting(): void
+    {
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'memory' => true,
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+            'ai_review' => [
+                'base_url' => 'https://ai.example.test/v1',
+                'api_key' => '',
+                'model' => 'review-model',
+            ],
+        ], 'vertoad-appfactory-ai-prod-');
+
+        try {
+            $container = AppFactory::create($basePath)->getContainer();
+
+            $this->expectException(\RuntimeException::class);
+            $this->expectExceptionMessage('AI_REVIEW_BASE_URL, AI_REVIEW_API_KEY, and AI_REVIEW_MODEL are required outside local/testing.');
+
+            $container?->get(CreativeReviewProviderInterface::class);
+        } finally {
+            @unlink($basePath . '/config/routes.php');
+            @unlink($basePath . '/config/settings.php');
+            @rmdir($basePath . '/config');
+            @rmdir($basePath);
+        }
+    }
+
     /** @param array<string, mixed> $aiReview */
     private function temporaryAppBasePath(array $aiReview): string
     {
