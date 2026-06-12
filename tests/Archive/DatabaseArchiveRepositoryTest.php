@@ -19,21 +19,25 @@ final class DatabaseArchiveRepositoryTest extends TestCase
     {
         $connection = $this->createConnection();
         $repository = new DatabaseArchiveRepository($connection);
-        $this->insertRawEvent($connection, 'imp-1', 'impression', '2026-06-08 10:15:00', ['campaign_id' => 123]);
-        $this->insertRawEvent($connection, 'clk-1', 'click', '2026-06-08 10:30:00', ['campaign_id' => 123]);
+        $this->insertRawEvent($connection, 'impression:shared-1', 'impression', '2026-06-08 10:15:00', ['campaign_id' => 123, 'event_id' => 'shared-1']);
+        $this->insertRawEvent($connection, 'click:shared-1', 'click', '2026-06-08 10:30:00', ['campaign_id' => 123, 'event_id' => 'shared-1']);
         $this->insertRawEvent($connection, 'done-1', 'click', '2026-06-08 10:35:00', ['campaign_id' => 999], processed: true);
 
         $events = $repository->pendingEvents();
 
-        self::assertSame(['imp-1', 'clk-1'], array_map(static fn ($event): string => $event->eventId, $events));
-        self::assertSame(['campaign_id' => 123], $events[0]->payload);
+        self::assertSame(['impression:shared-1', 'click:shared-1'], array_map(static fn ($event): string => $event->eventId, $events));
+        self::assertSame(['campaign_id' => 123, 'event_id' => 'shared-1'], $events[0]->payload);
         self::assertSame('2026-06-08T10:15:00+00:00', $events[0]->occurredAt->format(DATE_ATOM));
-        $repository->markEventsArchived(['imp-1', 'clk-1'], new DateTimeImmutable('2026-06-09T08:05:00+00:00'));
+        $repository->markEventsArchived(['impression:shared-1', 'click:shared-1'], new DateTimeImmutable('2026-06-09T08:05:00+00:00'));
         $repository->markEventsArchived([], new DateTimeImmutable('2026-06-09T08:10:00+00:00'));
         self::assertSame([], $repository->pendingEvents());
         self::assertSame(
             '2026-06-09 08:05:00',
-            $connection->fetchOne('SELECT processed_at FROM raw_events WHERE event_uuid = ?', ['imp-1']),
+            $connection->fetchOne('SELECT processed_at FROM raw_events WHERE event_uuid = ?', ['impression:shared-1']),
+        );
+        self::assertSame(
+            '2026-06-09 08:05:00',
+            $connection->fetchOne('SELECT processed_at FROM raw_events WHERE event_uuid = ?', ['click:shared-1']),
         );
 
         $manifest = new ArchiveManifest(

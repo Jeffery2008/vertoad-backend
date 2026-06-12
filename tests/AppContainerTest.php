@@ -991,6 +991,17 @@ final class Redis
         return isset($this->keys[$key]) ? 1 : 0;
     }
 
+    public function del(string $key): int
+    {
+        if (!isset($this->keys[$key])) {
+            return 0;
+        }
+
+        unset($this->keys[$key], $this->values[$key], $this->ttl[$key]);
+
+        return 1;
+    }
+
     public function zAdd(string $key, float $score, string $member): int
     {
         $exists = isset($this->zsets[$key][$member]);
@@ -1038,6 +1049,18 @@ final class Redis
 
     public function eval(string $script, array $args, int $numKeys): array
     {
+        if (str_contains($script, "redis.call('GET', KEYS[1])") && $numKeys === 1) {
+            $key = (string) $args[0];
+            $expectedValue = (string) ($args[1] ?? '');
+            if (($this->values[$key] ?? null) === $expectedValue) {
+                $this->del($key);
+
+                return [1];
+            }
+
+            return [0];
+        }
+
         $pending = $args[0];
         $processing = $args[1];
         $now = (float) $args[2];

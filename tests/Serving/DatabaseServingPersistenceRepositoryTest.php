@@ -103,7 +103,7 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
         $rawRows = $connection->fetchAllAssociative('SELECT * FROM raw_events ORDER BY event_uuid');
 
         self::assertCount(1, $rawRows);
-        self::assertSame('imp-archive', $rawRows[0]['event_uuid']);
+        self::assertSame('impression:imp-archive', $rawRows[0]['event_uuid']);
         self::assertSame('impression', $rawRows[0]['event_type']);
         self::assertSame(40, (int) $rawRows[0]['organization_id']);
         self::assertSame(10, (int) $rawRows[0]['site_id']);
@@ -122,6 +122,29 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
         self::assertTrue($payload['valid']);
         self::assertSame(0.75, $payload['visible_ratio']);
         self::assertSame(1500, $payload['visible_ms']);
+    }
+
+    public function testRawEventArchiveIdentityIncludesEventTypeWhenServingEventIdsOverlap(): void
+    {
+        $connection = $this->createConnection();
+        $decision = $this->decision();
+        (new DatabaseAdDecisionRepository($connection))->save($decision);
+
+        $events = new DatabaseAdEventRepository($connection);
+        $events->recordImpression($decision, 'shared-event-id', 0.75, 1500, new DateTimeImmutable('2026-06-08T10:00:00+00:00'));
+        $events->recordClick($decision, 'shared-event-id', new DateTimeImmutable('2026-06-08T10:00:20+00:00'));
+
+        $rawRows = $connection->fetchAllAssociative('SELECT event_uuid, event_type, payload_json FROM raw_events ORDER BY event_uuid');
+
+        self::assertSame(['click:shared-event-id', 'impression:shared-event-id'], array_column($rawRows, 'event_uuid'));
+        self::assertSame(['click', 'impression'], array_column($rawRows, 'event_type'));
+
+        $payloads = array_map(
+            static fn (array $row): array => json_decode((string) $row['payload_json'], true, flags: JSON_THROW_ON_ERROR),
+            $rawRows,
+        );
+        self::assertSame(['shared-event-id', 'shared-event-id'], array_column($payloads, 'event_id'));
+        self::assertSame(['click', 'impression'], array_column($payloads, 'event_type'));
     }
 
     public function testCronLeaseAcknowledgeMarksEventsProcessedWithoutRemovingReportHistory(): void
@@ -263,7 +286,7 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
         $connection->executeStatement(
             'CREATE TABLE raw_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                event_uuid VARCHAR(160) NOT NULL UNIQUE,
+                event_uuid VARCHAR(255) NOT NULL UNIQUE,
                 organization_id INTEGER NULL,
                 site_id INTEGER NULL,
                 ad_slot_id INTEGER NULL,

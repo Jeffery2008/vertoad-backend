@@ -12,7 +12,7 @@ final class RawEventSchemaMigrationTest extends TestCase
     {
         $migration = strtolower((string) file_get_contents(dirname(__DIR__, 2) . '/db/migrations/20260606134000_create_core_schema.php'));
 
-        self::assertStringContainsString('event_uuid varchar(160) not null', $migration);
+        self::assertStringContainsString('event_uuid varchar(255) not null', $migration);
         self::assertStringNotContainsString('event_uuid char(36)', $migration);
     }
 }

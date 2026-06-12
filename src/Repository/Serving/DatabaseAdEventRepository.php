@@ -196,7 +196,7 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
     {
         try {
             $this->connection->insert('raw_events', [
-                'event_uuid' => trim($event->eventId),
+                'event_uuid' => $this->rawEventUuid($event),
                 'organization_id' => $event->advertiserOrganizationId ?? $event->publisherOrganizationId,
                 'site_id' => $event->siteId,
                 'ad_slot_id' => $event->slotId,
@@ -212,6 +212,11 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
             ]);
         } catch (UniqueConstraintViolationException) {
         }
+    }
+
+    private function rawEventUuid(AdEvent $event): string
+    {
+        return trim($event->eventType) . ':' . trim($event->eventId);
     }
 
     /**

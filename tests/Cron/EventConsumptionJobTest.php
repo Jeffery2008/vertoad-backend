@@ -51,7 +51,7 @@ final class EventConsumptionJobTest extends TestCase
         self::assertSame(20, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
         self::assertNotNull((new DatabaseAdEventRepository($connection))->findEvent('impression', 'imp-1'));
         self::assertSame(
-            ['clk-invalid', 'clk-missing-metadata', 'imp-1'],
+            ['click:clk-invalid', 'click:clk-missing-metadata', 'impression:imp-1'],
             array_map(static fn ($event): string => $event->eventId, (new DatabaseArchiveRepository($connection))->pendingEvents()),
         );
     }
@@ -283,7 +283,7 @@ SQL
             <<<'SQL'
 CREATE TABLE raw_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_uuid VARCHAR(160) NOT NULL UNIQUE,
+    event_uuid VARCHAR(255) NOT NULL UNIQUE,
     organization_id INTEGER NULL,
     site_id INTEGER NULL,
     ad_slot_id INTEGER NULL,
