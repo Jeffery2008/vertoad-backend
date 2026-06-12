@@ -91,6 +91,23 @@ final class RevenueShareRepository
         return $ranked[0] ?? null;
     }
 
+    public function findActiveGlobalRule(): ?RevenueShareRule
+    {
+        $row = $this->connection->createQueryBuilder()
+            ->select('*')
+            ->from('revenue_share_rules')
+            ->where('scope = :scope')
+            ->andWhere('status = :status')
+            ->setParameter('scope', 'global')
+            ->setParameter('status', 'active')
+            ->orderBy('version', 'DESC')
+            ->addOrderBy('id', 'DESC')
+            ->setMaxResults(1)
+            ->fetchAssociative();
+
+        return $row === false ? null : $this->hydrateRule($row);
+    }
+
     public function findEarningByEventId(string $eventId): ?PublisherEarningEvent
     {
         $eventId = trim($eventId);

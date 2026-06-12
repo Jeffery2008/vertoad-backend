@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace VertoAD\Service;
 
+use VertoAD\Repository\Billing\RevenueShareRepository;
+
 final readonly class RuntimeConfigHealthCheck
 {
     private \Closure $check;
@@ -15,13 +17,25 @@ final readonly class RuntimeConfigHealthCheck
 
     public static function fromSystemConfig(
         SystemConfigService $configs,
+        ?RevenueShareRepository $revenueShares = null,
         ?callable $aiReviewApiKeyResolver = null,
         ?callable $turnstileSecretResolver = null,
     ): self
     {
-        return new self(static function () use ($configs, $aiReviewApiKeyResolver, $turnstileSecretResolver): void {
+        return new self(static function () use ($configs, $revenueShares, $aiReviewApiKeyResolver, $turnstileSecretResolver): void {
             $configs->assetUploadPolicy();
             $configs->attributionDefaultWindowSeconds();
+            $defaultPublisherPercent = $configs->defaultPublisherRevenueSharePercent();
+            if ($revenueShares !== null) {
+                $globalRule = $revenueShares->findActiveGlobalRule();
+                if ($globalRule === null) {
+                    throw new \RuntimeException('Missing active global revenue share rule for billing.default_revenue_share.');
+                }
+
+                if ($globalRule->shareRatioBps !== $defaultPublisherPercent * 100) {
+                    throw new \RuntimeException('Global revenue share rule must match billing.default_revenue_share publisher_percent.');
+                }
+            }
             $configs->rateLimitPolicy();
             $configs->servingEventPolicy();
             $aiReviewPolicy = $configs->aiReviewPolicy();

@@ -498,9 +498,13 @@ final class AppFactory
                     new SystemConfigRepository($connection),
                 SystemConfigService::class => static fn (SystemConfigRepositoryInterface $repository): SystemConfigService =>
                     new SystemConfigService($repository, self::localFallbackAllowed($settings)),
-                RuntimeConfigHealthCheck::class => static fn (SystemConfigService $configs): RuntimeConfigHealthCheck =>
+                RuntimeConfigHealthCheck::class => static fn (
+                    SystemConfigService $configs,
+                    RevenueShareRepository $revenueShares,
+                ): RuntimeConfigHealthCheck =>
                     RuntimeConfigHealthCheck::fromSystemConfig(
                         $configs,
+                        self::localFallbackAllowed($settings) ? null : $revenueShares,
                         self::localFallbackAllowed($settings)
                             ? null
                             : static function () use ($settings): string {

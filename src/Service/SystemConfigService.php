@@ -42,6 +42,10 @@ final class SystemConfigService
         $config = $this->findLatestValue(self::DEFAULT_REVENUE_SHARE_KEY);
 
         if ($config === null) {
+            if (!$this->allowRuntimeFallbacks) {
+                throw new \RuntimeException('Missing required system config: billing.default_revenue_share.');
+            }
+
             return self::FALLBACK_PUBLISHER_PERCENT;
         }
 

@@ -18,6 +18,7 @@ use VertoAD\Service\AuditLogService;
 
 final readonly class ConfigVersionService
 {
+    private const DEFAULT_REVENUE_SHARE_KEY = 'billing.default_revenue_share';
     private const RATE_LIMIT_KEY = 'security.rate_limit';
     private const ATTRIBUTION_DEFAULT_WINDOW_KEY = 'attribution.default_window_seconds';
     private const SERVING_EVENT_VALIDATION_KEY = 'serving.event_validation';
@@ -140,6 +141,10 @@ final readonly class ConfigVersionService
             }
         }
 
+        if ($configKey === self::DEFAULT_REVENUE_SHARE_KEY) {
+            $this->assertValidDefaultRevenueShare($value);
+        }
+
         if ($configKey === self::RATE_LIMIT_KEY) {
             $this->assertValidRateLimitPolicy($value);
         }
@@ -206,6 +211,7 @@ final readonly class ConfigVersionService
     private static function supportedConfigKeys(): array
     {
         return [
+            self::DEFAULT_REVENUE_SHARE_KEY,
             self::RATE_LIMIT_KEY,
             self::ATTRIBUTION_DEFAULT_WINDOW_KEY,
             self::SERVING_EVENT_VALIDATION_KEY,
@@ -214,6 +220,19 @@ final readonly class ConfigVersionService
             self::WEBHOOK_DELIVERY_POLICY_KEY,
             self::TURNSTILE_POLICY_KEY,
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     */
+    private function assertValidDefaultRevenueShare(array $value): void
+    {
+        $this->assertOnlyFields(self::DEFAULT_REVENUE_SHARE_KEY, $value, ['publisher_percent']);
+
+        $publisherPercent = $value['publisher_percent'] ?? null;
+        if (!is_int($publisherPercent) || $publisherPercent < 0 || $publisherPercent > 100) {
+            throw new InvalidArgumentException('Invalid billing.default_revenue_share publisher_percent must be an integer between 0 and 100.');
+        }
     }
 
     /**

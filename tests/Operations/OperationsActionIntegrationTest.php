@@ -117,13 +117,8 @@ final class OperationsActionIntegrationTest extends TestCase
         $versions = $this->handle($app, 'GET', '/api/v1/operations/config/versions?config_key=security.rate_limit');
         $versionsInvalid = $this->handle($app, 'GET', '/api/v1/operations/config/versions?config_key=../secrets');
         $create = $this->handle($app, 'POST', '/api/v1/operations/config/versions', [
-            'config_key' => 'webhook.delivery_policy',
-            'value' => [
-                'batch_size' => 50,
-                'http_timeout_seconds' => 10,
-                'max_retry_count' => 3,
-                'retry_base_backoff_seconds' => 300,
-            ],
+            'config_key' => 'billing.default_revenue_share',
+            'value' => ['publisher_percent' => 70],
         ], new RequestUserContext(new AuthenticatedUser(7, 'ops@example.com', false), null));
         $createInvalid = $this->handle($app, 'POST', '/api/v1/operations/config/versions', [
             'config_key' => 'webhooks.timeout',
@@ -151,7 +146,7 @@ final class OperationsActionIntegrationTest extends TestCase
         self::assertSame(422, $versionsInvalid['status']);
         self::assertSame('invalid_request', $versionsInvalid['body']['error']['code']);
         self::assertSame(201, $create['status']);
-        self::assertSame('webhook.delivery_policy', $create['body']['data']['config_key']);
+        self::assertSame('billing.default_revenue_share', $create['body']['data']['config_key']);
         self::assertSame(422, $createInvalid['status']);
         self::assertSame(200, $rollback['status']);
         self::assertSame(404, $rollbackMissing['status']);

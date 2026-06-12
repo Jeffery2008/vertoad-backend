@@ -961,6 +961,241 @@ PHP);
         }
     }
 
+    public function testProductionHealthRouteReportsDegradedWhenDefaultRevenueShareConfigIsMissing(): void
+    {
+        $databasePath = sys_get_temp_dir() . '/vertoad-health-default-share-config-' . bin2hex(random_bytes(4)) . '.sqlite';
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ],
+            'redis' => [
+                'driver' => 'predis',
+                'password' => 'unit-test-redis-secret',
+                'prefix' => 'vertoad:test:',
+            ],
+            'storage' => [
+                's3' => [
+                    'endpoint' => 'https://r2.example.test',
+                    'bucket' => 'creative-assets',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                    'path_style_endpoint' => true,
+                    'public_base_url' => 'https://assets.example.test',
+                ],
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+            'ai_review' => [
+                'api_key' => 'unit-test-ai-review-key',
+            ],
+            'turnstile' => [
+                'secret_key' => 'unit-test-turnstile-secret',
+            ],
+        ], 'vertoad-appfactory-health-default-share-config-');
+
+        try {
+            $connection = \Doctrine\DBAL\DriverManager::getConnection([
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ]);
+            $this->createSystemConfigSchema($connection);
+            $this->insertSystemConfig($connection, 'assets.upload_policy', 1, $this->assetUploadPolicyConfig());
+            $this->insertSystemConfig($connection, 'attribution.default_window_seconds', 1, ['seconds' => 604800]);
+
+            $configPath = $basePath . '/config/routes.php';
+            file_put_contents($configPath, <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+use Slim\App;
+use VertoAD\Http\Action\HealthAction;
+
+return static function (App $app): void {
+    $app->get('/api/v1/health', HealthAction::class);
+};
+PHP);
+
+            $app = AppFactory::create($basePath);
+            $request = (new ServerRequestFactory())->createServerRequest('GET', '/api/v1/health');
+            $response = $app->handle($request);
+            $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+            self::assertSame(503, $response->getStatusCode());
+            self::assertSame('runtime_config_unhealthy', $payload['error']['code']);
+            self::assertSame('Missing required system config: billing.default_revenue_share.', $payload['error']['message']);
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
+            @unlink($databasePath);
+        }
+    }
+
+    public function testProductionHealthRouteReportsDegradedWhenGlobalRevenueShareRuleIsMissing(): void
+    {
+        $databasePath = sys_get_temp_dir() . '/vertoad-health-default-share-rule-' . bin2hex(random_bytes(4)) . '.sqlite';
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ],
+            'redis' => [
+                'driver' => 'predis',
+                'password' => 'unit-test-redis-secret',
+                'prefix' => 'vertoad:test:',
+            ],
+            'storage' => [
+                's3' => [
+                    'endpoint' => 'https://r2.example.test',
+                    'bucket' => 'creative-assets',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                    'path_style_endpoint' => true,
+                    'public_base_url' => 'https://assets.example.test',
+                ],
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+            'ai_review' => [
+                'api_key' => 'unit-test-ai-review-key',
+            ],
+            'turnstile' => [
+                'secret_key' => 'unit-test-turnstile-secret',
+            ],
+        ], 'vertoad-appfactory-health-default-share-rule-');
+
+        try {
+            $connection = \Doctrine\DBAL\DriverManager::getConnection([
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ]);
+            $this->createSystemConfigSchema($connection);
+            $this->createRevenueShareRuleSchema($connection);
+            $this->insertCompleteRuntimeSystemConfigs($connection);
+
+            $configPath = $basePath . '/config/routes.php';
+            file_put_contents($configPath, <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+use Slim\App;
+use VertoAD\Http\Action\HealthAction;
+
+return static function (App $app): void {
+    $app->get('/api/v1/health', HealthAction::class);
+};
+PHP);
+
+            $app = AppFactory::create($basePath);
+            $request = (new ServerRequestFactory())->createServerRequest('GET', '/api/v1/health');
+            $response = $app->handle($request);
+            $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+            self::assertSame(503, $response->getStatusCode());
+            self::assertSame('runtime_config_unhealthy', $payload['error']['code']);
+            self::assertSame('Missing active global revenue share rule for billing.default_revenue_share.', $payload['error']['message']);
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
+            @unlink($databasePath);
+        }
+    }
+
+    public function testProductionHealthRouteReportsDegradedWhenGlobalRevenueShareRuleDriftsFromConfig(): void
+    {
+        $databasePath = sys_get_temp_dir() . '/vertoad-health-default-share-drift-' . bin2hex(random_bytes(4)) . '.sqlite';
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ],
+            'redis' => [
+                'driver' => 'predis',
+                'password' => 'unit-test-redis-secret',
+                'prefix' => 'vertoad:test:',
+            ],
+            'storage' => [
+                's3' => [
+                    'endpoint' => 'https://r2.example.test',
+                    'bucket' => 'creative-assets',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                    'path_style_endpoint' => true,
+                    'public_base_url' => 'https://assets.example.test',
+                ],
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+            'ai_review' => [
+                'api_key' => 'unit-test-ai-review-key',
+            ],
+            'turnstile' => [
+                'secret_key' => 'unit-test-turnstile-secret',
+            ],
+        ], 'vertoad-appfactory-health-default-share-drift-');
+
+        try {
+            $connection = \Doctrine\DBAL\DriverManager::getConnection([
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ]);
+            $this->createSystemConfigSchema($connection);
+            $this->createRevenueShareRuleSchema($connection);
+            $this->insertCompleteRuntimeSystemConfigs($connection);
+            $this->insertGlobalRevenueShareRule($connection, 6500);
+
+            $configPath = $basePath . '/config/routes.php';
+            file_put_contents($configPath, <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+use Slim\App;
+use VertoAD\Http\Action\HealthAction;
+
+return static function (App $app): void {
+    $app->get('/api/v1/health', HealthAction::class);
+};
+PHP);
+
+            $app = AppFactory::create($basePath);
+            $request = (new ServerRequestFactory())->createServerRequest('GET', '/api/v1/health');
+            $response = $app->handle($request);
+            $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+            self::assertSame(503, $response->getStatusCode());
+            self::assertSame('runtime_config_unhealthy', $payload['error']['code']);
+            self::assertSame('Global revenue share rule must match billing.default_revenue_share publisher_percent.', $payload['error']['message']);
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
+            @unlink($databasePath);
+        }
+    }
+
     public function testProductionHealthRouteReportsDegradedWhenWebhookDeliveryPolicyIsMissing(): void
     {
         $databasePath = sys_get_temp_dir() . '/vertoad-health-webhook-policy-' . bin2hex(random_bytes(4)) . '.sqlite';
@@ -1005,6 +1240,9 @@ PHP);
                 'path' => $databasePath,
             ]);
             $this->createSystemConfigSchema($connection);
+            $this->createRevenueShareRuleSchema($connection);
+            $this->insertSystemConfig($connection, 'billing.default_revenue_share', 1, ['publisher_percent' => 70]);
+            $this->insertGlobalRevenueShareRule($connection, 7000);
             $this->insertSystemConfig($connection, 'security.rate_limit', 1, ['limit' => 60, 'window_seconds' => 60]);
             $this->insertSystemConfig($connection, 'attribution.default_window_seconds', 1, ['seconds' => 604800]);
             $this->insertSystemConfig($connection, 'serving.event_validation', 1, [
@@ -1101,6 +1339,9 @@ PHP);
                 'path' => $databasePath,
             ]);
             $this->createSystemConfigSchema($connection);
+            $this->createRevenueShareRuleSchema($connection);
+            $this->insertSystemConfig($connection, 'billing.default_revenue_share', 1, ['publisher_percent' => 70]);
+            $this->insertGlobalRevenueShareRule($connection, 7000);
             $this->insertSystemConfig($connection, 'security.rate_limit', 1, ['limit' => 60, 'window_seconds' => 60]);
             $this->insertSystemConfig($connection, 'attribution.default_window_seconds', 1, ['seconds' => 604800]);
             $this->insertSystemConfig($connection, 'serving.event_validation', 1, [
@@ -1194,6 +1435,9 @@ PHP);
                 'path' => $databasePath,
             ]);
             $this->createSystemConfigSchema($connection);
+            $this->createRevenueShareRuleSchema($connection);
+            $this->insertSystemConfig($connection, 'billing.default_revenue_share', 1, ['publisher_percent' => 70]);
+            $this->insertGlobalRevenueShareRule($connection, 7000);
             $this->insertSystemConfig($connection, 'security.rate_limit', 1, ['limit' => 60, 'window_seconds' => 60]);
             $this->insertSystemConfig($connection, 'attribution.default_window_seconds', 1, ['seconds' => 604800]);
             $this->insertSystemConfig($connection, 'serving.event_validation', 1, [
@@ -1291,6 +1535,9 @@ PHP);
                 'path' => $databasePath,
             ]);
             $this->createSystemConfigSchema($connection);
+            $this->createRevenueShareRuleSchema($connection);
+            $this->insertSystemConfig($connection, 'billing.default_revenue_share', 1, ['publisher_percent' => 70]);
+            $this->insertGlobalRevenueShareRule($connection, 7000);
             $this->insertSystemConfig($connection, 'security.rate_limit', 1, ['limit' => 60, 'window_seconds' => 60]);
             $this->insertSystemConfig($connection, 'attribution.default_window_seconds', 1, ['seconds' => 604800]);
             $this->insertSystemConfig($connection, 'serving.event_validation', 1, [
@@ -1561,6 +1808,9 @@ PHP);
                 'path' => $databasePath,
             ]);
             $this->createSystemConfigSchema($connection);
+            $this->createRevenueShareRuleSchema($connection);
+            $this->insertSystemConfig($connection, 'billing.default_revenue_share', 1, ['publisher_percent' => 70]);
+            $this->insertGlobalRevenueShareRule($connection, 7000);
             $this->insertSystemConfig($connection, 'security.rate_limit', 1, ['limit' => 60, 'window_seconds' => 60]);
             $this->insertSystemConfig($connection, 'attribution.default_window_seconds', 1, ['seconds' => 604800]);
             $this->insertSystemConfig($connection, 'serving.event_validation', 1, [
@@ -1658,6 +1908,9 @@ PHP);
                 'path' => $databasePath,
             ]);
             $this->createSystemConfigSchema($connection);
+            $this->createRevenueShareRuleSchema($connection);
+            $this->insertSystemConfig($connection, 'billing.default_revenue_share', 1, ['publisher_percent' => 70]);
+            $this->insertGlobalRevenueShareRule($connection, 7000);
             $this->insertSystemConfig($connection, 'security.rate_limit', 1, ['limit' => 60, 'window_seconds' => 60]);
             $this->insertSystemConfig($connection, 'attribution.default_window_seconds', 1, ['seconds' => 604800]);
             $this->insertSystemConfig($connection, 'serving.event_validation', 1, [
@@ -2249,6 +2502,24 @@ PHP);
         );
     }
 
+    private function createRevenueShareRuleSchema(Connection $connection): void
+    {
+        $connection->executeStatement(
+            "CREATE TABLE revenue_share_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope VARCHAR(32) NOT NULL,
+                organization_id INTEGER NULL,
+                site_id INTEGER NULL,
+                ad_slot_id INTEGER NULL,
+                share_ratio_bps INTEGER NOT NULL,
+                status VARCHAR(32) NOT NULL,
+                version INTEGER NOT NULL,
+                created_by_user_id INTEGER NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"
+        );
+    }
+
     private function createAuditLogSchema(Connection $connection): void
     {
         $connection->executeStatement(
@@ -2277,6 +2548,47 @@ PHP);
             'config_key' => $key,
             'version' => $version,
             'value_json' => json_encode($value, JSON_THROW_ON_ERROR),
+            'created_by_user_id' => 1,
+            'created_at' => '2026-06-12 00:00:00',
+        ]);
+    }
+
+    private function insertCompleteRuntimeSystemConfigs(Connection $connection): void
+    {
+        $this->insertSystemConfig($connection, 'billing.default_revenue_share', 1, ['publisher_percent' => 70]);
+        $this->insertSystemConfig($connection, 'security.rate_limit', 1, ['limit' => 60, 'window_seconds' => 60]);
+        $this->insertSystemConfig($connection, 'attribution.default_window_seconds', 1, ['seconds' => 604800]);
+        $this->insertSystemConfig($connection, 'serving.event_validation', 1, [
+            'min_visible_ratio' => 0.5,
+            'min_visible_ms' => 1000,
+            'repeat_click_window_seconds' => 30,
+        ]);
+        $this->insertSystemConfig($connection, 'review.ai_policy', 1, [
+            'enabled' => true,
+            'provider' => 'openai_compatible',
+            'base_url' => 'https://ai.example.test/v1',
+            'model' => 'review-model',
+            'prompt' => 'Return JSON.',
+            'timeout_seconds' => 60,
+            'max_input_tokens' => 12000,
+            'max_output_tokens' => 2000,
+            'temperature' => 0.2,
+        ]);
+        $this->insertSystemConfig($connection, 'assets.upload_policy', 1, $this->assetUploadPolicyConfig());
+        $this->insertSystemConfig($connection, 'webhook.delivery_policy', 1, $this->webhookDeliveryPolicyConfig());
+        $this->insertSystemConfig($connection, 'security.turnstile_policy', 1, $this->turnstilePolicyConfig());
+    }
+
+    private function insertGlobalRevenueShareRule(Connection $connection, int $shareRatioBps): void
+    {
+        $connection->insert('revenue_share_rules', [
+            'scope' => 'global',
+            'organization_id' => null,
+            'site_id' => null,
+            'ad_slot_id' => null,
+            'share_ratio_bps' => $shareRatioBps,
+            'status' => 'active',
+            'version' => 1,
             'created_by_user_id' => 1,
             'created_at' => '2026-06-12 00:00:00',
         ]);

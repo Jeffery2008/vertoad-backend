@@ -46,6 +46,8 @@ final class SystemConfigMigrationContractTest extends TestCase
         $bootstrapSql = (string) file_get_contents(dirname(__DIR__, 2) . '/db/init-super-admin.sql');
 
         self::assertStringContainsString('INSERT INTO system_config_versions', $bootstrapSql);
+        self::assertStringContainsString("'billing.default_revenue_share'", $bootstrapSql);
+        self::assertStringContainsString("JSON_OBJECT('publisher_percent', 70)", $bootstrapSql);
         self::assertStringContainsString("'security.rate_limit'", $bootstrapSql);
         self::assertStringContainsString("JSON_OBJECT('limit', 60, 'window_seconds', 60)", $bootstrapSql);
         self::assertStringContainsString("'attribution.default_window_seconds'", $bootstrapSql);
@@ -76,6 +78,10 @@ final class SystemConfigMigrationContractTest extends TestCase
         self::assertStringContainsString("'POST:/api/v1/auth/login'", $bootstrapSql);
         self::assertStringContainsString("'GET:/api/v1/oauth/authorize'", $bootstrapSql);
         self::assertStringNotContainsString('TURNSTILE_SECRET_KEY', $bootstrapSql);
+        self::assertStringContainsString('INSERT INTO revenue_share_rules', $bootstrapSql);
+        self::assertStringContainsString("'global'", $bootstrapSql);
+        self::assertStringContainsString('7000', $bootstrapSql);
+        self::assertStringContainsString("'active'", $bootstrapSql);
         self::assertStringContainsString('@super_admin_user_id', $bootstrapSql);
     }
 

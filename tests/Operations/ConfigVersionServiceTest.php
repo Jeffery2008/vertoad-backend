@@ -58,7 +58,6 @@ final class ConfigVersionServiceTest extends TestCase
                 ['', ['enabled' => true]],
                 ['../secrets', ['enabled' => true]],
                 ['webhooks.timeout', ['seconds' => 10]],
-                ['billing.default_revenue_share', ['publisher_percent' => 70]],
                 ['security.rate_limit', []],
                 ['security.rate_limit', ['password' => 'must-not-store-secret']],
                 ['security.rate_limit', ['nested' => ['authorization_header' => 'Bearer must-not-store']]],
@@ -69,6 +68,33 @@ final class ConfigVersionServiceTest extends TestCase
                 self::fail('Invalid config key/value pair must be rejected.');
             } catch (\InvalidArgumentException) {
                 self::assertTrue(true);
+            }
+        }
+    }
+
+    public function testDefaultRevenueShareConfigVersionAcceptsOnlyStrictDocumentedSchema(): void
+    {
+        $service = new ConfigVersionService(new InMemoryConfigVersionRepository(), new AuditLogService(new ConfigAuditRepository()));
+
+        $created = $service->createVersion('billing.default_revenue_share', ['publisher_percent' => 70], 7);
+
+        self::assertSame('billing.default_revenue_share', $this->value($created, 'config_key'));
+        self::assertSame(['publisher_percent' => 70], $this->value($created, 'value'));
+
+        foreach (
+            [
+                'null percent' => ['publisher_percent' => null],
+                'negative percent' => ['publisher_percent' => -1],
+                'oversized percent' => ['publisher_percent' => 101],
+                'string percent' => ['publisher_percent' => '70'],
+                'unknown field' => ['publisher_percent' => 70, 'share_ratio_bps' => 7000],
+            ] as $case => $value
+        ) {
+            try {
+                $service->createVersion('billing.default_revenue_share', $value, 7);
+                self::fail('Invalid billing.default_revenue_share value must be rejected: ' . $case);
+            } catch (\InvalidArgumentException $exception) {
+                self::assertStringStartsWith('Invalid billing.default_revenue_share ', $exception->getMessage());
             }
         }
     }

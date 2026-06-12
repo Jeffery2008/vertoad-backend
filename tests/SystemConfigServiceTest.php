@@ -653,6 +653,16 @@ final class SystemConfigServiceTest extends TestCase
         $service = new SystemConfigService(new ArraySystemConfigRepository(), allowRuntimeFallbacks: false);
 
         try {
+            $service->defaultPublisherRevenueSharePercent();
+            self::fail('Production runtime config must not silently fall back when default revenue share config is missing.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame(
+                'Missing required system config: billing.default_revenue_share.',
+                $exception->getMessage(),
+            );
+        }
+
+        try {
             $service->attributionDefaultWindowSeconds();
             self::fail('Production runtime config must not silently fall back when attribution config is missing.');
         } catch (\RuntimeException $exception) {

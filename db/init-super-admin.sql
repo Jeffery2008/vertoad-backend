@@ -145,6 +145,13 @@ INSERT INTO system_config_versions (
 )
 VALUES
     (
+        'cfgv_bootstrap_billing_default_revenue_share_v1',
+        'billing.default_revenue_share',
+        1,
+        JSON_OBJECT('publisher_percent', 70),
+        @super_admin_user_id
+    ),
+    (
         'cfgv_bootstrap_security_rate_limit_v1',
         'security.rate_limit',
         1,
@@ -277,6 +284,27 @@ VALUES
         ),
         @super_admin_user_id
     );
+
+INSERT INTO revenue_share_rules (
+    scope,
+    organization_id,
+    site_id,
+    ad_slot_id,
+    share_ratio_bps,
+    status,
+    version,
+    created_by_user_id
+)
+VALUES (
+    'global',
+    NULL,
+    NULL,
+    NULL,
+    7000,
+    'active',
+    1,
+    @super_admin_user_id
+);
 
 INSERT INTO audit_logs (organization_id, actor_user_id, action, subject_type, subject_id, metadata_json)
 VALUES (

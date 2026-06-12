@@ -2966,7 +2966,7 @@ paths:
         - Operations
       operationId: listConfigVersions
       summary: List config versions for a key.
-      description: Lists audited configuration versions for the supported business-policy keys `security.rate_limit`, `attribution.default_window_seconds`, `serving.event_validation`, `assets.upload_policy`, `review.ai_policy`, `webhook.delivery_policy`, and `security.turnstile_policy`. Unknown config keys are rejected, and secret material such as API keys is never returned through config versions.
+      description: Lists audited configuration versions for the supported business-policy keys `billing.default_revenue_share`, `security.rate_limit`, `attribution.default_window_seconds`, `serving.event_validation`, `assets.upload_policy`, `review.ai_policy`, `webhook.delivery_policy`, and `security.turnstile_policy`. Unknown config keys are rejected, and secret material such as API keys is never returned through config versions.
       security:
         - BearerAuth: []
       parameters:
@@ -6047,6 +6047,7 @@ components:
       additionalProperties: false
     ConfigVersionCreateRequest:
       oneOf:
+        - $ref: "#/components/schemas/DefaultRevenueShareConfigVersionCreateRequest"
         - $ref: "#/components/schemas/RateLimitConfigVersionCreateRequest"
         - $ref: "#/components/schemas/AttributionWindowConfigVersionCreateRequest"
         - $ref: "#/components/schemas/ServingEventValidationConfigVersionCreateRequest"
@@ -6054,6 +6055,17 @@ components:
         - $ref: "#/components/schemas/AiReviewPolicyConfigVersionCreateRequest"
         - $ref: "#/components/schemas/WebhookDeliveryPolicyConfigVersionCreateRequest"
         - $ref: "#/components/schemas/SecurityTurnstilePolicyConfigVersionCreateRequest"
+    DefaultRevenueShareConfigVersionCreateRequest:
+      type: object
+      required:
+        - config_key
+        - value
+      properties:
+        config_key:
+          const: billing.default_revenue_share
+        value:
+          $ref: "#/components/schemas/DefaultRevenueShareConfig"
+      additionalProperties: false
     RateLimitConfigVersionCreateRequest:
       type: object
       required:
@@ -6133,6 +6145,7 @@ components:
       additionalProperties: false
     ConfigVersionValue:
       oneOf:
+        - $ref: "#/components/schemas/DefaultRevenueShareConfig"
         - $ref: "#/components/schemas/RateLimitPolicyConfig"
         - $ref: "#/components/schemas/AttributionWindowConfig"
         - $ref: "#/components/schemas/ServingEventValidationConfig"
@@ -6140,6 +6153,16 @@ components:
         - $ref: "#/components/schemas/AiReviewPolicyConfig"
         - $ref: "#/components/schemas/WebhookDeliveryPolicyConfig"
         - $ref: "#/components/schemas/SecurityTurnstilePolicyConfig"
+    DefaultRevenueShareConfig:
+      type: object
+      required:
+        - publisher_percent
+      properties:
+        publisher_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+      additionalProperties: false
     RateLimitPolicyConfig:
       type: object
       required:

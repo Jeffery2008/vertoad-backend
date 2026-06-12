@@ -71,6 +71,25 @@ final class RevenueShareTest extends TestCase
         $repository->createRule('global', null, null, null, 10001, 1, new DateTimeImmutable('2026-06-08 10:02:00'));
     }
 
+    public function testFindActiveGlobalRuleReturnsLatestActiveGlobalRuleOnly(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        BillingTask14Schema::create($connection);
+        $repository = new RevenueShareRepository($connection);
+
+        $firstGlobal = $repository->createRule('global', null, null, null, 5000, 1, new DateTimeImmutable('2026-06-08 10:00:00'));
+        $latestGlobal = $repository->createRule('global', null, null, null, 7000, 1, new DateTimeImmutable('2026-06-08 10:01:00'));
+        $repository->createRule('publisher', 42, null, null, 9000, 1, new DateTimeImmutable('2026-06-08 10:02:00'));
+        $connection->update('revenue_share_rules', ['status' => 'inactive'], ['id' => $firstGlobal->id]);
+
+        $activeGlobal = $repository->findActiveGlobalRule();
+
+        self::assertNotNull($activeGlobal);
+        self::assertSame($latestGlobal->id, $activeGlobal->id);
+        self::assertSame('global', $activeGlobal->scope);
+        self::assertSame(7000, $activeGlobal->shareRatioBps);
+    }
+
     public function testRevenueShareRepositoryHandlesEmptyLookupsAndInvalidScopes(): void
     {
         $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
