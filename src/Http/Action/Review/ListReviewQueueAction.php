@@ -22,12 +22,19 @@ final readonly class ListReviewQueueAction
     public function __invoke(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
     {
         $context = RequestUserContext::fromRequest($request);
-        $error = ReviewRequestGuards::requireAuthenticatedOrganization($context, $request);
-        if ($error !== null) {
-            return ReviewSerializers::json($response, $error['payload'], $error['status']);
+        if ($context->user === null) {
+            return ReviewSerializers::json($response, [
+                'code' => 'authentication_required',
+                'message' => 'Authentication is required for this endpoint.',
+            ], 401);
         }
 
         $query = $request->getQueryParams();
+        $organizationId = $this->optionalOrganizationId($query['organization_id'] ?? null, array_key_exists('organization_id', $query));
+        if ($organizationId === false) {
+            return ReviewSerializers::json($response, ['code' => 'invalid_request', 'message' => 'organization_id must be a positive integer when provided.'], 422);
+        }
+
         $status = $query['status'] ?? null;
         if ($status !== 'needs_human') {
             return ReviewSerializers::json($response, ['code' => 'invalid_request', 'message' => 'status must be needs_human.'], 422);
@@ -39,7 +46,7 @@ final readonly class ListReviewQueueAction
         }
 
         try {
-            $reviews = $this->service->listQueue((int) $context->organizationId, $status, $limit);
+            $reviews = $this->service->listQueue($organizationId, $status, $limit);
         } catch (ReviewValidationException $exception) {
             return ReviewSerializers::json($response, ['code' => $exception->errorCode, 'message' => $exception->getMessage()], $exception->status);
         }
@@ -66,5 +73,22 @@ final readonly class ListReviewQueueAction
         $limit = (int) $value;
 
         return $limit > 0 && $limit <= 100 ? $limit : null;
+    }
+
+    private function optionalOrganizationId(mixed $value, bool $provided): int|null|false
+    {
+        if (!$provided) {
+            return null;
+        }
+
+        if (is_int($value)) {
+            return $value > 0 ? $value : false;
+        }
+
+        if (is_string($value) && ctype_digit($value) && (int) $value > 0) {
+            return (int) $value;
+        }
+
+        return false;
     }
 }

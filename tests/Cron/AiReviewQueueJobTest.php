@@ -204,7 +204,7 @@ final class RacingReviewRepository implements ReviewRepositoryInterface
         return [$this->review()];
     }
 
-    public function listForReviewQueue(int $organizationId, CreativeReviewStatus $status, int $limit): array
+    public function listForReviewQueue(?int $organizationId, CreativeReviewStatus $status, int $limit): array
     {
         return [];
     }

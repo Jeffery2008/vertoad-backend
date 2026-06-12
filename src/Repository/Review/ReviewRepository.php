@@ -67,23 +67,28 @@ final class ReviewRepository implements ReviewRepositoryInterface
         return $row === false ? null : $this->hydrate($row);
     }
 
-    public function listForReviewQueue(int $organizationId, CreativeReviewStatus $status, int $limit): array
+    public function listForReviewQueue(?int $organizationId, CreativeReviewStatus $status, int $limit): array
     {
         if ($limit <= 0) {
             throw new \InvalidArgumentException('Review queue list limit must be positive.');
         }
 
-        $rows = $this->connection->createQueryBuilder()
+        $query = $this->connection->createQueryBuilder()
             ->select('*')
             ->from('creative_reviews')
-            ->where('organization_id = :organization_id')
-            ->andWhere('status = :status')
+            ->where('status = :status')
             ->orderBy('created_at', 'ASC')
             ->addOrderBy('id', 'ASC')
             ->setMaxResults($limit)
-            ->setParameter('organization_id', $organizationId)
-            ->setParameter('status', $status->value)
-            ->fetchAllAssociative();
+            ->setParameter('status', $status->value);
+
+        if ($organizationId !== null) {
+            $query
+                ->andWhere('organization_id = :organization_id')
+                ->setParameter('organization_id', $organizationId);
+        }
+
+        $rows = $query->fetchAllAssociative();
 
         return array_map(fn (array $row): CreativeReview => $this->hydrate($row), $rows);
     }

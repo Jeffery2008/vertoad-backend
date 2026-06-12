@@ -18,7 +18,7 @@ interface ReviewRepositoryInterface
     public function find(int $reviewId, int $organizationId): ?CreativeReview;
 
     /** @return list<CreativeReview> */
-    public function listForReviewQueue(int $organizationId, CreativeReviewStatus $status, int $limit): array;
+    public function listForReviewQueue(?int $organizationId, CreativeReviewStatus $status, int $limit): array;
 
     /** @return list<CreativeReview> */
     public function leasePendingAiReviews(int $limit): array;

@@ -43,14 +43,17 @@ final class ReviewRouteIntegrationTest extends TestCase
         $unauthenticated = $this->handleJson($app, 'POST', '/api/v1/reviews/assets/1/ai-review?organization_id=99', []);
         self::assertSame('authentication_required', $unauthenticated['error']['code']);
 
+        $unauthenticatedQueue = $this->handleJson($app, 'GET', '/api/v1/reviews?status=needs_human&limit=50');
+        self::assertSame('authentication_required', $unauthenticatedQueue['error']['code']);
+
         $missingScope = $this->handleJson($app, 'POST', '/api/v1/reviews/assets/1/ai-review', [], 'valid-token');
         self::assertSame('organization_scope_required', $missingScope['error']['code']);
 
         $badScope = $this->handleJson($app, 'GET', '/api/v1/reviews/1?organization_id=0', null, 'valid-token');
         self::assertSame('organization_scope_required', $badScope['error']['code']);
 
-        $queueMissingScope = $this->handleJson($app, 'GET', '/api/v1/reviews?status=needs_human&limit=50', null, 'valid-token');
-        self::assertSame('organization_scope_required', $queueMissingScope['error']['code']);
+        $queueWithoutScope = $this->handleJson($app, 'GET', '/api/v1/reviews?status=needs_human&limit=50', null, 'valid-token');
+        self::assertSame([], $queueWithoutScope['data']['reviews']);
     }
 
     public function testStartGetApproveAndRejectRoutesReturnEnvelopedReviewPayloads(): void
@@ -87,23 +90,34 @@ final class ReviewRouteIntegrationTest extends TestCase
         self::assertSame('ineligible', (string) $connection->fetchOne('SELECT eligibility FROM review_eligibility_events'));
     }
 
-    public function testReviewQueueListsNeedsHumanReviewsInStableOrder(): void
+    public function testReviewQueueListsNeedsHumanReviewsGloballyAndFiltersByOrganizationInStableOrder(): void
     {
         $connection = $this->connectionWithAsset();
         $this->insertReviewableAsset($connection, 2);
         $this->insertReviewableAsset($connection, 3);
+        $this->insertReviewableAsset($connection, 4, 100);
         $app = $this->createApp($connection);
 
         $first = $this->handleJson($app, 'POST', '/api/v1/reviews/assets/1/ai-review?organization_id=99', [], 'valid-token');
         $second = $this->handleJson($app, 'POST', '/api/v1/reviews/assets/2/ai-review?organization_id=99', [], 'valid-token');
         $third = $this->handleJson($app, 'POST', '/api/v1/reviews/assets/3/ai-review?organization_id=99', [], 'valid-token');
+        $otherOrganization = $this->handleJson($app, 'POST', '/api/v1/reviews/assets/4/ai-review?organization_id=100', [], 'valid-token');
 
         $connection->update('creative_reviews', ['created_at' => '2026-06-08 00:00:03'], ['id' => $first['data']['id']]);
         $connection->update('creative_reviews', ['created_at' => '2026-06-08 00:00:01'], ['id' => $second['data']['id']]);
         $connection->update('creative_reviews', ['created_at' => '2026-06-08 00:00:02'], ['id' => $third['data']['id']]);
+        $connection->update('creative_reviews', ['created_at' => '2026-06-08 00:00:00'], ['id' => $otherOrganization['data']['id']]);
 
         $approved = $this->handleJson($app, 'POST', '/api/v1/reviews/' . $third['data']['id'] . '/approve?organization_id=99', [], 'valid-token');
         self::assertSame('approved', $approved['data']['status']);
+
+        $globalQueue = $this->handleJson($app, 'GET', '/api/v1/reviews?status=needs_human&limit=50', null, 'valid-token');
+        self::assertSame([
+            $otherOrganization['data']['id'],
+            $second['data']['id'],
+            $first['data']['id'],
+        ], array_column($globalQueue['data']['reviews'], 'id'));
+        self::assertSame([100, 99, 99], array_column($globalQueue['data']['reviews'], 'organization_id'));
 
         $queue = $this->handleJson($app, 'GET', '/api/v1/reviews?organization_id=99&status=needs_human&limit=50', null, 'valid-token');
 
@@ -138,6 +152,12 @@ final class ReviewRouteIntegrationTest extends TestCase
 
         $tooLargeLimit = $this->handleJson($app, 'GET', '/api/v1/reviews?organization_id=99&status=needs_human&limit=101', null, 'valid-token');
         self::assertSame('invalid_request', $tooLargeLimit['error']['code']);
+
+        $badOrganization = $this->handleJson($app, 'GET', '/api/v1/reviews?organization_id=0&status=needs_human&limit=50', null, 'valid-token');
+        self::assertSame('invalid_request', $badOrganization['error']['code']);
+
+        $nonNumericOrganization = $this->handleJson($app, 'GET', '/api/v1/reviews?organization_id=abc&status=needs_human&limit=50', null, 'valid-token');
+        self::assertSame('invalid_request', $nonNumericOrganization['error']['code']);
     }
 
     public function testReviewQueueActionCoversDefensiveLimitAndServiceValidationBranches(): void
@@ -161,6 +181,20 @@ final class ReviewRouteIntegrationTest extends TestCase
 
         self::assertSame(422, $arrayLimitResponse->getStatusCode());
         self::assertSame('invalid_request', $arrayLimitPayload['code']);
+
+        $integerOrganizationRequest = (new ServerRequestFactory())->createServerRequest('GET', '/api/v1/reviews')
+            ->withQueryParams([
+                'organization_id' => 99,
+                'status' => 'needs_human',
+                'limit' => '50',
+            ])
+            ->withAttribute(RequestUserContext::ATTRIBUTE, $context);
+
+        $integerOrganizationResponse = $action($integerOrganizationRequest, (new ResponseFactory())->createResponse(), []);
+        $integerOrganizationPayload = json_decode((string) $integerOrganizationResponse->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame(409, $integerOrganizationResponse->getStatusCode());
+        self::assertSame('review_queue_unavailable', $integerOrganizationPayload['code']);
 
         $serviceErrorRequest = (new ServerRequestFactory())->createServerRequest('GET', '/api/v1/reviews')
             ->withQueryParams([
@@ -392,15 +426,15 @@ final class ReviewRouteIntegrationTest extends TestCase
         return $connection;
     }
 
-    private function insertReviewableAsset(Connection $connection, int $assetId): void
+    private function insertReviewableAsset(Connection $connection, int $assetId, int $organizationId = 99): void
     {
         $connection->insert('asset_upload_intents', [
             'id' => $assetId,
-            'organization_id' => 99,
+            'organization_id' => $organizationId,
             'uploader_user_id' => 7,
             'type' => 'image',
             'original_filename' => 'creative-' . $assetId . '.png',
-            'object_key' => 'organizations/99/assets/route-' . $assetId . '.png',
+            'object_key' => 'organizations/' . $organizationId . '/assets/route-' . $assetId . '.png',
             'content_type' => 'image/png',
             'byte_size' => 1024,
             'status' => 'pending_review',
@@ -409,10 +443,10 @@ final class ReviewRouteIntegrationTest extends TestCase
         $connection->insert('creative_assets', [
             'id' => $assetId,
             'upload_intent_id' => $assetId,
-            'organization_id' => 99,
+            'organization_id' => $organizationId,
             'uploader_user_id' => 7,
             'type' => 'image',
-            'object_key' => 'organizations/99/assets/route-' . $assetId . '.png',
+            'object_key' => 'organizations/' . $organizationId . '/assets/route-' . $assetId . '.png',
             'content_type' => 'image/png',
             'byte_size' => 1024,
             'width' => 800,
@@ -441,7 +475,7 @@ final class ThrowingReviewQueueRepository implements ReviewRepositoryInterface
         throw new \BadMethodCallException(__METHOD__ . ' is not used by this test.');
     }
 
-    public function listForReviewQueue(int $organizationId, CreativeReviewStatus $status, int $limit): array
+    public function listForReviewQueue(?int $organizationId, CreativeReviewStatus $status, int $limit): array
     {
         throw new ReviewValidationException(
             'review_queue_unavailable',

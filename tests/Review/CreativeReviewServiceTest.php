@@ -116,6 +116,17 @@ final class CreativeReviewServiceTest extends TestCase
         self::assertSame('invalid_request', $badUpperLimit->errorCode);
         self::assertSame('limit must be a positive integer no greater than 100.', $badUpperLimit->getMessage());
 
+        $badOrganizationFilter = $this->capture(fn () => $service->listQueue(0, 'needs_human', 50));
+        self::assertSame('invalid_request', $badOrganizationFilter->errorCode);
+        self::assertSame('organization_id must be a positive integer when provided.', $badOrganizationFilter->getMessage());
+
+        $this->insertReviewableAsset($connection, 2, 100);
+        $service->requestAiReview(100, 7, 2);
+
+        $globalQueue = $service->listQueue(null, 'needs_human', 50);
+        self::assertCount(2, $globalQueue);
+        self::assertSame([99, 100], array_map(static fn ($review): int => $review->organizationId, $globalQueue));
+
         $queue = $service->listQueue(99, 'needs_human', 50);
         self::assertCount(1, $queue);
 
@@ -182,13 +193,20 @@ final class CreativeReviewServiceTest extends TestCase
     {
         $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
         ReviewSchema::create($connection);
+        $this->insertReviewableAsset($connection, $assetId, 99);
+
+        return $connection;
+    }
+
+    private function insertReviewableAsset(Connection $connection, int $assetId, int $organizationId): void
+    {
         $connection->insert('asset_upload_intents', [
             'id' => $assetId,
-            'organization_id' => 99,
+            'organization_id' => $organizationId,
             'uploader_user_id' => 7,
             'type' => 'image',
             'original_filename' => 'creative.png',
-            'object_key' => 'organizations/99/assets/creative-' . $assetId . '.png',
+            'object_key' => 'organizations/' . $organizationId . '/assets/creative-' . $assetId . '.png',
             'content_type' => 'image/png',
             'byte_size' => 1024,
             'status' => 'pending_review',
@@ -197,10 +215,10 @@ final class CreativeReviewServiceTest extends TestCase
         $connection->insert('creative_assets', [
             'id' => $assetId,
             'upload_intent_id' => $assetId,
-            'organization_id' => 99,
+            'organization_id' => $organizationId,
             'uploader_user_id' => 7,
             'type' => 'image',
-            'object_key' => 'organizations/99/assets/creative-' . $assetId . '.png',
+            'object_key' => 'organizations/' . $organizationId . '/assets/creative-' . $assetId . '.png',
             'content_type' => 'image/png',
             'byte_size' => 1024,
             'width' => 800,
@@ -209,7 +227,5 @@ final class CreativeReviewServiceTest extends TestCase
             'checksum' => null,
             'status' => 'pending_review',
         ]);
-
-        return $connection;
     }
 }

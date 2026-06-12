@@ -83,8 +83,15 @@ final readonly class ReviewService
     }
 
     /** @return list<CreativeReview> */
-    public function listQueue(int $organizationId, string $status, int $limit): array
+    public function listQueue(?int $organizationId, string $status, int $limit): array
     {
+        if ($organizationId !== null && $organizationId <= 0) {
+            throw new ReviewValidationException(
+                'invalid_request',
+                'organization_id must be a positive integer when provided.',
+            );
+        }
+
         if ($status !== CreativeReviewStatus::NeedsHuman->value) {
             throw new ReviewValidationException(
                 'invalid_request',

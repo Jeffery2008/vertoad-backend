@@ -1289,7 +1289,7 @@ paths:
         - Review
       operationId: listCreativeReviewQueue
       summary: List creative reviews awaiting human decision.
-      description: Returns the organization-scoped platform human review queue after AI pre-review has completed.
+      description: Returns the platform human review queue after AI pre-review has completed. When organization_id is provided, the queue is filtered to that organization.
       security:
         - BearerAuth: []
       x-permissions:
@@ -1297,7 +1297,8 @@ paths:
       parameters:
         - name: organization_id
           in: query
-          required: true
+          required: false
+          description: Optional organization filter for platform operators.
           schema:
             type: integer
             minimum: 1
