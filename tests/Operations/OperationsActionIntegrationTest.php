@@ -101,7 +101,7 @@ final class OperationsActionIntegrationTest extends TestCase
             context: ['token' => 'raw-token', 'safe' => 'visible'],
             occurredAt: new \DateTimeImmutable('2026-06-08T13:00:00Z'),
         );
-        $created = $configs->createVersion('security.rate_limit', ['limit' => 60], 7);
+        $created = $configs->createVersion('security.rate_limit', ['limit' => 60, 'window_seconds' => 60], 7);
         $delivery = $deliveryRepository->queueForEndpoint($endpoint, 'operations.error.created', ['error_id' => 'err_1']);
         $app = $this->createApp($errors, $configs, $deliveryRepository, $deliveries);
 
@@ -117,12 +117,17 @@ final class OperationsActionIntegrationTest extends TestCase
         $versions = $this->handle($app, 'GET', '/api/v1/operations/config/versions?config_key=security.rate_limit');
         $versionsInvalid = $this->handle($app, 'GET', '/api/v1/operations/config/versions?config_key=../secrets');
         $create = $this->handle($app, 'POST', '/api/v1/operations/config/versions', [
-            'config_key' => 'webhooks.timeout',
-            'value' => ['seconds' => 10],
+            'config_key' => 'webhook.delivery_policy',
+            'value' => [
+                'batch_size' => 50,
+                'http_timeout_seconds' => 10,
+                'max_retry_count' => 3,
+                'retry_base_backoff_seconds' => 300,
+            ],
         ], new RequestUserContext(new AuthenticatedUser(7, 'ops@example.com', false), null));
         $createInvalid = $this->handle($app, 'POST', '/api/v1/operations/config/versions', [
-            'config_key' => '../secrets',
-            'value' => ['enabled' => true],
+            'config_key' => 'webhooks.timeout',
+            'value' => ['seconds' => 10],
         ]);
         $rollback = $this->handle(
             $app,
@@ -146,7 +151,7 @@ final class OperationsActionIntegrationTest extends TestCase
         self::assertSame(422, $versionsInvalid['status']);
         self::assertSame('invalid_request', $versionsInvalid['body']['error']['code']);
         self::assertSame(201, $create['status']);
-        self::assertSame('webhooks.timeout', $create['body']['data']['config_key']);
+        self::assertSame('webhook.delivery_policy', $create['body']['data']['config_key']);
         self::assertSame(422, $createInvalid['status']);
         self::assertSame(200, $rollback['status']);
         self::assertSame(404, $rollbackMissing['status']);

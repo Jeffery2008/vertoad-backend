@@ -57,6 +57,8 @@ final class ConfigVersionServiceTest extends TestCase
             [
                 ['', ['enabled' => true]],
                 ['../secrets', ['enabled' => true]],
+                ['webhooks.timeout', ['seconds' => 10]],
+                ['billing.default_revenue_share', ['publisher_percent' => 70]],
                 ['security.rate_limit', []],
                 ['security.rate_limit', ['password' => 'must-not-store-secret']],
                 ['security.rate_limit', ['nested' => ['authorization_header' => 'Bearer must-not-store']]],
@@ -71,6 +73,93 @@ final class ConfigVersionServiceTest extends TestCase
         }
     }
 
+    public function testCoreRuntimeConfigVersionsAcceptOnlyStrictDocumentedSchemas(): void
+    {
+        $service = new ConfigVersionService(new InMemoryConfigVersionRepository(), new AuditLogService(new ConfigAuditRepository()));
+
+        foreach (
+            [
+                'security.rate_limit' => ['limit' => 60, 'window_seconds' => 60],
+                'attribution.default_window_seconds' => ['seconds' => 604800],
+                'serving.event_validation' => [
+                    'min_visible_ratio' => 0.5,
+                    'min_visible_ms' => 1000,
+                    'repeat_click_window_seconds' => 30,
+                ],
+            ] as $key => $value
+        ) {
+            $created = $service->createVersion($key, $value, 7);
+
+            self::assertSame($key, $this->value($created, 'config_key'));
+            self::assertSame($value, $this->value($created, 'value'));
+        }
+
+        foreach (
+            [
+                'rate limit unknown field' => [
+                    'security.rate_limit',
+                    ['limit' => 60, 'window_seconds' => 60, 'unexpected' => true],
+                    'Invalid security.rate_limit ',
+                ],
+                'rate limit non-integer limit' => [
+                    'security.rate_limit',
+                    ['limit' => '60', 'window_seconds' => 60],
+                    'Invalid security.rate_limit ',
+                ],
+                'rate limit zero window' => [
+                    'security.rate_limit',
+                    ['limit' => 60, 'window_seconds' => 0],
+                    'Invalid security.rate_limit ',
+                ],
+                'attribution unknown field' => [
+                    'attribution.default_window_seconds',
+                    ['seconds' => 604800, 'unexpected' => true],
+                    'Invalid attribution.default_window_seconds ',
+                ],
+                'attribution non-integer seconds' => [
+                    'attribution.default_window_seconds',
+                    ['seconds' => '604800'],
+                    'Invalid attribution.default_window_seconds ',
+                ],
+                'serving ratio outside range' => [
+                    'serving.event_validation',
+                    [
+                        'min_visible_ratio' => 1.01,
+                        'min_visible_ms' => 1000,
+                        'repeat_click_window_seconds' => 30,
+                    ],
+                    'Invalid serving.event_validation ',
+                ],
+                'serving unknown field' => [
+                    'serving.event_validation',
+                    [
+                        'min_visible_ratio' => 0.5,
+                        'min_visible_ms' => 1000,
+                        'repeat_click_window_seconds' => 30,
+                        'unexpected' => true,
+                    ],
+                    'Invalid serving.event_validation ',
+                ],
+                'serving non-integer visible milliseconds' => [
+                    'serving.event_validation',
+                    [
+                        'min_visible_ratio' => 0.5,
+                        'min_visible_ms' => '1000',
+                        'repeat_click_window_seconds' => 30,
+                    ],
+                    'Invalid serving.event_validation ',
+                ],
+            ] as $case => [$key, $value, $messagePrefix]
+        ) {
+            try {
+                $service->createVersion($key, $value, 7);
+                self::fail('Invalid documented config schema must be rejected: ' . $case);
+            } catch (\InvalidArgumentException $exception) {
+                self::assertStringStartsWith($messagePrefix, $exception->getMessage());
+            }
+        }
+    }
+
     public function testRollbackCreatesNewVersionFromHistoryAndWritesAuditMetadata(): void
     {
         $repositoryClass = 'VertoAD\\Repository\\Operations\\InMemoryConfigVersionRepository';
@@ -80,13 +169,13 @@ final class ConfigVersionServiceTest extends TestCase
 
         $auditRepository = new ConfigAuditRepository();
         $service = new $serviceClass(new $repositoryClass(), new AuditLogService($auditRepository));
-        $first = $service->createVersion('webhooks.timeout', ['seconds' => 10], 7);
-        $service->createVersion('webhooks.timeout', ['seconds' => 20], 7);
+        $first = $service->createVersion('attribution.default_window_seconds', ['seconds' => 3600], 7);
+        $service->createVersion('attribution.default_window_seconds', ['seconds' => 7200], 7);
 
         $rolledBack = $service->rollback((string) $this->value($first, 'version_id'), 11);
 
         self::assertSame(3, $this->value($rolledBack, 'version_number'));
-        self::assertSame(['seconds' => 10], $this->value($rolledBack, 'value'));
+        self::assertSame(['seconds' => 3600], $this->value($rolledBack, 'value'));
         self::assertSame(11, $this->value($rolledBack, 'created_by_user_id'));
         self::assertSame([
             'operations.config.version_created',

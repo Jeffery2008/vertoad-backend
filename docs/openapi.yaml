@@ -2966,7 +2966,7 @@ paths:
         - Operations
       operationId: listConfigVersions
       summary: List config versions for a key.
-      description: Lists audited configuration versions for business-policy keys such as `security.rate_limit`, `serving.event_validation`, `assets.upload_policy`, and `review.ai_policy`. Secret material such as API keys is never returned through config versions.
+      description: Lists audited configuration versions for the supported business-policy keys `security.rate_limit`, `attribution.default_window_seconds`, `serving.event_validation`, `assets.upload_policy`, `review.ai_policy`, `webhook.delivery_policy`, and `security.turnstile_policy`. Unknown config keys are rejected, and secret material such as API keys is never returned through config versions.
       security:
         - BearerAuth: []
       parameters:

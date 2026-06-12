@@ -18,6 +18,9 @@ use VertoAD\Service\AuditLogService;
 
 final readonly class ConfigVersionService
 {
+    private const RATE_LIMIT_KEY = 'security.rate_limit';
+    private const ATTRIBUTION_DEFAULT_WINDOW_KEY = 'attribution.default_window_seconds';
+    private const SERVING_EVENT_VALIDATION_KEY = 'serving.event_validation';
     private const ASSET_UPLOAD_POLICY_KEY = 'assets.upload_policy';
     private const AI_REVIEW_POLICY_KEY = 'review.ai_policy';
     private const WEBHOOK_DELIVERY_POLICY_KEY = 'webhook.delivery_policy';
@@ -111,6 +114,10 @@ final readonly class ConfigVersionService
         if (preg_match('/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/', $configKey) !== 1) {
             throw new InvalidArgumentException('Config key must use dot-separated lowercase identifiers.');
         }
+
+        if (!in_array($configKey, self::supportedConfigKeys(), true)) {
+            throw new InvalidArgumentException('Unsupported config key ' . $configKey . '.');
+        }
     }
 
     /**
@@ -131,6 +138,18 @@ final readonly class ConfigVersionService
             if (is_array($item)) {
                 $this->assertNoSecretKeys($item);
             }
+        }
+
+        if ($configKey === self::RATE_LIMIT_KEY) {
+            $this->assertValidRateLimitPolicy($value);
+        }
+
+        if ($configKey === self::ATTRIBUTION_DEFAULT_WINDOW_KEY) {
+            $this->assertValidAttributionDefaultWindow($value);
+        }
+
+        if ($configKey === self::SERVING_EVENT_VALIDATION_KEY) {
+            $this->assertValidServingEventValidation($value);
         }
 
         if ($configKey === self::ASSET_UPLOAD_POLICY_KEY) {
@@ -179,6 +198,90 @@ final readonly class ConfigVersionService
         }
 
         return str_contains($compact, 'apikey') || str_contains($compact, 'authorization');
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function supportedConfigKeys(): array
+    {
+        return [
+            self::RATE_LIMIT_KEY,
+            self::ATTRIBUTION_DEFAULT_WINDOW_KEY,
+            self::SERVING_EVENT_VALIDATION_KEY,
+            self::ASSET_UPLOAD_POLICY_KEY,
+            self::AI_REVIEW_POLICY_KEY,
+            self::WEBHOOK_DELIVERY_POLICY_KEY,
+            self::TURNSTILE_POLICY_KEY,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     */
+    private function assertValidRateLimitPolicy(array $value): void
+    {
+        $this->assertOnlyFields(self::RATE_LIMIT_KEY, $value, ['limit', 'window_seconds']);
+
+        $this->requiredPositiveInt(self::RATE_LIMIT_KEY, $value, 'limit');
+        $this->requiredPositiveInt(self::RATE_LIMIT_KEY, $value, 'window_seconds');
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     */
+    private function assertValidAttributionDefaultWindow(array $value): void
+    {
+        $this->assertOnlyFields(self::ATTRIBUTION_DEFAULT_WINDOW_KEY, $value, ['seconds']);
+
+        $this->requiredPositiveInt(self::ATTRIBUTION_DEFAULT_WINDOW_KEY, $value, 'seconds');
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     */
+    private function assertValidServingEventValidation(array $value): void
+    {
+        $this->assertOnlyFields(
+            self::SERVING_EVENT_VALIDATION_KEY,
+            $value,
+            ['min_visible_ratio', 'min_visible_ms', 'repeat_click_window_seconds'],
+        );
+
+        $minVisibleRatio = $value['min_visible_ratio'] ?? null;
+        if ((!is_float($minVisibleRatio) && !is_int($minVisibleRatio)) || $minVisibleRatio < 0.0 || $minVisibleRatio > 1.0) {
+            throw new InvalidArgumentException('Invalid serving.event_validation min_visible_ratio must be between 0 and 1.');
+        }
+
+        $this->requiredPositiveInt(self::SERVING_EVENT_VALIDATION_KEY, $value, 'min_visible_ms');
+        $this->requiredPositiveInt(self::SERVING_EVENT_VALIDATION_KEY, $value, 'repeat_click_window_seconds');
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     * @param list<string> $allowedFields
+     */
+    private function assertOnlyFields(string $configKey, array $value, array $allowedFields): void
+    {
+        $allowed = array_fill_keys($allowedFields, true);
+        foreach ($value as $key => $_) {
+            if (!isset($allowed[(string) $key])) {
+                throw new InvalidArgumentException('Invalid ' . $configKey . ' unknown field ' . (string) $key . '.');
+            }
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     */
+    private function requiredPositiveInt(string $configKey, array $value, string $field): int
+    {
+        $item = $value[$field] ?? null;
+        if (!is_int($item) || $item < 1) {
+            throw new InvalidArgumentException('Invalid ' . $configKey . ' ' . $field . ' must be an integer >= 1.');
+        }
+
+        return $item;
     }
 
     /**
