@@ -54,6 +54,12 @@ final class SystemConfigMigrationContractTest extends TestCase
         self::assertStringContainsString("'min_visible_ratio', 0.5", $bootstrapSql);
         self::assertStringContainsString("'min_visible_ms', 1000", $bootstrapSql);
         self::assertStringContainsString("'repeat_click_window_seconds', 30", $bootstrapSql);
+        self::assertStringContainsString("'assets.upload_policy'", $bootstrapSql);
+        self::assertStringContainsString("'upload_intent_ttl_seconds', 900", $bootstrapSql);
+        self::assertStringContainsString("'blocked_extensions', JSON_ARRAY('html', 'htm', 'js', 'mjs', 'svg')", $bootstrapSql);
+        self::assertStringContainsString("'image/png', JSON_ARRAY(JSON_OBJECT('prefix_base64'", $bootstrapSql);
+        self::assertStringContainsString("'video/mp4', JSON_ARRAY(JSON_OBJECT('offset_ascii'", $bootstrapSql);
+        self::assertStringContainsString("'text/plain', JSON_ARRAY(JSON_OBJECT('forbid_ascii_ci', '<script'))", $bootstrapSql);
         self::assertStringContainsString('@super_admin_user_id', $bootstrapSql);
     }
 

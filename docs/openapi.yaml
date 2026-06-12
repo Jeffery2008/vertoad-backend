@@ -975,7 +975,7 @@ paths:
         - Assets
       operationId: createAssetUploadIntent
       summary: Create a presigned creative asset upload intent.
-      description: Creates a scoped object-storage upload intent for safe image, video, Fabric snapshot, or text creative assets.
+      description: Creates a scoped signed object-storage upload intent according to the current `assets.upload_policy` system configuration version. Allowed content types, byte limits, extensions, dimensions, video duration, magic signatures, and intent TTL are policy-controlled and are not hard-coded in this contract.
       security:
         - BearerAuth: []
       parameters:
@@ -1017,7 +1017,7 @@ paths:
         - Assets
       operationId: confirmAssetUpload
       summary: Confirm and validate an uploaded creative asset.
-      description: Validates upload metadata, magic bytes, dimensions, and video duration before creating a pending-review asset and snapshot job marker.
+      description: Validates upload metadata, magic bytes, dimensions, and video duration using the current `assets.upload_policy` system configuration version before creating a pending-review asset and snapshot job marker.
       security:
         - BearerAuth: []
       parameters:
@@ -4872,6 +4872,7 @@ components:
       additionalProperties: false
     AssetType:
       type: string
+      description: Base creative asset type. The currently usable types and per-type limits are constrained by the active `assets.upload_policy` system configuration version.
       enum:
         - image
         - video
@@ -4879,6 +4880,7 @@ components:
         - text
     AssetUploadIntentRequest:
       type: object
+      description: Upload intent request. The active `assets.upload_policy` version decides whether the requested type, filename extension, content type, byte size, and generated intent TTL are allowed.
       required:
         - type
         - filename
@@ -4893,15 +4895,7 @@ components:
         content_type:
           type: string
           minLength: 1
-          enum:
-            - image/png
-            - image/jpeg
-            - image/gif
-            - image/webp
-            - video/mp4
-            - video/webm
-            - application/json
-            - text/plain
+          description: Requested MIME/content type. Allowed values are determined by the active `assets.upload_policy` version.
         byte_size:
           type: integer
           minimum: 1
@@ -4952,6 +4946,7 @@ components:
       additionalProperties: false
     AssetConfirmRequest:
       type: object
+      description: Upload confirmation metadata. Width, height, magic bytes, duration, byte size, extension, and content-type validation are evaluated by asset type against the active `assets.upload_policy` version.
       required:
         - upload_intent_id
         - object_key
@@ -4976,14 +4971,17 @@ components:
         width:
           type: integer
           minimum: 1
+          description: Uploaded asset width in pixels when applicable; required and validated according to asset type and policy.
         height:
           type: integer
           minimum: 1
+          description: Uploaded asset height in pixels when applicable; required and validated according to asset type and policy.
         duration_seconds:
           type:
             - number
             - "null"
           exclusiveMinimum: 0
+          description: Uploaded video duration when applicable; validated according to asset type and policy.
         checksum:
           type:
             - string
@@ -4992,6 +4990,7 @@ components:
         magic_base64:
           type: string
           minLength: 1
+          description: Base64-encoded leading bytes used for magic-signature validation according to asset type and policy.
       additionalProperties: false
     CreativeAssetData:
       type: object

@@ -14,6 +14,46 @@ final class ConfigCacheRefreshJobTest extends TestCase
     public function testRefreshesLatestBusinessConfigValuesIntoRedisCache(): void
     {
         $redis = new RecordingRedisClient();
+        $assetPolicy = [
+            'upload_intent_ttl_seconds' => 900,
+            'blocked_extensions' => ['html', 'htm', 'js', 'mjs', 'svg'],
+            'blocked_content_types' => ['text/html', 'application/javascript', 'text/javascript', 'image/svg+xml'],
+            'types' => [
+                'image' => [
+                    'max_bytes' => 10_485_760,
+                    'max_width' => 4096,
+                    'max_height' => 4096,
+                    'allowed_content_types' => ['png' => 'image/png'],
+                    'magic_signatures' => [
+                        'image/png' => [['prefix_base64' => base64_encode("\x89PNG\r\n\x1A\n")]],
+                    ],
+                ],
+                'video' => [
+                    'max_bytes' => 209_715_200,
+                    'max_width' => 3840,
+                    'max_height' => 2160,
+                    'max_duration_seconds' => 120.0,
+                    'allowed_content_types' => ['mp4' => 'video/mp4'],
+                    'magic_signatures' => [
+                        'video/mp4' => [['offset_ascii' => ['offset' => 4, 'value' => 'ftyp']]],
+                    ],
+                ],
+                'fabric_snapshot' => [
+                    'max_bytes' => 1_048_576,
+                    'allowed_content_types' => ['json' => 'application/json'],
+                    'magic_signatures' => [
+                        'application/json' => [['trimmed_prefix_ascii' => '{']],
+                    ],
+                ],
+                'text' => [
+                    'max_bytes' => 1_048_576,
+                    'allowed_content_types' => ['txt' => 'text/plain'],
+                    'magic_signatures' => [
+                        'text/plain' => [['forbid_ascii_ci' => '<script']],
+                    ],
+                ],
+            ],
+        ];
         $job = new ConfigCacheRefreshJob(
             new StaticSystemConfigRepository([
                 'billing.default_revenue_share' => ['publisher_percent' => 70],
@@ -24,6 +64,7 @@ final class ConfigCacheRefreshJobTest extends TestCase
                     'min_visible_ms' => 1000,
                     'repeat_click_window_seconds' => 30,
                 ],
+                'assets.upload_policy' => $assetPolicy,
             ]),
             $redis,
             'vertoad:test:',
@@ -34,7 +75,7 @@ final class ConfigCacheRefreshJobTest extends TestCase
 
         self::assertSame('config-cache-refresh', $job->name());
         self::assertSame('completed', $result->status);
-        self::assertSame(4, $result->metrics['refreshed'] ?? null);
+        self::assertSame(5, $result->metrics['refreshed'] ?? null);
         self::assertSame([
             [
                 "return {redis.call('SETEX', KEYS[1], ARGV[1], ARGV[2])}",
@@ -55,6 +96,11 @@ final class ConfigCacheRefreshJobTest extends TestCase
                 "return {redis.call('SETEX', KEYS[1], ARGV[1], ARGV[2])}",
                 ['vertoad:test:config:serving.event_validation'],
                 ['3600', '{"min_visible_ratio":0.5,"min_visible_ms":1000,"repeat_click_window_seconds":30}'],
+            ],
+            [
+                "return {redis.call('SETEX', KEYS[1], ARGV[1], ARGV[2])}",
+                ['vertoad:test:config:assets.upload_policy'],
+                ['3600', json_encode($assetPolicy, JSON_THROW_ON_ERROR)],
             ],
         ], $redis->evalCalls);
     }

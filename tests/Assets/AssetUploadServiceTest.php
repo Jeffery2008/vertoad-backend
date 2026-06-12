@@ -9,6 +9,7 @@ use Doctrine\DBAL\DriverManager;
 use PHPUnit\Framework\TestCase;
 use VertoAD\Domain\Assets\AssetStatus;
 use VertoAD\Domain\Assets\AssetType;
+use VertoAD\Domain\Assets\AssetUploadPolicy;
 use VertoAD\Domain\Assets\AssetUploadIntent;
 use VertoAD\Domain\Assets\CreativeAsset;
 use VertoAD\Infrastructure\Storage\DeterministicPresignedUploadSigner;
@@ -71,6 +72,97 @@ final class AssetUploadServiceTest extends TestCase
             fn () => $service->createUploadIntent(99, 7, 'fabric_snapshot', 'creative.json', 'application/json', 1_048_577),
         );
         self::assertSame('asset_too_large', $oversizeSnapshot->errorCode);
+    }
+
+    public function testCreateAndConfirmUseConfiguredUploadPolicy(): void
+    {
+        $connection = $this->createConnection();
+        $service = $this->createService($connection, AssetUploadPolicy::fromArray([
+            'upload_intent_ttl_seconds' => 120,
+            'blocked_extensions' => ['html'],
+            'blocked_content_types' => ['text/html'],
+            'types' => [
+                'image' => [
+                    'max_bytes' => 2048,
+                    'max_width' => 512,
+                    'max_height' => 512,
+                    'allowed_content_types' => ['avif' => 'image/avif'],
+                    'magic_signatures' => [
+                        'image/avif' => [
+                            ['offset_ascii' => ['offset' => 4, 'value' => 'ftyp']],
+                        ],
+                    ],
+                ],
+                'video' => [
+                    'max_bytes' => 4096,
+                    'max_width' => 640,
+                    'max_height' => 360,
+                    'max_duration_seconds' => 15,
+                    'allowed_content_types' => ['webm' => 'video/webm'],
+                    'magic_signatures' => [
+                        'video/webm' => [
+                            ['prefix_base64' => base64_encode("\x1A\x45\xDF\xA3")],
+                        ],
+                    ],
+                ],
+                'fabric_snapshot' => [
+                    'max_bytes' => 1024,
+                    'allowed_content_types' => ['json' => 'application/json'],
+                    'magic_signatures' => [
+                        'application/json' => [
+                            ['trimmed_prefix_ascii' => '{'],
+                        ],
+                    ],
+                ],
+                'text' => [
+                    'max_bytes' => 512,
+                    'allowed_content_types' => ['txt' => 'text/plain'],
+                    'magic_signatures' => [
+                        'text/plain' => [
+                            ['forbid_ascii_ci' => '<script'],
+                        ],
+                    ],
+                ],
+            ],
+        ]));
+
+        $intent = $service->createUploadIntent(99, 7, 'image', 'creative.avif', 'image/avif', 1024);
+        $pngRejected = $this->captureValidation(
+            fn () => $service->createUploadIntent(99, 7, 'image', 'creative.png', 'image/png', 1024),
+        );
+        $tooWide = $this->captureValidation(fn () => $service->confirmUploadedAsset(
+            99,
+            7,
+            $intent->id,
+            $intent->objectKey,
+            'image/avif',
+            1024,
+            513,
+            512,
+            null,
+            null,
+            base64_encode("\x00\x00\x00\x18ftypavif"),
+        ));
+        $asset = $service->confirmUploadedAsset(
+            99,
+            7,
+            $intent->id,
+            $intent->objectKey,
+            'image/avif',
+            1024,
+            512,
+            512,
+            null,
+            null,
+            base64_encode("\x00\x00\x00\x18ftypavif"),
+        );
+
+        self::assertSame('image/avif', $intent->contentType);
+        self::assertSame('asset_mime_extension_mismatch', $pngRejected->errorCode);
+        self::assertSame('asset_dimensions_out_of_bounds', $tooWide->errorCode);
+        self::assertSame('image/avif', $asset->contentType);
+        self::assertGreaterThan(new \DateTimeImmutable('+90 seconds'), $intent->expiresAt);
+        self::assertLessThan(new \DateTimeImmutable('+130 seconds'), $intent->expiresAt);
     }
 
     public function testConfirmRejectsMagicMismatchAndDimensionBoundaries(): void
@@ -427,7 +519,7 @@ final class AssetUploadServiceTest extends TestCase
         self::fail('Expected asset validation exception.');
     }
 
-    private function createService(Connection $connection): AssetUploadService
+    private function createService(Connection $connection, ?AssetUploadPolicy $policy = null): AssetUploadService
     {
         return new AssetUploadService(
             new AssetRepository($connection),
@@ -438,17 +530,7 @@ final class AssetUploadServiceTest extends TestCase
                 'secret_access_key' => 'secret-key',
                 'path_style_endpoint' => true,
             ]),
-            [
-                'upload_intent_ttl_seconds' => 900,
-                'image_max_bytes' => 10_485_760,
-                'video_max_bytes' => 209_715_200,
-                'snapshot_max_bytes' => 1_048_576,
-                'image_max_width' => 4096,
-                'image_max_height' => 4096,
-                'video_max_width' => 3840,
-                'video_max_height' => 2160,
-                'video_max_duration_seconds' => 120.0,
-            ],
+            $policy ?? AssetUploadPolicy::default(),
             static fn (): string => 'fixed-token',
         );
     }

@@ -7,6 +7,7 @@ namespace VertoAD\Service\Assets;
 use DateTimeImmutable;
 use VertoAD\Domain\Assets\AssetStatus;
 use VertoAD\Domain\Assets\AssetType;
+use VertoAD\Domain\Assets\AssetUploadPolicy;
 use VertoAD\Domain\Assets\AssetUploadIntent;
 use VertoAD\Domain\Assets\CreativeAsset;
 use VertoAD\Infrastructure\Storage\ObjectStorageUploadSignerInterface;
@@ -19,13 +20,12 @@ final class AssetUploadService
     private $tokenGenerator;
 
     /**
-     * @param array<string, mixed> $limits
      * @param (callable(): string)|null $tokenGenerator
      */
     public function __construct(
         private readonly AssetRepositoryInterface $repository,
         private readonly ObjectStorageUploadSignerInterface $signer,
-        private readonly array $limits = [],
+        private readonly ?AssetUploadPolicy $policy = null,
         ?callable $tokenGenerator = null,
     ) {
         $this->tokenGenerator = $tokenGenerator ?? static fn (): string => bin2hex(random_bytes(16));
@@ -45,7 +45,7 @@ final class AssetUploadService
         $extension = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
         $this->validateUploadShape($assetType, $extension, $contentType, $byteSize);
 
-        $expiresAt = (new DateTimeImmutable())->modify('+' . $this->intLimit('upload_intent_ttl_seconds', 900) . ' seconds');
+        $expiresAt = (new DateTimeImmutable())->modify('+' . $this->uploadPolicy()->uploadIntentTtlSeconds . ' seconds');
         $token = ($this->tokenGenerator)();
         $objectKey = sprintf('organizations/%d/assets/%s.%s', $organizationId, $token, $extension);
         $stored = $this->repository->createUploadIntent(new AssetUploadIntent(
@@ -136,8 +136,9 @@ final class AssetUploadService
 
     private function validateUploadShape(AssetType $type, string $extension, string $contentType, int $byteSize): void
     {
-        $allowed = $this->allowedContentTypes($type);
-        if (in_array($extension, ['html', 'htm', 'js', 'mjs', 'svg'], true) || in_array($contentType, ['text/html', 'application/javascript', 'text/javascript', 'image/svg+xml'], true)) {
+        $policy = $this->uploadPolicy();
+        $allowed = $policy->allowedContentTypes($type);
+        if ($policy->isBlockedExtension($extension) || $policy->isBlockedContentType($contentType)) {
             throw new AssetValidationException('asset_type_not_allowed', 'Executable or markup uploads are not allowed.');
         }
 
@@ -145,27 +146,10 @@ final class AssetUploadService
             throw new AssetValidationException('asset_mime_extension_mismatch', 'Content type and extension do not match.');
         }
 
-        $limit = match ($type) {
-            AssetType::Image => $this->intLimit('image_max_bytes', 10_485_760),
-            AssetType::Video => $this->intLimit('video_max_bytes', 209_715_200),
-            AssetType::FabricSnapshot, AssetType::Text => $this->intLimit('snapshot_max_bytes', 1_048_576),
-        };
+        $limit = $policy->maxBytes($type);
         if ($byteSize <= 0 || $byteSize > $limit) {
             throw new AssetValidationException('asset_too_large', 'Asset byte size is outside allowed bounds.');
         }
-    }
-
-    /**
-     * @return array<string, string>
-     */
-    private function allowedContentTypes(AssetType $type): array
-    {
-        return match ($type) {
-            AssetType::Image => ['png' => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'gif' => 'image/gif', 'webp' => 'image/webp'],
-            AssetType::Video => ['mp4' => 'video/mp4', 'webm' => 'video/webm'],
-            AssetType::FabricSnapshot => ['json' => 'application/json'],
-            AssetType::Text => ['txt' => 'text/plain'],
-        };
     }
 
     private function validateDimensions(AssetType $type, int $width, int $height, ?float $durationSeconds): void
@@ -174,16 +158,17 @@ final class AssetUploadService
             throw new AssetValidationException('asset_dimensions_out_of_bounds', 'Asset dimensions must be positive.');
         }
 
-        if ($type === AssetType::Image && ($width > $this->intLimit('image_max_width', 4096) || $height > $this->intLimit('image_max_height', 4096))) {
+        $policy = $this->uploadPolicy();
+        if ($type === AssetType::Image && ($width > $policy->maxWidth($type) || $height > $policy->maxHeight($type))) {
             throw new AssetValidationException('asset_dimensions_out_of_bounds', 'Image dimensions exceed allowed bounds.');
         }
 
         if ($type === AssetType::Video) {
-            if ($width > $this->intLimit('video_max_width', 3840) || $height > $this->intLimit('video_max_height', 2160)) {
+            if ($width > $policy->maxWidth($type) || $height > $policy->maxHeight($type)) {
                 throw new AssetValidationException('asset_video_resolution_out_of_bounds', 'Video resolution exceeds allowed bounds.');
             }
 
-            if ($durationSeconds === null || $durationSeconds <= 0 || $durationSeconds > $this->floatLimit('video_max_duration_seconds', 120.0)) {
+            if ($durationSeconds === null || $durationSeconds <= 0 || $durationSeconds > $policy->maxDurationSeconds($type)) {
                 throw new AssetValidationException('asset_duration_out_of_bounds', 'Video duration is outside allowed bounds.');
             }
         }
@@ -196,37 +181,13 @@ final class AssetUploadService
             throw new AssetValidationException('asset_magic_mismatch', 'Magic bytes are required.');
         }
 
-        $matches = match ($contentType) {
-            'image/png' => str_starts_with($bytes, "\x89PNG\r\n\x1A\n"),
-            'image/jpeg' => str_starts_with($bytes, "\xFF\xD8\xFF"),
-            'image/gif' => str_starts_with($bytes, 'GIF87a') || str_starts_with($bytes, 'GIF89a'),
-            'image/webp' => strlen($bytes) >= 12 && str_starts_with($bytes, 'RIFF') && substr($bytes, 8, 4) === 'WEBP',
-            'video/mp4' => strlen($bytes) >= 8 && substr($bytes, 4, 4) === 'ftyp',
-            'video/webm' => str_starts_with($bytes, "\x1A\x45\xDF\xA3"),
-            'application/json' => $this->looksLikeJson($bytes),
-            'text/plain' => !str_contains(strtolower(substr($bytes, 0, 256)), '<script'),
-            default => false,
-        };
-
-        if (!$matches) {
+        if (!$this->uploadPolicy()->matchesMagic($contentType, $bytes)) {
             throw new AssetValidationException('asset_magic_mismatch', 'Magic bytes do not match content type.');
         }
     }
 
-    private function looksLikeJson(string $bytes): bool
+    private function uploadPolicy(): AssetUploadPolicy
     {
-        $trimmed = ltrim($bytes);
-
-        return str_starts_with($trimmed, '{') || str_starts_with($trimmed, '[');
-    }
-
-    private function intLimit(string $key, int $default): int
-    {
-        return (int) ($this->limits[$key] ?? $default);
-    }
-
-    private function floatLimit(string $key, float $default): float
-    {
-        return (float) ($this->limits[$key] ?? $default);
+        return $this->policy ?? AssetUploadPolicy::default();
     }
 }

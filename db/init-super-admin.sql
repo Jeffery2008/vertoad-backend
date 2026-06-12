@@ -168,6 +168,71 @@ VALUES
             'repeat_click_window_seconds', 30
         ),
         @super_admin_user_id
+    ),
+    (
+        'cfgv_bootstrap_assets_upload_policy_v1',
+        'assets.upload_policy',
+        1,
+        JSON_OBJECT(
+            'upload_intent_ttl_seconds', 900,
+            'blocked_extensions', JSON_ARRAY('html', 'htm', 'js', 'mjs', 'svg'),
+            'blocked_content_types', JSON_ARRAY('text/html', 'application/javascript', 'text/javascript', 'image/svg+xml'),
+            'types', JSON_OBJECT(
+                'image', JSON_OBJECT(
+                    'max_bytes', 10485760,
+                    'max_width', 4096,
+                    'max_height', 4096,
+                    'allowed_content_types', JSON_OBJECT(
+                        'png', 'image/png',
+                        'jpg', 'image/jpeg',
+                        'jpeg', 'image/jpeg',
+                        'gif', 'image/gif',
+                        'webp', 'image/webp'
+                    ),
+                    'magic_signatures', JSON_OBJECT(
+                        'image/png', JSON_ARRAY(JSON_OBJECT('prefix_base64', 'iVBORw0KGgo=')),
+                        'image/jpeg', JSON_ARRAY(JSON_OBJECT('prefix_base64', '/9j/')),
+                        'image/gif', JSON_ARRAY(
+                            JSON_OBJECT('prefix_ascii', 'GIF87a'),
+                            JSON_OBJECT('prefix_ascii', 'GIF89a')
+                        ),
+                        'image/webp', JSON_ARRAY(JSON_OBJECT('prefix_ascii', 'RIFF', 'offset_ascii', JSON_OBJECT('offset', 8, 'value', 'WEBP')))
+                    )
+                ),
+                'video', JSON_OBJECT(
+                    'max_bytes', 209715200,
+                    'max_width', 3840,
+                    'max_height', 2160,
+                    'max_duration_seconds', 120.0,
+                    'allowed_content_types', JSON_OBJECT(
+                        'mp4', 'video/mp4',
+                        'webm', 'video/webm'
+                    ),
+                    'magic_signatures', JSON_OBJECT(
+                        'video/mp4', JSON_ARRAY(JSON_OBJECT('offset_ascii', JSON_OBJECT('offset', 4, 'value', 'ftyp'))),
+                        'video/webm', JSON_ARRAY(JSON_OBJECT('prefix_base64', 'GkXfow=='))
+                    )
+                ),
+                'fabric_snapshot', JSON_OBJECT(
+                    'max_bytes', 1048576,
+                    'allowed_content_types', JSON_OBJECT('json', 'application/json'),
+                    'magic_signatures', JSON_OBJECT(
+                        'application/json', JSON_ARRAY(
+                            JSON_OBJECT('trimmed_prefix_ascii', '{'),
+                            JSON_OBJECT('trimmed_prefix_ascii', '[')
+                        )
+                    )
+                ),
+                'text', JSON_OBJECT(
+                    'max_bytes', 1048576,
+                    'allowed_content_types', JSON_OBJECT('txt', 'text/plain'),
+                    'magic_signatures', JSON_OBJECT(
+                        'text/plain', JSON_ARRAY(JSON_OBJECT('forbid_ascii_ci', '<script'))
+                    )
+                )
+            )
+        ),
+        @super_admin_user_id
     );
 
 INSERT INTO audit_logs (organization_id, actor_user_id, action, subject_type, subject_id, metadata_json)

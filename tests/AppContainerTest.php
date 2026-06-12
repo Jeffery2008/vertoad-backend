@@ -9,6 +9,7 @@ use Doctrine\DBAL\Connection;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
 use VertoAD\AppFactory;
+use VertoAD\Domain\Assets\AssetType;
 use VertoAD\Repository\AuditLogRepositoryInterface;
 use VertoAD\Repository\AdSlotRepositoryInterface;
 use VertoAD\Repository\Archive\ArchiveRepositoryInterface;
@@ -54,6 +55,7 @@ use VertoAD\Service\Archive\ColdQueryRunnerInterface;
 use VertoAD\Service\Archive\ColdQueryService;
 use VertoAD\Service\Archive\DeterministicArchiveWriter;
 use VertoAD\Service\Archive\FixtureColdQueryRunner;
+use VertoAD\Service\Assets\AssetUploadService;
 use VertoAD\Service\Attribution\AttributionService;
 use VertoAD\Service\AuditLogService;
 use VertoAD\Service\AuthService;
@@ -632,6 +634,15 @@ PHP);
                 'password' => 'unit-test-redis-secret',
                 'prefix' => 'vertoad:test:',
             ],
+            'storage' => [
+                's3' => [
+                    'endpoint' => 'https://r2.example.test',
+                    'bucket' => 'creative-assets',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                    'path_style_endpoint' => true,
+                ],
+            ],
             'cron' => [
                 'token' => '',
                 'allowed_ips' => [],
@@ -662,11 +673,18 @@ PHP);
                 'min_visible_ms' => 1500,
                 'repeat_click_window_seconds' => 45,
             ]);
+            $this->insertSystemConfig($connection, 'assets.upload_policy', 1, $this->assetUploadPolicyConfig([
+                'upload_intent_ttl_seconds' => 120,
+                'image_max_bytes' => 2048,
+                'image_max_width' => 512,
+                'image_max_height' => 512,
+            ]));
 
             $container = AppFactory::create($basePath)->getContainer();
             $policy = $container?->get(RateLimitPolicy::class);
             $attribution = $container?->get(AttributionService::class);
             $serving = $container?->get(AdServingService::class);
+            $assetUploads = $container?->get(AssetUploadService::class);
 
             self::assertInstanceOf(RateLimitPolicy::class, $policy);
             self::assertSame(7, $policy->limit);
@@ -678,6 +696,12 @@ PHP);
             self::assertSame(0.75, $eventPolicy->minVisibleRatio);
             self::assertSame(1500, $eventPolicy->minVisibleMs);
             self::assertSame(45, $eventPolicy->repeatClickWindowSeconds);
+            self::assertInstanceOf(AssetUploadService::class, $assetUploads);
+            $assetPolicy = $this->privateObjectProperty($assetUploads, 'policy');
+            self::assertSame(120, $assetPolicy->uploadIntentTtlSeconds);
+            self::assertSame(2048, $assetPolicy->maxBytes(AssetType::Image));
+            self::assertSame(512, $assetPolicy->maxWidth(AssetType::Image));
+            self::assertSame(512, $assetPolicy->maxHeight(AssetType::Image));
         } finally {
             $this->removeTemporaryAppBasePath($basePath);
             @unlink($databasePath);
@@ -701,6 +725,15 @@ PHP);
                 'driver' => 'predis',
                 'password' => 'unit-test-redis-secret',
                 'prefix' => 'vertoad:test:',
+            ],
+            'storage' => [
+                's3' => [
+                    'endpoint' => 'https://r2.example.test',
+                    'bucket' => 'creative-assets',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                    'path_style_endpoint' => true,
+                ],
             ],
             'cron' => [
                 'token' => '',
@@ -740,6 +773,13 @@ PHP);
                 self::fail('Production ad serving service must require versioned system config.');
             } catch (\RuntimeException $exception) {
                 self::assertSame('Missing required system config: serving.event_validation.', $exception->getMessage());
+            }
+
+            try {
+                $container?->get(AssetUploadService::class);
+                self::fail('Production asset upload service must require versioned system config.');
+            } catch (\RuntimeException $exception) {
+                self::assertSame('Missing required system config: assets.upload_policy.', $exception->getMessage());
             }
         } finally {
             $this->removeTemporaryAppBasePath($basePath);
@@ -1084,6 +1124,75 @@ PHP);
             'created_by_user_id' => 1,
             'created_at' => '2026-06-12 00:00:00',
         ]);
+    }
+
+    /**
+     * @param array{upload_intent_ttl_seconds?:int, image_max_bytes?:int, image_max_width?:int, image_max_height?:int} $overrides
+     * @return array<string, mixed>
+     */
+    private function assetUploadPolicyConfig(array $overrides = []): array
+    {
+        return [
+            'upload_intent_ttl_seconds' => $overrides['upload_intent_ttl_seconds'] ?? 900,
+            'blocked_extensions' => ['html', 'htm', 'js', 'mjs', 'svg'],
+            'blocked_content_types' => ['text/html', 'application/javascript', 'text/javascript', 'image/svg+xml'],
+            'types' => [
+                'image' => [
+                    'max_bytes' => $overrides['image_max_bytes'] ?? 10_485_760,
+                    'max_width' => $overrides['image_max_width'] ?? 4096,
+                    'max_height' => $overrides['image_max_height'] ?? 4096,
+                    'allowed_content_types' => [
+                        'png' => 'image/png',
+                        'jpg' => 'image/jpeg',
+                        'jpeg' => 'image/jpeg',
+                        'gif' => 'image/gif',
+                        'webp' => 'image/webp',
+                    ],
+                    'magic_signatures' => [
+                        'image/png' => [['prefix_base64' => base64_encode("\x89PNG\r\n\x1A\n")]],
+                        'image/jpeg' => [['prefix_base64' => base64_encode("\xFF\xD8\xFF")]],
+                        'image/gif' => [
+                            ['prefix_ascii' => 'GIF87a'],
+                            ['prefix_ascii' => 'GIF89a'],
+                        ],
+                        'image/webp' => [
+                            ['prefix_ascii' => 'RIFF', 'offset_ascii' => ['offset' => 8, 'value' => 'WEBP']],
+                        ],
+                    ],
+                ],
+                'video' => [
+                    'max_bytes' => 209_715_200,
+                    'max_width' => 3840,
+                    'max_height' => 2160,
+                    'max_duration_seconds' => 120.0,
+                    'allowed_content_types' => [
+                        'mp4' => 'video/mp4',
+                        'webm' => 'video/webm',
+                    ],
+                    'magic_signatures' => [
+                        'video/mp4' => [['offset_ascii' => ['offset' => 4, 'value' => 'ftyp']]],
+                        'video/webm' => [['prefix_base64' => base64_encode("\x1A\x45\xDF\xA3")]],
+                    ],
+                ],
+                'fabric_snapshot' => [
+                    'max_bytes' => 1_048_576,
+                    'allowed_content_types' => ['json' => 'application/json'],
+                    'magic_signatures' => [
+                        'application/json' => [
+                            ['trimmed_prefix_ascii' => '{'],
+                            ['trimmed_prefix_ascii' => '['],
+                        ],
+                    ],
+                ],
+                'text' => [
+                    'max_bytes' => 1_048_576,
+                    'allowed_content_types' => ['txt' => 'text/plain'],
+                    'magic_signatures' => [
+                        'text/plain' => [['forbid_ascii_ci' => '<script']],
+                    ],
+                ],
+            ],
+        ];
     }
 
     private function defineFakeRedisIfMissing(): void

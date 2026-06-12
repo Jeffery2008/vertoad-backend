@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VertoAD\Service;
 
 use UnexpectedValueException;
+use VertoAD\Domain\Assets\AssetUploadPolicy;
 use VertoAD\Domain\Serving\ServingEventPolicy;
 use VertoAD\Infrastructure\Security\RateLimitPolicy;
 use VertoAD\Repository\SystemConfigRepositoryInterface;
@@ -15,6 +16,7 @@ final class SystemConfigService
     private const ATTRIBUTION_DEFAULT_WINDOW_KEY = 'attribution.default_window_seconds';
     private const RATE_LIMIT_KEY = 'security.rate_limit';
     private const SERVING_EVENT_VALIDATION_KEY = 'serving.event_validation';
+    private const ASSET_UPLOAD_POLICY_KEY = 'assets.upload_policy';
     private const FALLBACK_PUBLISHER_PERCENT = 70;
     private const FALLBACK_ATTRIBUTION_DEFAULT_WINDOW_SECONDS = 604800;
     private const FALLBACK_RATE_LIMIT_LIMIT = 60;
@@ -125,6 +127,25 @@ final class SystemConfigService
         }
 
         return new ServingEventPolicy((float) $minVisibleRatio, $minVisibleMs, $repeatClickWindowSeconds);
+    }
+
+    public function assetUploadPolicy(): AssetUploadPolicy
+    {
+        $config = $this->findLatestValue(self::ASSET_UPLOAD_POLICY_KEY);
+
+        if ($config === null) {
+            if (!$this->allowRuntimeFallbacks) {
+                throw new \RuntimeException('Missing required system config: assets.upload_policy.');
+            }
+
+            return AssetUploadPolicy::default();
+        }
+
+        try {
+            return AssetUploadPolicy::fromArray($config);
+        } catch (\InvalidArgumentException $exception) {
+            throw new UnexpectedValueException('Invalid assets.upload_policy ' . $exception->getMessage(), previous: $exception);
+        }
     }
 
     /**

@@ -59,17 +59,6 @@ return [
         'writer' => getenv('ARCHIVE_WRITER') ?: '',
         'cold_query_runner' => getenv('ARCHIVE_COLD_QUERY_RUNNER') ?: '',
     ],
-    'assets' => [
-        'upload_intent_ttl_seconds' => (int) (getenv('ASSET_UPLOAD_INTENT_TTL_SECONDS') ?: 900),
-        'image_max_bytes' => (int) (getenv('ASSET_IMAGE_MAX_BYTES') ?: 10485760),
-        'video_max_bytes' => (int) (getenv('ASSET_VIDEO_MAX_BYTES') ?: 209715200),
-        'snapshot_max_bytes' => (int) (getenv('ASSET_SNAPSHOT_MAX_BYTES') ?: 1048576),
-        'image_max_width' => (int) (getenv('ASSET_IMAGE_MAX_WIDTH') ?: 4096),
-        'image_max_height' => (int) (getenv('ASSET_IMAGE_MAX_HEIGHT') ?: 4096),
-        'video_max_width' => (int) (getenv('ASSET_VIDEO_MAX_WIDTH') ?: 3840),
-        'video_max_height' => (int) (getenv('ASSET_VIDEO_MAX_HEIGHT') ?: 2160),
-        'video_max_duration_seconds' => (float) (getenv('ASSET_VIDEO_MAX_DURATION_SECONDS') ?: 120),
-    ],
     'oauth' => [
         'private_key_path' => getenv('OAUTH_PRIVATE_KEY_PATH') ?: 'storage/oauth/private.key',
         'public_key_path' => getenv('OAUTH_PUBLIC_KEY_PATH') ?: 'storage/oauth/public.key',

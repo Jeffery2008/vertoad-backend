@@ -256,7 +256,8 @@ final class AppFactory
                 AssetUploadService::class => static fn (
                     AssetRepositoryInterface $repository,
                     ObjectStorageUploadSignerInterface $signer,
-                ): AssetUploadService => new AssetUploadService($repository, $signer, $settings['assets'] ?? []),
+                    SystemConfigService $configs,
+                ): AssetUploadService => new AssetUploadService($repository, $signer, $configs->assetUploadPolicy()),
                 ReviewRepositoryInterface::class => static fn (Connection $connection): ReviewRepositoryInterface =>
                     new ReviewRepository($connection),
                 CreativeReviewProviderInterface::class => static fn (): CreativeReviewProviderInterface =>

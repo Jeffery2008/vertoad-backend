@@ -90,6 +90,39 @@ final class SystemConfigRepositoryTest extends TestCase
             'min_visible_ms' => 1000,
             'repeat_click_window_seconds' => 30,
         ]);
+        $assetUploadPolicy = [
+            'upload_intent_ttl_seconds' => 900,
+            'blocked_extensions' => ['html', 'htm', 'js', 'mjs', 'svg'],
+            'blocked_content_types' => ['text/html', 'application/javascript', 'text/javascript', 'image/svg+xml'],
+            'types' => [
+                'image' => [
+                    'max_bytes' => 10_485_760,
+                    'max_width' => 4096,
+                    'max_height' => 4096,
+                    'allowed_content_types' => ['png' => 'image/png'],
+                    'magic_signatures' => ['image/png' => [['prefix_base64' => base64_encode("\x89PNG\r\n\x1A\n")]]],
+                ],
+                'video' => [
+                    'max_bytes' => 209_715_200,
+                    'max_width' => 3840,
+                    'max_height' => 2160,
+                    'max_duration_seconds' => 120,
+                    'allowed_content_types' => ['mp4' => 'video/mp4'],
+                    'magic_signatures' => ['video/mp4' => [['offset_ascii' => ['offset' => 4, 'value' => 'ftyp']]]],
+                ],
+                'fabric_snapshot' => [
+                    'max_bytes' => 1_048_576,
+                    'allowed_content_types' => ['json' => 'application/json'],
+                    'magic_signatures' => ['application/json' => [['trimmed_prefix_ascii' => '{']]],
+                ],
+                'text' => [
+                    'max_bytes' => 1_048_576,
+                    'allowed_content_types' => ['txt' => 'text/plain'],
+                    'magic_signatures' => ['text/plain' => [['forbid_ascii_ci' => '<script']]],
+                ],
+            ],
+        ];
+        $this->insertVersion($connection, 'assets.upload_policy', 1, $assetUploadPolicy);
 
         $repository = new SystemConfigRepository($connection);
 
@@ -98,6 +131,7 @@ final class SystemConfigRepositoryTest extends TestCase
             $repository->findLatestValue('attribution.default_window_seconds')
         );
         self::assertSame([
+            'assets.upload_policy' => $assetUploadPolicy,
             'attribution.default_window_seconds' => ['seconds' => 7200],
             'security.rate_limit' => ['limit' => 60, 'window_seconds' => 60],
             'serving.event_validation' => [

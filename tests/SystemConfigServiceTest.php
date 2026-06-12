@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace VertoAD\Tests;
 
 use PHPUnit\Framework\TestCase;
+use VertoAD\Domain\Assets\AssetType;
+use VertoAD\Domain\Assets\AssetUploadPolicy;
 use VertoAD\Domain\Serving\ServingEventPolicy;
 use VertoAD\Infrastructure\Security\RateLimitPolicy;
 use VertoAD\Repository\SystemConfigRepositoryInterface;
@@ -213,6 +215,242 @@ final class SystemConfigServiceTest extends TestCase
         }
     }
 
+    public function testAssetUploadPolicyUsesConfiguredRules(): void
+    {
+        $repository = new ArraySystemConfigRepository([
+            'assets.upload_policy' => [
+                'upload_intent_ttl_seconds' => 120,
+                'blocked_extensions' => ['html'],
+                'blocked_content_types' => ['text/html'],
+                'types' => [
+                    'image' => [
+                        'max_bytes' => 2048,
+                        'max_width' => 512,
+                        'max_height' => 512,
+                        'allowed_content_types' => ['avif' => 'image/avif'],
+                        'magic_signatures' => [
+                            'image/avif' => [
+                                ['offset_ascii' => ['offset' => 4, 'value' => 'ftyp']],
+                            ],
+                        ],
+                    ],
+                    'video' => [
+                        'max_bytes' => 4096,
+                        'max_width' => 640,
+                        'max_height' => 360,
+                        'max_duration_seconds' => 15.5,
+                        'allowed_content_types' => ['webm' => 'video/webm'],
+                        'magic_signatures' => [
+                            'video/webm' => [
+                                ['prefix_base64' => base64_encode("\x1A\x45\xDF\xA3")],
+                            ],
+                        ],
+                    ],
+                    'fabric_snapshot' => [
+                        'max_bytes' => 1024,
+                        'allowed_content_types' => ['json' => 'application/json'],
+                        'magic_signatures' => [
+                            'application/json' => [
+                                ['trimmed_prefix_ascii' => '{'],
+                            ],
+                        ],
+                    ],
+                    'text' => [
+                        'max_bytes' => 512,
+                        'allowed_content_types' => ['txt' => 'text/plain'],
+                        'magic_signatures' => [
+                            'text/plain' => [
+                                ['forbid_ascii_ci' => '<script'],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $policy = (new SystemConfigService($repository))->assetUploadPolicy();
+
+        self::assertInstanceOf(AssetUploadPolicy::class, $policy);
+        self::assertSame(120, $policy->uploadIntentTtlSeconds);
+        self::assertTrue($policy->isBlockedExtension('HTML'));
+        self::assertTrue($policy->isBlockedContentType('text/html'));
+        self::assertSame(['avif' => 'image/avif'], $policy->allowedContentTypes(AssetType::Image));
+        self::assertSame(2048, $policy->maxBytes(AssetType::Image));
+        self::assertSame(512, $policy->maxWidth(AssetType::Image));
+        self::assertSame(512, $policy->maxHeight(AssetType::Image));
+        self::assertSame(15.5, $policy->maxDurationSeconds(AssetType::Video));
+        self::assertTrue($policy->matchesMagic('image/avif', "\x00\x00\x00\x18ftypavif"));
+        self::assertSame(['assets.upload_policy'], $repository->queries);
+    }
+
+    public function testAssetUploadPolicyFallsBackWhenConfigIsMissing(): void
+    {
+        $policy = (new SystemConfigService(new ArraySystemConfigRepository()))->assetUploadPolicy();
+
+        self::assertSame(900, $policy->uploadIntentTtlSeconds);
+        self::assertSame('image/png', $policy->allowedContentTypes(AssetType::Image)['png']);
+        self::assertSame(10_485_760, $policy->maxBytes(AssetType::Image));
+        self::assertSame(4096, $policy->maxWidth(AssetType::Image));
+        self::assertSame(4096, $policy->maxHeight(AssetType::Image));
+        self::assertTrue($policy->matchesMagic('image/png', "\x89PNG\r\n\x1A\npayload"));
+    }
+
+    public function testAssetUploadPolicyRejectsInvalidConfiguredValues(): void
+    {
+        $validType = [
+            'image' => [
+                'max_bytes' => 2048,
+                'max_width' => 512,
+                'max_height' => 512,
+                'allowed_content_types' => ['png' => 'image/png'],
+                'magic_signatures' => ['image/png' => [['prefix_base64' => base64_encode("\x89PNG\r\n\x1A\n")]]],
+            ],
+            'video' => [
+                'max_bytes' => 4096,
+                'max_width' => 640,
+                'max_height' => 360,
+                'max_duration_seconds' => 15,
+                'allowed_content_types' => ['webm' => 'video/webm'],
+                'magic_signatures' => ['video/webm' => [['prefix_base64' => base64_encode("\x1A\x45\xDF\xA3")]]],
+            ],
+            'fabric_snapshot' => [
+                'max_bytes' => 1024,
+                'allowed_content_types' => ['json' => 'application/json'],
+                'magic_signatures' => ['application/json' => [['trimmed_prefix_ascii' => '{']]],
+            ],
+            'text' => [
+                'max_bytes' => 512,
+                'allowed_content_types' => ['txt' => 'text/plain'],
+                'magic_signatures' => ['text/plain' => [['forbid_ascii_ci' => '<script']]],
+            ],
+        ];
+
+        foreach (
+            [
+                ['upload_intent_ttl_seconds' => 59, 'blocked_extensions' => [], 'blocked_content_types' => [], 'types' => $validType],
+                ['upload_intent_ttl_seconds' => 60, 'blocked_extensions' => [''], 'blocked_content_types' => [], 'types' => $validType],
+                ['upload_intent_ttl_seconds' => 60, 'blocked_extensions' => [], 'blocked_content_types' => ['text/html'], 'types' => []],
+                ['upload_intent_ttl_seconds' => 60, 'blocked_extensions' => [], 'blocked_content_types' => [], 'types' => ['image' => $validType['image']]],
+                ['upload_intent_ttl_seconds' => 60, 'blocked_extensions' => [], 'blocked_content_types' => [], 'types' => [
+                    ...$validType,
+                    'image' => [...$validType['image'], 'max_bytes' => 0],
+                ]],
+            ] as $value
+        ) {
+            $service = new SystemConfigService(new ArraySystemConfigRepository([
+                'assets.upload_policy' => $value,
+            ]));
+
+            try {
+                $service->assetUploadPolicy();
+                self::fail('Invalid assets.upload_policy value must be rejected.');
+            } catch (\UnexpectedValueException $exception) {
+                self::assertStringStartsWith('Invalid assets.upload_policy ', $exception->getMessage());
+            }
+        }
+    }
+
+    public function testAssetUploadPolicyRejectsInvalidNestedPolicyShapes(): void
+    {
+        $cases = [
+            static function (array $value): array {
+                unset($value['types']);
+
+                return $value;
+            },
+            static function (array $value): array {
+                $value['blocked_extensions'] = 'html';
+
+                return $value;
+            },
+            static function (array $value): array {
+                $value['types']['video']['max_duration_seconds'] = 0;
+
+                return $value;
+            },
+            static function (array $value): array {
+                $value['types']['image']['allowed_content_types'] = [];
+
+                return $value;
+            },
+            static function (array $value): array {
+                $value['types']['image']['allowed_content_types'] = ['png' => ''];
+
+                return $value;
+            },
+            static function (array $value): array {
+                $value['types']['image']['magic_signatures'] = 'not-an-object';
+
+                return $value;
+            },
+            static function (array $value): array {
+                $value['types']['image']['magic_signatures'] = [];
+
+                return $value;
+            },
+            static function (array $value): array {
+                $value['types']['image']['magic_signatures']['image/png'] = ['not-an-object-rule'];
+
+                return $value;
+            },
+            static function (array $value): array {
+                $value['types']['image']['magic_signatures']['image/png'] = [['prefix_base64' => []]];
+
+                return $value;
+            },
+            static function (array $value): array {
+                $value['types']['image']['magic_signatures']['image/png'] = [['prefix_base64' => '%%']];
+
+                return $value;
+            },
+            static function (array $value): array {
+                $value['types']['image']['magic_signatures']['image/png'] = [['prefix_ascii' => '']];
+
+                return $value;
+            },
+            static function (array $value): array {
+                $value['types']['image']['magic_signatures']['image/png'] = [['trimmed_prefix_ascii' => '']];
+
+                return $value;
+            },
+            static function (array $value): array {
+                $value['types']['image']['magic_signatures']['image/png'] = [['forbid_ascii_ci' => '']];
+
+                return $value;
+            },
+            static function (array $value): array {
+                $value['types']['image']['magic_signatures']['image/png'] = [['offset_ascii' => 'not-an-object']];
+
+                return $value;
+            },
+            static function (array $value): array {
+                $value['types']['image']['magic_signatures']['image/png'] = [['offset_ascii' => ['offset' => -1, 'value' => 'PNG']]];
+
+                return $value;
+            },
+            static function (array $value): array {
+                $value['types']['image']['magic_signatures']['image/png'] = [[]];
+
+                return $value;
+            },
+        ];
+
+        foreach ($cases as $mutate) {
+            $this->assertInvalidAssetUploadPolicy($mutate($this->validAssetUploadPolicyConfig()));
+        }
+    }
+
+    public function testAssetUploadPolicyMagicMatchersRejectWrongBytes(): void
+    {
+        $policy = AssetUploadPolicy::default();
+
+        self::assertFalse($policy->matchesMagic('image/png', 'not-png'));
+        self::assertFalse($policy->matchesMagic('image/webp', 'RIFFxxxxWRNGpayload'));
+        self::assertFalse($policy->matchesMagic('application/json', 'not-json'));
+        self::assertFalse($policy->matchesMagic('text/plain', 'hello <SCRIPT>alert(1)</SCRIPT>'));
+        self::assertFalse($policy->matchesMagic('application/octet-stream', 'anything'));
+    }
+
     public function testMissingRuntimeConfigFailsWhenFallbacksAreDisabled(): void
     {
         $service = new SystemConfigService(new ArraySystemConfigRepository(), allowRuntimeFallbacks: false);
@@ -240,6 +478,13 @@ final class SystemConfigServiceTest extends TestCase
         } catch (\RuntimeException $exception) {
             self::assertSame('Missing required system config: serving.event_validation.', $exception->getMessage());
         }
+
+        try {
+            $service->assetUploadPolicy();
+            self::fail('Production runtime config must not silently fall back when asset upload policy is missing.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('Missing required system config: assets.upload_policy.', $exception->getMessage());
+        }
     }
 
     public function testRepositoryFailuresAreRethrownWhenRuntimeFallbacksAreDisabled(): void
@@ -250,6 +495,78 @@ final class SystemConfigServiceTest extends TestCase
         $this->expectExceptionMessage('config repository unavailable');
 
         $service->rateLimitPolicy();
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     */
+    private function assertInvalidAssetUploadPolicy(array $value): void
+    {
+        $service = new SystemConfigService(new ArraySystemConfigRepository([
+            'assets.upload_policy' => $value,
+        ]));
+
+        try {
+            $service->assetUploadPolicy();
+            self::fail('Invalid assets.upload_policy value must be rejected.');
+        } catch (\UnexpectedValueException $exception) {
+            self::assertStringStartsWith('Invalid assets.upload_policy ', $exception->getMessage());
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function validAssetUploadPolicyConfig(): array
+    {
+        return [
+            'upload_intent_ttl_seconds' => 120,
+            'blocked_extensions' => ['html'],
+            'blocked_content_types' => ['text/html'],
+            'types' => [
+                'image' => [
+                    'max_bytes' => 2048,
+                    'max_width' => 512,
+                    'max_height' => 512,
+                    'allowed_content_types' => ['png' => 'image/png'],
+                    'magic_signatures' => [
+                        'image/png' => [
+                            ['prefix_base64' => base64_encode("\x89PNG\r\n\x1A\n")],
+                        ],
+                    ],
+                ],
+                'video' => [
+                    'max_bytes' => 4096,
+                    'max_width' => 640,
+                    'max_height' => 360,
+                    'max_duration_seconds' => 15,
+                    'allowed_content_types' => ['webm' => 'video/webm'],
+                    'magic_signatures' => [
+                        'video/webm' => [
+                            ['prefix_base64' => base64_encode("\x1A\x45\xDF\xA3")],
+                        ],
+                    ],
+                ],
+                'fabric_snapshot' => [
+                    'max_bytes' => 1024,
+                    'allowed_content_types' => ['json' => 'application/json'],
+                    'magic_signatures' => [
+                        'application/json' => [
+                            ['trimmed_prefix_ascii' => '{'],
+                        ],
+                    ],
+                ],
+                'text' => [
+                    'max_bytes' => 512,
+                    'allowed_content_types' => ['txt' => 'text/plain'],
+                    'magic_signatures' => [
+                        'text/plain' => [
+                            ['forbid_ascii_ci' => '<script'],
+                        ],
+                    ],
+                ],
+            ],
+        ];
     }
 }
 
