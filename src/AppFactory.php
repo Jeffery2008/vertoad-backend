@@ -402,19 +402,24 @@ final class AppFactory
                     new DatabaseWebhookEndpointRepository($connection),
                 WebhookEndpointSecretCipherInterface::class => static fn (): WebhookEndpointSecretCipherInterface =>
                     new WebhookEndpointSecretCipher((string) ($settings['app']['key'] ?? '')),
-                WebhookDeliveryJob::class => static fn (
+                WebhookDeliveryJob::class => static function (
                     WebhookDeliveryRepositoryInterface $deliveries,
                     WebhookEndpointRepositoryInterface $endpoints,
                     WebhookEndpointSecretCipherInterface $secrets,
-                ): WebhookDeliveryJob => new WebhookDeliveryJob(
-                    $deliveries,
-                    $endpoints,
-                    $secrets,
-                    WebhookDeliveryJob::httpTransport((int) ($settings['webhooks']['http_timeout_seconds'] ?? 5)),
-                    (int) ($settings['webhooks']['retry_batch_size'] ?? 50),
-                    (int) ($settings['webhooks']['max_retry_count'] ?? 3),
-                    (int) ($settings['webhooks']['retry_base_backoff_seconds'] ?? 300),
-                ),
+                    SystemConfigService $configs,
+                ): WebhookDeliveryJob {
+                    $policy = $configs->webhookDeliveryPolicy();
+
+                    return new WebhookDeliveryJob(
+                        $deliveries,
+                        $endpoints,
+                        $secrets,
+                        WebhookDeliveryJob::httpTransport($policy->httpTimeoutSeconds),
+                        $policy->batchSize,
+                        $policy->maxRetryCount,
+                        $policy->retryBaseBackoffSeconds,
+                    );
+                },
                 SupportTicketRepositoryInterface::class => static fn (Connection $connection): SupportTicketRepositoryInterface =>
                     new DatabaseSupportTicketRepository($connection),
                 SupportTicketService::class => static fn (

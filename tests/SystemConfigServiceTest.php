@@ -9,6 +9,7 @@ use VertoAD\Domain\Assets\AssetType;
 use VertoAD\Domain\Assets\AssetUploadPolicy;
 use VertoAD\Domain\Review\AiReviewPolicy;
 use VertoAD\Domain\Serving\ServingEventPolicy;
+use VertoAD\Domain\Webhooks\WebhookDeliveryPolicy;
 use VertoAD\Infrastructure\Security\RateLimitPolicy;
 use VertoAD\Repository\SystemConfigRepositoryInterface;
 use VertoAD\Service\SystemConfigService;
@@ -336,6 +337,67 @@ final class SystemConfigServiceTest extends TestCase
         self::assertSame('deterministic-v1', $policy->model);
     }
 
+    public function testWebhookDeliveryPolicyUsesConfiguredRetrySettings(): void
+    {
+        $repository = new ArraySystemConfigRepository([
+            'webhook.delivery_policy' => [
+                'batch_size' => 17,
+                'http_timeout_seconds' => 4,
+                'max_retry_count' => 6,
+                'retry_base_backoff_seconds' => 45,
+            ],
+        ]);
+
+        $policy = (new SystemConfigService($repository))->webhookDeliveryPolicy();
+
+        self::assertInstanceOf(WebhookDeliveryPolicy::class, $policy);
+        self::assertSame(17, $policy->batchSize);
+        self::assertSame(4, $policy->httpTimeoutSeconds);
+        self::assertSame(6, $policy->maxRetryCount);
+        self::assertSame(45, $policy->retryBaseBackoffSeconds);
+        self::assertSame(['webhook.delivery_policy'], $repository->queries);
+    }
+
+    public function testWebhookDeliveryPolicyFallsBackWhenConfigIsMissing(): void
+    {
+        $policy = (new SystemConfigService(new ArraySystemConfigRepository()))->webhookDeliveryPolicy();
+
+        self::assertSame(50, $policy->batchSize);
+        self::assertSame(5, $policy->httpTimeoutSeconds);
+        self::assertSame(3, $policy->maxRetryCount);
+        self::assertSame(300, $policy->retryBaseBackoffSeconds);
+    }
+
+    public function testWebhookDeliveryPolicyRejectsInvalidConfiguredValues(): void
+    {
+        foreach (
+            [
+                ['batch_size' => 0, 'http_timeout_seconds' => 5, 'max_retry_count' => 3, 'retry_base_backoff_seconds' => 300],
+                ['batch_size' => 50, 'http_timeout_seconds' => 0, 'max_retry_count' => 3, 'retry_base_backoff_seconds' => 300],
+                ['batch_size' => 50, 'http_timeout_seconds' => 5, 'max_retry_count' => 0, 'retry_base_backoff_seconds' => 300],
+                ['batch_size' => 50, 'http_timeout_seconds' => 5, 'max_retry_count' => 3, 'retry_base_backoff_seconds' => 0],
+                ['batch_size' => 501, 'http_timeout_seconds' => 5, 'max_retry_count' => 3, 'retry_base_backoff_seconds' => 300],
+                ['batch_size' => 50, 'http_timeout_seconds' => 61, 'max_retry_count' => 3, 'retry_base_backoff_seconds' => 300],
+                ['batch_size' => 50, 'http_timeout_seconds' => 5, 'max_retry_count' => 21, 'retry_base_backoff_seconds' => 300],
+                ['batch_size' => 50, 'http_timeout_seconds' => 5, 'max_retry_count' => 3, 'retry_base_backoff_seconds' => 86401],
+                ['batch_size' => '50', 'http_timeout_seconds' => 5, 'max_retry_count' => 3, 'retry_base_backoff_seconds' => 300],
+                ['batch_size' => 50, 'http_timeout_seconds' => 5, 'max_retry_count' => 3],
+                ['batch_size' => 50, 'http_timeout_seconds' => 5, 'max_retry_count' => 3, 'retry_base_backoff_seconds' => 300, 'unexpected' => true],
+            ] as $value
+        ) {
+            $service = new SystemConfigService(new ArraySystemConfigRepository([
+                'webhook.delivery_policy' => $value,
+            ]));
+
+            try {
+                $service->webhookDeliveryPolicy();
+                self::fail('Invalid webhook.delivery_policy value must be rejected.');
+            } catch (\UnexpectedValueException $exception) {
+                self::assertStringStartsWith('Invalid webhook.delivery_policy ', $exception->getMessage());
+            }
+        }
+    }
+
     public function testAiReviewPolicyRejectsInvalidConfiguredValues(): void
     {
         foreach (
@@ -560,6 +622,13 @@ final class SystemConfigServiceTest extends TestCase
             self::fail('Production runtime config must not silently fall back when AI review policy is missing.');
         } catch (\RuntimeException $exception) {
             self::assertSame('Missing required system config: review.ai_policy.', $exception->getMessage());
+        }
+
+        try {
+            $service->webhookDeliveryPolicy();
+            self::fail('Production runtime config must not silently fall back when webhook delivery policy is missing.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('Missing required system config: webhook.delivery_policy.', $exception->getMessage());
         }
     }
 

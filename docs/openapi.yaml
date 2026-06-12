@@ -6049,7 +6049,7 @@ components:
           minimum: 1
         value:
           type: object
-          description: Versioned business configuration value. For `review.ai_policy`, include `enabled`, `provider`, `base_url`, `model`, `prompt`, `timeout_seconds`, `max_input_tokens`, `max_output_tokens`, and `temperature`; do not include provider API keys or other secrets.
+          description: Versioned business configuration value. For `review.ai_policy`, include `enabled`, `provider`, `base_url`, `model`, `prompt`, `timeout_seconds`, `max_input_tokens`, `max_output_tokens`, and `temperature`; for `webhook.delivery_policy`, include bounded integers `batch_size` (1-500), `http_timeout_seconds` (1-60), `max_retry_count` (1-20), and `retry_base_backoff_seconds` (1-86400); do not include provider API keys, signing secrets, or other secrets.
           additionalProperties: true
         created_by_user_id:
           type: integer

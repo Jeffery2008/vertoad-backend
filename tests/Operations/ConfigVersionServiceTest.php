@@ -216,6 +216,51 @@ final class ConfigVersionServiceTest extends TestCase
         }
     }
 
+    public function testWebhookDeliveryPolicyVersionAcceptsValidNonSecretPolicy(): void
+    {
+        $service = new ConfigVersionService(new InMemoryConfigVersionRepository(), new AuditLogService(new ConfigAuditRepository()));
+
+        $created = $service->createVersion('webhook.delivery_policy', $this->validWebhookDeliveryPolicyConfig(), 7);
+
+        self::assertSame(1, $this->value($created, 'version_number'));
+        self::assertSame('webhook.delivery_policy', $this->value($created, 'config_key'));
+        self::assertSame($this->validWebhookDeliveryPolicyConfig(), $this->value($created, 'value'));
+    }
+
+    public function testWebhookDeliveryPolicyVersionsRejectInvalidUnknownOrSecretValues(): void
+    {
+        $service = new ConfigVersionService(new InMemoryConfigVersionRepository(), new AuditLogService(new ConfigAuditRepository()));
+        $valid = $this->validWebhookDeliveryPolicyConfig();
+
+        foreach (
+            [
+                'arbitrary object' => ['enabled' => true],
+                'secret token' => [...$valid, 'authorization_token' => 'must-stay-in-env'],
+                'unknown policy field' => [...$valid, 'unexpected' => true],
+                'zero batch size' => [...$valid, 'batch_size' => 0],
+                'zero timeout' => [...$valid, 'http_timeout_seconds' => 0],
+                'zero retry cap' => [...$valid, 'max_retry_count' => 0],
+                'zero backoff' => [...$valid, 'retry_base_backoff_seconds' => 0],
+                'oversized batch size' => [...$valid, 'batch_size' => 501],
+                'oversized timeout' => [...$valid, 'http_timeout_seconds' => 61],
+                'oversized retry cap' => [...$valid, 'max_retry_count' => 21],
+                'oversized backoff' => [...$valid, 'retry_base_backoff_seconds' => 86401],
+                'string retry cap' => [...$valid, 'max_retry_count' => '3'],
+            ] as $case => $value
+        ) {
+            try {
+                $service->createVersion('webhook.delivery_policy', $value, 7);
+                self::fail('Invalid webhook.delivery_policy value must be rejected: ' . $case);
+            } catch (\InvalidArgumentException $exception) {
+                if ($case === 'secret token') {
+                    self::assertSame('Secret config values must stay in environment secrets.', $exception->getMessage());
+                } else {
+                    self::assertStringStartsWith('Invalid webhook.delivery_policy ', $exception->getMessage());
+                }
+            }
+        }
+    }
+
     public function testAssetUploadPolicyRollbackRejectsInvalidHistoricalPolicyWithoutAppendingVersion(): void
     {
         $repository = new InMemoryConfigVersionRepository();
@@ -322,6 +367,19 @@ final class ConfigVersionServiceTest extends TestCase
             'max_input_tokens' => 12000,
             'max_output_tokens' => 2000,
             'temperature' => 0.2,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function validWebhookDeliveryPolicyConfig(): array
+    {
+        return [
+            'batch_size' => 50,
+            'http_timeout_seconds' => 5,
+            'max_retry_count' => 3,
+            'retry_base_backoff_seconds' => 300,
         ];
     }
 }

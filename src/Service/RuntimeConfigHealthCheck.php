@@ -30,6 +30,7 @@ final readonly class RuntimeConfigHealthCheck
                     throw new \RuntimeException('AI_REVIEW_API_KEY is required outside local/testing.');
                 }
             }
+            $configs->webhookDeliveryPolicy();
         });
     }
 

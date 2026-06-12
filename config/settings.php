@@ -97,10 +97,6 @@ return [
     ],
     'webhooks' => [
         'signing_secret' => getenv('WEBHOOK_SIGNING_SECRET') ?: 'whsec_local_dev_secret',
-        'retry_batch_size' => (int) (getenv('WEBHOOK_RETRY_BATCH_SIZE') ?: 50),
-        'http_timeout_seconds' => (int) (getenv('WEBHOOK_HTTP_TIMEOUT_SECONDS') ?: 5),
-        'max_retry_count' => (int) (getenv('WEBHOOK_MAX_RETRY_COUNT') ?: 3),
-        'retry_base_backoff_seconds' => (int) (getenv('WEBHOOK_RETRY_BASE_BACKOFF_SECONDS') ?: 300),
     ],
     'cloudflare' => [
         'real_ip_header' => getenv('CLOUDFLARE_REAL_IP_HEADER') ?: 'CF-Connecting-IP',

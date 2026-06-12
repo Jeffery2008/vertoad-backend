@@ -123,6 +123,12 @@ final class SystemConfigRepositoryTest extends TestCase
             ],
         ];
         $this->insertVersion($connection, 'assets.upload_policy', 1, $assetUploadPolicy);
+        $this->insertVersion($connection, 'webhook.delivery_policy', 1, [
+            'batch_size' => 50,
+            'http_timeout_seconds' => 5,
+            'max_retry_count' => 3,
+            'retry_base_backoff_seconds' => 300,
+        ]);
 
         $repository = new SystemConfigRepository($connection);
 
@@ -138,6 +144,12 @@ final class SystemConfigRepositoryTest extends TestCase
                 'min_visible_ratio' => 0.5,
                 'min_visible_ms' => 1000,
                 'repeat_click_window_seconds' => 30,
+            ],
+            'webhook.delivery_policy' => [
+                'batch_size' => 50,
+                'http_timeout_seconds' => 5,
+                'max_retry_count' => 3,
+                'retry_base_backoff_seconds' => 300,
             ],
         ], $repository->listLatestValues());
     }

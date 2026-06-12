@@ -11,6 +11,7 @@ use VertoAD\Domain\Assets\AssetUploadPolicy;
 use RuntimeException;
 use VertoAD\Domain\Operations\ConfigVersion;
 use VertoAD\Domain\Review\AiReviewPolicy;
+use VertoAD\Domain\Webhooks\WebhookDeliveryPolicy;
 use VertoAD\Repository\Operations\ConfigVersionRepositoryInterface;
 use VertoAD\Service\AuditLogService;
 
@@ -18,6 +19,7 @@ final readonly class ConfigVersionService
 {
     private const ASSET_UPLOAD_POLICY_KEY = 'assets.upload_policy';
     private const AI_REVIEW_POLICY_KEY = 'review.ai_policy';
+    private const WEBHOOK_DELIVERY_POLICY_KEY = 'webhook.delivery_policy';
     private const REQUIRED_BLOCKED_EXTENSIONS = ['html', 'htm', 'js', 'mjs', 'svg'];
     private const REQUIRED_BLOCKED_CONTENT_TYPES = ['text/html', 'application/javascript', 'text/javascript', 'image/svg+xml'];
 
@@ -124,6 +126,10 @@ final readonly class ConfigVersionService
         if ($configKey === self::AI_REVIEW_POLICY_KEY) {
             $this->assertValidAiReviewPolicy($value);
         }
+
+        if ($configKey === self::WEBHOOK_DELIVERY_POLICY_KEY) {
+            $this->assertValidWebhookDeliveryPolicy($value);
+        }
     }
 
     /**
@@ -202,6 +208,18 @@ final readonly class ConfigVersionService
             AiReviewPolicy::fromArray($value);
         } catch (InvalidArgumentException $exception) {
             throw new InvalidArgumentException('Invalid review.ai_policy ' . $exception->getMessage(), 0, $exception);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     */
+    private function assertValidWebhookDeliveryPolicy(array $value): void
+    {
+        try {
+            WebhookDeliveryPolicy::fromArray($value);
+        } catch (InvalidArgumentException $exception) {
+            throw new InvalidArgumentException('Invalid webhook.delivery_policy ' . $exception->getMessage(), 0, $exception);
         }
     }
 }

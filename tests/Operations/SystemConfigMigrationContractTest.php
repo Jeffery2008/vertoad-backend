@@ -64,6 +64,11 @@ final class SystemConfigMigrationContractTest extends TestCase
         self::assertStringContainsString("'image/png', JSON_ARRAY(JSON_OBJECT('prefix_base64'", $bootstrapSql);
         self::assertStringContainsString("'video/mp4', JSON_ARRAY(JSON_OBJECT('offset_ascii'", $bootstrapSql);
         self::assertStringContainsString("'text/plain', JSON_ARRAY(JSON_OBJECT('forbid_ascii_ci', '<script'))", $bootstrapSql);
+        self::assertStringContainsString("'webhook.delivery_policy'", $bootstrapSql);
+        self::assertStringContainsString(
+            "JSON_OBJECT('batch_size', 50, 'http_timeout_seconds', 5, 'max_retry_count', 3, 'retry_base_backoff_seconds', 300)",
+            $bootstrapSql,
+        );
         self::assertStringContainsString('@super_admin_user_id', $bootstrapSql);
     }
 

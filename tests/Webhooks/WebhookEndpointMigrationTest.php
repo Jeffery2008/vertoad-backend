@@ -94,30 +94,21 @@ final class WebhookEndpointMigrationTest extends TestCase
         self::assertStringContainsString('- exhausted', $webhookDeliverySchema);
     }
 
-    public function testWebhookSettingsExposeRetryCapAndBackoffEnvironmentOverrides(): void
+    public function testWebhookRetryPolicyIsVersionedBusinessConfigInsteadOfEnvironmentSetting(): void
     {
-        $previousMaxRetryCount = getenv('WEBHOOK_MAX_RETRY_COUNT');
-        $previousBackoffSeconds = getenv('WEBHOOK_RETRY_BASE_BACKOFF_SECONDS');
-        putenv('WEBHOOK_MAX_RETRY_COUNT=7');
-        putenv('WEBHOOK_RETRY_BASE_BACKOFF_SECONDS=42');
+        $settings = require dirname(__DIR__, 2) . '/config/settings.php';
+        $bootstrapSql = (string) file_get_contents(dirname(__DIR__, 2) . '/db/init-super-admin.sql');
 
-        try {
-            $settings = require dirname(__DIR__, 2) . '/config/settings.php';
-
-            self::assertSame(7, $settings['webhooks']['max_retry_count'] ?? null);
-            self::assertSame(42, $settings['webhooks']['retry_base_backoff_seconds'] ?? null);
-        } finally {
-            if ($previousMaxRetryCount === false) {
-                putenv('WEBHOOK_MAX_RETRY_COUNT');
-            } else {
-                putenv('WEBHOOK_MAX_RETRY_COUNT=' . $previousMaxRetryCount);
-            }
-            if ($previousBackoffSeconds === false) {
-                putenv('WEBHOOK_RETRY_BASE_BACKOFF_SECONDS');
-            } else {
-                putenv('WEBHOOK_RETRY_BASE_BACKOFF_SECONDS=' . $previousBackoffSeconds);
-            }
-        }
+        self::assertSame(['signing_secret'], array_keys($settings['webhooks'] ?? []));
+        self::assertStringContainsString("'webhook.delivery_policy'", $bootstrapSql);
+        self::assertStringContainsString(
+            "JSON_OBJECT('batch_size', 50, 'http_timeout_seconds', 5, 'max_retry_count', 3, 'retry_base_backoff_seconds', 300)",
+            $bootstrapSql,
+        );
+        self::assertStringNotContainsString('WEBHOOK_RETRY_BATCH_SIZE', $bootstrapSql);
+        self::assertStringNotContainsString('WEBHOOK_HTTP_TIMEOUT_SECONDS', $bootstrapSql);
+        self::assertStringNotContainsString('WEBHOOK_MAX_RETRY_COUNT', $bootstrapSql);
+        self::assertStringNotContainsString('WEBHOOK_RETRY_BASE_BACKOFF_SECONDS', $bootstrapSql);
     }
 
     private function normalizedSql(string $path): string

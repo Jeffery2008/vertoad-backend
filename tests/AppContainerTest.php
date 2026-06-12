@@ -581,16 +581,18 @@ PHP);
         }
     }
 
-    public function testWebhookDeliveryJobUsesConfiguredRetryCapAndBackoff(): void
+    public function testWebhookDeliveryJobUsesVersionedDeliveryPolicyInsteadOfSettingsFallbacks(): void
     {
+        $databasePath = sys_get_temp_dir() . '/vertoad-webhook-policy-' . bin2hex(random_bytes(4)) . '.sqlite';
         $basePath = $this->temporaryAppBasePathWithSettings([
             'app' => [
+                'env' => 'testing',
                 'debug' => false,
                 'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
             ],
             'database' => [
                 'driver' => 'pdo_sqlite',
-                'memory' => true,
+                'path' => $databasePath,
             ],
             'cron' => [
                 'token' => '',
@@ -599,14 +601,26 @@ PHP);
             ],
             'webhooks' => [
                 'signing_secret' => 'whsec_container_test',
-                'retry_batch_size' => 9,
-                'http_timeout_seconds' => 2,
-                'max_retry_count' => 6,
-                'retry_base_backoff_seconds' => 45,
+                'retry_batch_size' => 999,
+                'http_timeout_seconds' => 999,
+                'max_retry_count' => 999,
+                'retry_base_backoff_seconds' => 999,
             ],
         ], 'vertoad-appfactory-webhooks-');
 
         try {
+            $connection = \Doctrine\DBAL\DriverManager::getConnection([
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ]);
+            $this->createSystemConfigSchema($connection);
+            $this->insertSystemConfig($connection, 'webhook.delivery_policy', 1, [
+                'batch_size' => 9,
+                'http_timeout_seconds' => 2,
+                'max_retry_count' => 6,
+                'retry_base_backoff_seconds' => 45,
+            ]);
+
             $container = AppFactory::create($basePath)->getContainer();
             $job = $container?->get(WebhookDeliveryJob::class);
 
@@ -616,6 +630,7 @@ PHP);
             self::assertSame(45, $this->privateIntProperty($job, 'baseBackoffSeconds'));
         } finally {
             $this->removeTemporaryAppBasePath($basePath);
+            @unlink($databasePath);
         }
     }
 
@@ -704,6 +719,12 @@ PHP);
                 'image_max_width' => 512,
                 'image_max_height' => 512,
             ]));
+            $this->insertSystemConfig($connection, 'webhook.delivery_policy', 1, [
+                'batch_size' => 12,
+                'http_timeout_seconds' => 2,
+                'max_retry_count' => 5,
+                'retry_base_backoff_seconds' => 30,
+            ]);
 
             $container = AppFactory::create($basePath)->getContainer();
             $policy = $container?->get(RateLimitPolicy::class);
@@ -711,6 +732,7 @@ PHP);
             $serving = $container?->get(AdServingService::class);
             $assetUploads = $container?->get(AssetUploadService::class);
             $reviewProvider = $container?->get(CreativeReviewProviderInterface::class);
+            $webhookDelivery = $container?->get(WebhookDeliveryJob::class);
 
             self::assertInstanceOf(RateLimitPolicy::class, $policy);
             self::assertSame(7, $policy->limit);
@@ -737,6 +759,10 @@ PHP);
             self::assertSame(4096, $this->privateIntProperty($reviewProvider, 'maxInputTokens'));
             self::assertSame(654, $this->privateIntProperty($reviewProvider, 'maxOutputTokens'));
             self::assertSame(0.35, $this->privateFloatProperty($reviewProvider, 'temperature'));
+            self::assertInstanceOf(WebhookDeliveryJob::class, $webhookDelivery);
+            self::assertSame(12, $this->privateIntProperty($webhookDelivery, 'batchSize'));
+            self::assertSame(5, $this->privateIntProperty($webhookDelivery, 'maxRetryCount'));
+            self::assertSame(30, $this->privateIntProperty($webhookDelivery, 'baseBackoffSeconds'));
         } finally {
             $this->removeTemporaryAppBasePath($basePath);
             @unlink($databasePath);
@@ -827,6 +853,13 @@ PHP);
             } catch (\RuntimeException $exception) {
                 self::assertSame('Missing required system config: review.ai_policy.', $exception->getMessage());
             }
+
+            try {
+                $container?->get(WebhookDeliveryJob::class);
+                self::fail('Production webhook delivery job must require versioned system config.');
+            } catch (\RuntimeException $exception) {
+                self::assertSame('Missing required system config: webhook.delivery_policy.', $exception->getMessage());
+            }
         } finally {
             $this->removeTemporaryAppBasePath($basePath);
             @unlink($databasePath);
@@ -906,6 +939,98 @@ PHP);
         }
     }
 
+    public function testProductionHealthRouteReportsDegradedWhenWebhookDeliveryPolicyIsMissing(): void
+    {
+        $databasePath = sys_get_temp_dir() . '/vertoad-health-webhook-policy-' . bin2hex(random_bytes(4)) . '.sqlite';
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ],
+            'redis' => [
+                'driver' => 'predis',
+                'password' => 'unit-test-redis-secret',
+                'prefix' => 'vertoad:test:',
+            ],
+            'storage' => [
+                's3' => [
+                    'endpoint' => 'https://r2.example.test',
+                    'bucket' => 'creative-assets',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                    'path_style_endpoint' => true,
+                    'public_base_url' => 'https://assets.example.test',
+                ],
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+            'ai_review' => [
+                'api_key' => 'unit-test-ai-review-key',
+            ],
+        ], 'vertoad-appfactory-health-webhook-policy-');
+
+        try {
+            $connection = \Doctrine\DBAL\DriverManager::getConnection([
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ]);
+            $this->createSystemConfigSchema($connection);
+            $this->insertSystemConfig($connection, 'security.rate_limit', 1, ['limit' => 60, 'window_seconds' => 60]);
+            $this->insertSystemConfig($connection, 'attribution.default_window_seconds', 1, ['seconds' => 604800]);
+            $this->insertSystemConfig($connection, 'serving.event_validation', 1, [
+                'min_visible_ratio' => 0.5,
+                'min_visible_ms' => 1000,
+                'repeat_click_window_seconds' => 30,
+            ]);
+            $this->insertSystemConfig($connection, 'review.ai_policy', 1, [
+                'enabled' => true,
+                'provider' => 'openai_compatible',
+                'base_url' => 'https://ai.example.test/v1',
+                'model' => 'review-model',
+                'prompt' => 'Return JSON.',
+                'timeout_seconds' => 60,
+                'max_input_tokens' => 12000,
+                'max_output_tokens' => 2000,
+                'temperature' => 0.2,
+            ]);
+            $this->insertSystemConfig($connection, 'assets.upload_policy', 1, $this->assetUploadPolicyConfig());
+
+            $configPath = $basePath . '/config/routes.php';
+            file_put_contents($configPath, <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+use Slim\App;
+use VertoAD\Http\Action\HealthAction;
+
+return static function (App $app): void {
+    $app->get('/api/v1/health', HealthAction::class);
+};
+PHP);
+
+            $app = AppFactory::create($basePath);
+            $request = (new ServerRequestFactory())->createServerRequest('GET', '/api/v1/health');
+            $response = $app->handle($request);
+            $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+            self::assertSame(503, $response->getStatusCode());
+            self::assertSame('runtime_config_unhealthy', $payload['error']['code']);
+            self::assertSame('Missing required system config: webhook.delivery_policy.', $payload['error']['message']);
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
+            @unlink($databasePath);
+        }
+    }
+
     public function testProductionHealthRouteReportsDegradedWhenAiReviewSecretIsMissing(): void
     {
         $databasePath = sys_get_temp_dir() . '/vertoad-health-ai-secret-' . bin2hex(random_bytes(4)) . '.sqlite';
@@ -969,6 +1094,7 @@ PHP);
                 'temperature' => 0.2,
             ]);
             $this->insertSystemConfig($connection, 'assets.upload_policy', 1, $this->assetUploadPolicyConfig());
+            $this->insertSystemConfig($connection, 'webhook.delivery_policy', 1, $this->webhookDeliveryPolicyConfig());
 
             $configPath = $basePath . '/config/routes.php';
             file_put_contents($configPath, <<<'PHP'
@@ -1061,6 +1187,7 @@ PHP);
                 'temperature' => 0.2,
             ]);
             $this->insertSystemConfig($connection, 'assets.upload_policy', 1, $this->assetUploadPolicyConfig());
+            $this->insertSystemConfig($connection, 'webhook.delivery_policy', 1, $this->webhookDeliveryPolicyConfig());
 
             $configPath = $basePath . '/config/routes.php';
             file_put_contents($configPath, <<<'PHP'
@@ -1708,6 +1835,19 @@ PHP);
                     ],
                 ],
             ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function webhookDeliveryPolicyConfig(): array
+    {
+        return [
+            'batch_size' => 50,
+            'http_timeout_seconds' => 5,
+            'max_retry_count' => 3,
+            'retry_base_backoff_seconds' => 300,
         ];
     }
 

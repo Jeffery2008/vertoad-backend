@@ -170,6 +170,13 @@ VALUES
         @super_admin_user_id
     ),
     (
+        'cfgv_bootstrap_webhook_delivery_policy_v1',
+        'webhook.delivery_policy',
+        1,
+        JSON_OBJECT('batch_size', 50, 'http_timeout_seconds', 5, 'max_retry_count', 3, 'retry_base_backoff_seconds', 300),
+        @super_admin_user_id
+    ),
+    (
         'cfgv_bootstrap_review_ai_policy_v1',
         'review.ai_policy',
         1,
