@@ -96,6 +96,34 @@ final class CreativeReviewServiceTest extends TestCase
         self::assertSame('review_transition_invalid', $badRepositoryTransition->errorCode);
     }
 
+    public function testReviewQueueValidationRejectsUnsupportedFiltersBeforeQuerying(): void
+    {
+        $connection = $this->connectionWithAsset();
+        $repository = new ReviewRepository($connection);
+        $service = new ReviewService($repository, new DeterministicCreativeReviewProvider());
+        $service->requestAiReview(99, 7, 1);
+
+        $unsupportedStatus = $this->capture(fn () => $service->listQueue(99, 'approved', 50));
+        self::assertSame('invalid_request', $unsupportedStatus->errorCode);
+        self::assertSame(422, $unsupportedStatus->status);
+        self::assertSame('status must be needs_human.', $unsupportedStatus->getMessage());
+
+        $badLowerLimit = $this->capture(fn () => $service->listQueue(99, 'needs_human', 0));
+        self::assertSame('invalid_request', $badLowerLimit->errorCode);
+        self::assertSame('limit must be a positive integer no greater than 100.', $badLowerLimit->getMessage());
+
+        $badUpperLimit = $this->capture(fn () => $service->listQueue(99, 'needs_human', 101));
+        self::assertSame('invalid_request', $badUpperLimit->errorCode);
+        self::assertSame('limit must be a positive integer no greater than 100.', $badUpperLimit->getMessage());
+
+        $queue = $service->listQueue(99, 'needs_human', 50);
+        self::assertCount(1, $queue);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Review queue list limit must be positive.');
+        $repository->listForReviewQueue(99, CreativeReviewStatus::NeedsHuman, 0);
+    }
+
     public function testRepositoryToleratesMalformedJsonAndProviderToleratesMalformedLists(): void
     {
         $connection = $this->connectionWithAsset();

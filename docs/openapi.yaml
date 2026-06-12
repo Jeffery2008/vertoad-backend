@@ -49,6 +49,8 @@ tags:
     description: Public ad serving, impression tracking, and click redirect endpoints.
   - name: Campaigns
     description: Authenticated organization-scoped campaign planning and status management.
+  - name: Review
+    description: AI pre-review, human final review, and platform review queue endpoints.
   - name: Reports
     description: Aggregate dashboard reporting for admin, advertiser, and publisher consoles.
   - name: Attribution
@@ -1281,6 +1283,61 @@ paths:
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/reviews:
+    get:
+      tags:
+        - Review
+      operationId: listCreativeReviewQueue
+      summary: List creative reviews awaiting human decision.
+      description: Returns the organization-scoped platform human review queue after AI pre-review has completed.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - review.queue.read.platform
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: status
+          in: query
+          required: true
+          schema:
+            type: string
+            enum:
+              - needs_human
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: Review queue returned.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/CreativeReviewQueueData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/reviews/{review_id}:
     get:
       tags:
@@ -1334,6 +1391,8 @@ paths:
       description: Records an auditable human approval and emits an eligibility event for future serving integration.
       security:
         - BearerAuth: []
+      x-permissions:
+        - review.creative.decide.platform
       parameters:
         - name: organization_id
           in: query
@@ -1386,6 +1445,8 @@ paths:
       description: Records an auditable human rejection and emits an ineligibility event for future serving integration.
       security:
         - BearerAuth: []
+      x-permissions:
+        - review.creative.decide.platform
       parameters:
         - name: organization_id
           in: query
@@ -5029,6 +5090,16 @@ components:
             - string
             - "null"
           minLength: 1
+      additionalProperties: false
+    CreativeReviewQueueData:
+      type: object
+      required:
+        - reviews
+      properties:
+        reviews:
+          type: array
+          items:
+            $ref: "#/components/schemas/CreativeReviewData"
       additionalProperties: false
     CreativeReviewData:
       type: object

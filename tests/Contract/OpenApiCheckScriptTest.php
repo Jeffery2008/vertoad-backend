@@ -772,6 +772,108 @@ paths:
                         type: object
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/reviews:
+    get:
+      tags:
+        - Reviews
+      operationId: listCreativeReviewQueue
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/reviews/{review_id}:
+    get:
+      tags:
+        - Reviews
+      operationId: getCreativeReviewStatus
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: review_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/reviews/{review_id}/approve:
+    post:
+      tags:
+        - Reviews
+      operationId: approveCreativeReview
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: review_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/reviews/{review_id}/reject:
+    post:
+      tags:
+        - Reviews
+      operationId: rejectCreativeReview
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: review_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+        default:
+          $ref: "#/components/responses/Error"
 components:
   responses:
     Error:
@@ -795,6 +897,10 @@ use VertoAD\Http\Middleware\AuthenticateRequestMiddleware;
 $app->post('/api/v1/assets/upload-intents', CreateAssetUploadIntentAction::class)->add(AuthenticateRequestMiddleware::class);
 $app->post('/api/v1/assets/confirm', ConfirmAssetUploadAction::class)->add(AuthenticateRequestMiddleware::class);
 $app->post('/api/v1/reviews/assets/{asset_id}/ai-review', StartAiReviewAction::class)->add(AuthenticateRequestMiddleware::class);
+$app->get('/api/v1/reviews', ListReviewQueueAction::class)->add(AuthenticateRequestMiddleware::class);
+$app->get('/api/v1/reviews/{review_id}', GetReviewStatusAction::class)->add(AuthenticateRequestMiddleware::class);
+$app->post('/api/v1/reviews/{review_id}/approve', ApproveReviewAction::class)->add(AuthenticateRequestMiddleware::class);
+$app->post('/api/v1/reviews/{review_id}/reject', RejectReviewAction::class)->add(AuthenticateRequestMiddleware::class);
 PHP);
 
         exec(
@@ -820,6 +926,30 @@ PHP);
         );
         self::assertStringContainsString(
             'OpenAPI operation POST /api/v1/reviews/assets/{asset_id}/ai-review is missing query parameter documented from frontend usage: organization_id',
+            implode(PHP_EOL, $output),
+        );
+        self::assertStringContainsString(
+            'OpenAPI operation GET /api/v1/reviews is missing query parameter documented from frontend usage: organization_id',
+            implode(PHP_EOL, $output),
+        );
+        self::assertStringContainsString(
+            'OpenAPI operation GET /api/v1/reviews is missing query parameter documented from frontend usage: status',
+            implode(PHP_EOL, $output),
+        );
+        self::assertStringContainsString(
+            'OpenAPI operation GET /api/v1/reviews is missing query parameter documented from frontend usage: limit',
+            implode(PHP_EOL, $output),
+        );
+        self::assertStringContainsString(
+            'OpenAPI operation GET /api/v1/reviews/{review_id} is missing query parameter documented from frontend usage: organization_id',
+            implode(PHP_EOL, $output),
+        );
+        self::assertStringContainsString(
+            'OpenAPI operation POST /api/v1/reviews/{review_id}/approve is missing query parameter documented from frontend usage: organization_id',
+            implode(PHP_EOL, $output),
+        );
+        self::assertStringContainsString(
+            'OpenAPI operation POST /api/v1/reviews/{review_id}/reject is missing query parameter documented from frontend usage: organization_id',
             implode(PHP_EOL, $output),
         );
     }

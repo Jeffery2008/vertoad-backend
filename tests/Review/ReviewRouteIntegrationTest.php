@@ -10,13 +10,20 @@ use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\DriverManager;
 use PHPUnit\Framework\TestCase;
 use Slim\Factory\AppFactory as SlimAppFactory;
+use Slim\Psr7\Factory\ResponseFactory;
 use Slim\Psr7\Factory\ServerRequestFactory;
 use VertoAD\Domain\Auth\AuthenticatedUser;
+use VertoAD\Domain\Review\AiReviewResult;
+use VertoAD\Domain\Review\CreativeReview;
+use VertoAD\Domain\Review\CreativeReviewAsset;
+use VertoAD\Domain\Review\CreativeReviewStatus;
 use VertoAD\Http\Action\Review\ApproveReviewAction;
 use VertoAD\Http\Action\Review\GetReviewStatusAction;
+use VertoAD\Http\Action\Review\ListReviewQueueAction;
 use VertoAD\Http\Action\Review\RejectReviewAction;
 use VertoAD\Http\Action\Review\StartAiReviewAction;
 use VertoAD\Http\Auth\BearerTokenAuthenticator;
+use VertoAD\Http\Auth\RequestUserContext;
 use VertoAD\Http\Middleware\ApiEnvelopeMiddleware;
 use VertoAD\Http\Middleware\AuthenticateRequestMiddleware;
 use VertoAD\Repository\FirstPartySessionRepositoryInterface;
@@ -24,6 +31,7 @@ use VertoAD\Repository\Review\ReviewRepository;
 use VertoAD\Repository\Review\ReviewRepositoryInterface;
 use VertoAD\Service\Review\CreativeReviewProviderInterface;
 use VertoAD\Service\Review\DeterministicCreativeReviewProvider;
+use VertoAD\Service\Review\ReviewValidationException;
 use VertoAD\Service\ReviewService;
 
 final class ReviewRouteIntegrationTest extends TestCase
@@ -40,6 +48,9 @@ final class ReviewRouteIntegrationTest extends TestCase
 
         $badScope = $this->handleJson($app, 'GET', '/api/v1/reviews/1?organization_id=0', null, 'valid-token');
         self::assertSame('organization_scope_required', $badScope['error']['code']);
+
+        $queueMissingScope = $this->handleJson($app, 'GET', '/api/v1/reviews?status=needs_human&limit=50', null, 'valid-token');
+        self::assertSame('organization_scope_required', $queueMissingScope['error']['code']);
     }
 
     public function testStartGetApproveAndRejectRoutesReturnEnvelopedReviewPayloads(): void
@@ -74,6 +85,97 @@ final class ReviewRouteIntegrationTest extends TestCase
         ], 'valid-token');
         self::assertSame('rejected', $rejected['data']['status']);
         self::assertSame('ineligible', (string) $connection->fetchOne('SELECT eligibility FROM review_eligibility_events'));
+    }
+
+    public function testReviewQueueListsNeedsHumanReviewsInStableOrder(): void
+    {
+        $connection = $this->connectionWithAsset();
+        $this->insertReviewableAsset($connection, 2);
+        $this->insertReviewableAsset($connection, 3);
+        $app = $this->createApp($connection);
+
+        $first = $this->handleJson($app, 'POST', '/api/v1/reviews/assets/1/ai-review?organization_id=99', [], 'valid-token');
+        $second = $this->handleJson($app, 'POST', '/api/v1/reviews/assets/2/ai-review?organization_id=99', [], 'valid-token');
+        $third = $this->handleJson($app, 'POST', '/api/v1/reviews/assets/3/ai-review?organization_id=99', [], 'valid-token');
+
+        $connection->update('creative_reviews', ['created_at' => '2026-06-08 00:00:03'], ['id' => $first['data']['id']]);
+        $connection->update('creative_reviews', ['created_at' => '2026-06-08 00:00:01'], ['id' => $second['data']['id']]);
+        $connection->update('creative_reviews', ['created_at' => '2026-06-08 00:00:02'], ['id' => $third['data']['id']]);
+
+        $approved = $this->handleJson($app, 'POST', '/api/v1/reviews/' . $third['data']['id'] . '/approve?organization_id=99', [], 'valid-token');
+        self::assertSame('approved', $approved['data']['status']);
+
+        $queue = $this->handleJson($app, 'GET', '/api/v1/reviews?organization_id=99&status=needs_human&limit=50', null, 'valid-token');
+
+        self::assertSame([
+            $second['data']['id'],
+            $first['data']['id'],
+        ], array_column($queue['data']['reviews'], 'id'));
+        self::assertSame(['needs_human', 'needs_human'], array_column($queue['data']['reviews'], 'status'));
+
+        $limited = $this->handleJson($app, 'GET', '/api/v1/reviews?organization_id=99&status=needs_human&limit=1', null, 'valid-token');
+        self::assertSame([$second['data']['id']], array_column($limited['data']['reviews'], 'id'));
+    }
+
+    public function testReviewQueueRejectsUnsupportedStatusAndInvalidLimit(): void
+    {
+        $app = $this->createApp($this->connectionWithAsset());
+
+        $defaultLimit = $this->handleJson($app, 'GET', '/api/v1/reviews?organization_id=99&status=needs_human', null, 'valid-token');
+        self::assertSame([], $defaultLimit['data']['reviews']);
+
+        $emptyLimit = $this->handleJson($app, 'GET', '/api/v1/reviews?organization_id=99&status=needs_human&limit=', null, 'valid-token');
+        self::assertSame([], $emptyLimit['data']['reviews']);
+
+        $unsupportedStatus = $this->handleJson($app, 'GET', '/api/v1/reviews?organization_id=99&status=approved&limit=50', null, 'valid-token');
+        self::assertSame('invalid_request', $unsupportedStatus['error']['code']);
+
+        $badLimit = $this->handleJson($app, 'GET', '/api/v1/reviews?organization_id=99&status=needs_human&limit=0', null, 'valid-token');
+        self::assertSame('invalid_request', $badLimit['error']['code']);
+
+        $nonNumericLimit = $this->handleJson($app, 'GET', '/api/v1/reviews?organization_id=99&status=needs_human&limit=abc', null, 'valid-token');
+        self::assertSame('invalid_request', $nonNumericLimit['error']['code']);
+
+        $tooLargeLimit = $this->handleJson($app, 'GET', '/api/v1/reviews?organization_id=99&status=needs_human&limit=101', null, 'valid-token');
+        self::assertSame('invalid_request', $tooLargeLimit['error']['code']);
+    }
+
+    public function testReviewQueueActionCoversDefensiveLimitAndServiceValidationBranches(): void
+    {
+        $action = new ListReviewQueueAction(new ReviewService(
+            new ThrowingReviewQueueRepository(),
+            new DeterministicCreativeReviewProvider(),
+        ));
+        $context = new RequestUserContext(new AuthenticatedUser(7, 'review@example.com', false), 99);
+
+        $arrayLimitRequest = (new ServerRequestFactory())->createServerRequest('GET', '/api/v1/reviews')
+            ->withQueryParams([
+                'organization_id' => '99',
+                'status' => 'needs_human',
+                'limit' => ['50'],
+            ])
+            ->withAttribute(RequestUserContext::ATTRIBUTE, $context);
+
+        $arrayLimitResponse = $action($arrayLimitRequest, (new ResponseFactory())->createResponse(), []);
+        $arrayLimitPayload = json_decode((string) $arrayLimitResponse->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame(422, $arrayLimitResponse->getStatusCode());
+        self::assertSame('invalid_request', $arrayLimitPayload['code']);
+
+        $serviceErrorRequest = (new ServerRequestFactory())->createServerRequest('GET', '/api/v1/reviews')
+            ->withQueryParams([
+                'organization_id' => '99',
+                'status' => 'needs_human',
+                'limit' => '50',
+            ])
+            ->withAttribute(RequestUserContext::ATTRIBUTE, $context);
+
+        $serviceErrorResponse = $action($serviceErrorRequest, (new ResponseFactory())->createResponse(), []);
+        $serviceErrorPayload = json_decode((string) $serviceErrorResponse->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame(409, $serviceErrorResponse->getStatusCode());
+        self::assertSame('review_queue_unavailable', $serviceErrorPayload['code']);
+        self::assertSame('Review queue could not be listed.', $serviceErrorPayload['message']);
     }
 
     public function testRoutesReturnStableValidationErrorsForBadInputAndOwnership(): void
@@ -243,6 +345,7 @@ final class ReviewRouteIntegrationTest extends TestCase
         SlimAppFactory::setContainer($container);
         $app = SlimAppFactory::create();
         $app->addBodyParsingMiddleware();
+        $app->get('/api/v1/reviews', ListReviewQueueAction::class)->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/reviews/assets/{asset_id}/ai-review', StartAiReviewAction::class)->add(AuthenticateRequestMiddleware::class);
         $app->get('/api/v1/reviews/{review_id}', GetReviewStatusAction::class)->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/reviews/{review_id}/approve', ApproveReviewAction::class)->add(AuthenticateRequestMiddleware::class);
@@ -287,5 +390,93 @@ final class ReviewRouteIntegrationTest extends TestCase
         ]);
 
         return $connection;
+    }
+
+    private function insertReviewableAsset(Connection $connection, int $assetId): void
+    {
+        $connection->insert('asset_upload_intents', [
+            'id' => $assetId,
+            'organization_id' => 99,
+            'uploader_user_id' => 7,
+            'type' => 'image',
+            'original_filename' => 'creative-' . $assetId . '.png',
+            'object_key' => 'organizations/99/assets/route-' . $assetId . '.png',
+            'content_type' => 'image/png',
+            'byte_size' => 1024,
+            'status' => 'pending_review',
+            'expires_at' => '2026-06-08 00:00:00',
+        ]);
+        $connection->insert('creative_assets', [
+            'id' => $assetId,
+            'upload_intent_id' => $assetId,
+            'organization_id' => 99,
+            'uploader_user_id' => 7,
+            'type' => 'image',
+            'object_key' => 'organizations/99/assets/route-' . $assetId . '.png',
+            'content_type' => 'image/png',
+            'byte_size' => 1024,
+            'width' => 800,
+            'height' => 600,
+            'duration_seconds' => null,
+            'checksum' => null,
+            'status' => 'pending_review',
+        ]);
+    }
+}
+
+final class ThrowingReviewQueueRepository implements ReviewRepositoryInterface
+{
+    public function findAsset(int $assetId, int $organizationId): ?CreativeReviewAsset
+    {
+        throw new \BadMethodCallException(__METHOD__ . ' is not used by this test.');
+    }
+
+    public function findByAsset(int $assetId, int $organizationId): ?CreativeReview
+    {
+        throw new \BadMethodCallException(__METHOD__ . ' is not used by this test.');
+    }
+
+    public function find(int $reviewId, int $organizationId): ?CreativeReview
+    {
+        throw new \BadMethodCallException(__METHOD__ . ' is not used by this test.');
+    }
+
+    public function listForReviewQueue(int $organizationId, CreativeReviewStatus $status, int $limit): array
+    {
+        throw new ReviewValidationException(
+            'review_queue_unavailable',
+            'Review queue could not be listed.',
+            409,
+        );
+    }
+
+    public function leasePendingAiReviews(int $limit): array
+    {
+        throw new \BadMethodCallException(__METHOD__ . ' is not used by this test.');
+    }
+
+    public function findAssetForReview(CreativeReview $review): ?CreativeReviewAsset
+    {
+        throw new \BadMethodCallException(__METHOD__ . ' is not used by this test.');
+    }
+
+    public function create(CreativeReview $review): CreativeReview
+    {
+        throw new \BadMethodCallException(__METHOD__ . ' is not used by this test.');
+    }
+
+    public function updateStatus(int $reviewId, CreativeReviewStatus $from, CreativeReviewStatus $to): CreativeReview
+    {
+        throw new \BadMethodCallException(__METHOD__ . ' is not used by this test.');
+    }
+
+    public function recordAiResult(int $reviewId, AiReviewResult $result): CreativeReview
+    {
+        throw new \BadMethodCallException(__METHOD__ . ' is not used by this test.');
+    }
+
+    public function recordHumanDecision(int $reviewId, int $actorUserId, string $decision, ?string $reason): CreativeReview
+    {
+        throw new \BadMethodCallException(__METHOD__ . ' is not used by this test.');
     }
 }

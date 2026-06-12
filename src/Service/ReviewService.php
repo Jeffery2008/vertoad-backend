@@ -82,6 +82,26 @@ final readonly class ReviewService
         return $this->find($organizationId, $reviewId);
     }
 
+    /** @return list<CreativeReview> */
+    public function listQueue(int $organizationId, string $status, int $limit): array
+    {
+        if ($status !== CreativeReviewStatus::NeedsHuman->value) {
+            throw new ReviewValidationException(
+                'invalid_request',
+                'status must be needs_human.',
+            );
+        }
+
+        if ($limit <= 0 || $limit > 100) {
+            throw new ReviewValidationException(
+                'invalid_request',
+                'limit must be a positive integer no greater than 100.',
+            );
+        }
+
+        return $this->repository->listForReviewQueue($organizationId, CreativeReviewStatus::NeedsHuman, $limit);
+    }
+
     public function approve(int $organizationId, int $actorUserId, int $reviewId, ?string $reason): CreativeReview
     {
         return $this->decide($organizationId, $actorUserId, $reviewId, 'approved', $reason);

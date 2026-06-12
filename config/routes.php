@@ -62,6 +62,7 @@ use VertoAD\Http\Action\Publisher\ListPublisherSitesAction;
 use VertoAD\Http\Action\Publisher\VerifyPublisherSiteAction;
 use VertoAD\Http\Action\Review\ApproveReviewAction;
 use VertoAD\Http\Action\Review\GetReviewStatusAction;
+use VertoAD\Http\Action\Review\ListReviewQueueAction;
 use VertoAD\Http\Action\Review\RejectReviewAction;
 use VertoAD\Http\Action\Review\StartAiReviewAction;
 use VertoAD\Http\Action\Reporting\ReportDashboardAction;
@@ -188,6 +189,9 @@ return static function (App $app): void {
         ->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/reviews/assets/{asset_id}/ai-review', StartAiReviewAction::class)
         ->add($permission('creative.write.own'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->get('/api/v1/reviews', ListReviewQueueAction::class)
+        ->add($platformPermission('review.queue.read.platform'))
         ->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/reviews/{review_id}', GetReviewStatusAction::class)
         ->add($permission('creative.read.own'))

@@ -725,6 +725,10 @@ function frontendUsedQueryParameters(): array
         'POST /api/v1/assets/upload-intents' => ['organization_id'],
         'POST /api/v1/assets/confirm' => ['organization_id'],
         'POST /api/v1/reviews/assets/{asset_id}/ai-review' => ['organization_id'],
+        'GET /api/v1/reviews' => ['organization_id', 'status', 'limit'],
+        'GET /api/v1/reviews/{review_id}' => ['organization_id'],
+        'POST /api/v1/reviews/{review_id}/approve' => ['organization_id'],
+        'POST /api/v1/reviews/{review_id}/reject' => ['organization_id'],
     ];
 }
 

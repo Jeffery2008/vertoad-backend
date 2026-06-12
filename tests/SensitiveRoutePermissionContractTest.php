@@ -57,6 +57,7 @@ final class SensitiveRoutePermissionContractTest extends TestCase
             ['GET', '/api/v1/campaigns/{campaign_id}', 'campaign.read.own', 'permission'],
             ['PATCH', '/api/v1/campaigns/{campaign_id}', 'campaign.write.own', 'permission'],
             ['POST', '/api/v1/reviews/assets/{asset_id}/ai-review', 'creative.write.own', 'permission'],
+            ['GET', '/api/v1/reviews', 'review.queue.read.platform', 'platformPermission'],
             ['GET', '/api/v1/reviews/{review_id}', 'creative.read.own', 'permission'],
             ['POST', '/api/v1/reviews/{review_id}/approve', 'review.creative.decide.platform', 'platformPermission'],
             ['POST', '/api/v1/reviews/{review_id}/reject', 'review.creative.decide.platform', 'platformPermission'],
