@@ -9,6 +9,7 @@ use Doctrine\DBAL\Connection;
 use Dotenv\Dotenv;
 use Slim\App;
 use Slim\Factory\AppFactory as SlimAppFactory;
+use VertoAD\Domain\Security\TurnstilePolicy;
 use VertoAD\Http\Action\Cron\CronStatusAction;
 use VertoAD\Http\Action\Cron\CronRunAction;
 use VertoAD\Http\Action\HealthAction;
@@ -507,6 +508,13 @@ final class AppFactory
 
                                 return is_array($config) ? (string) ($config['api_key'] ?? '') : '';
                             },
+                        self::localFallbackAllowed($settings)
+                            ? null
+                            : static function () use ($settings): string {
+                                $config = $settings['turnstile'] ?? [];
+
+                                return is_array($config) ? (string) ($config['secret_key'] ?? '') : '';
+                            },
                     ),
                 CronLockStoreInterface::class => static fn (): CronLockStoreInterface =>
                     self::cronLockStore($settings),
@@ -613,9 +621,13 @@ final class AppFactory
                     $settings,
                     $ipResolver,
                 ),
-                TurnstileVerifier::class => static fn (): TurnstileVerifier => new TurnstileVerifier(
+                TurnstilePolicy::class => static fn (SystemConfigService $configs): TurnstilePolicy =>
+                    $configs->turnstilePolicy(),
+                TurnstileVerifier::class => static fn (TurnstilePolicy $policy): TurnstileVerifier => new TurnstileVerifier(
                     (string) ($settings['turnstile']['secret_key'] ?? ''),
-                    (string) ($settings['turnstile']['verify_url'] ?? ''),
+                    TurnstileVerifier::CLOUDFLARE_SITEVERIFY_URL,
+                    timeoutSeconds: $policy->timeoutSeconds,
+                    allowUnconfiguredSuccess: self::localFallbackAllowed($settings),
                 ),
                 ClientIpResolver::class => static fn (): ClientIpResolver =>
                     ClientIpResolver::fromSettings($settings['cloudflare'] ?? []),
@@ -623,11 +635,14 @@ final class AppFactory
                     TurnstileVerifier $verifier,
                     AuditLogService $audit,
                     ClientIpResolver $ipResolver,
+                    TurnstilePolicy $policy,
                 ): TurnstileMiddleware => new TurnstileMiddleware(
                     SlimAppFactory::determineResponseFactory(),
                     $verifier,
                     $audit,
                     $ipResolver,
+                    $policy,
+                    allowRuntimeBypass: self::localFallbackAllowed($settings),
                 ),
                 RateLimitStoreInterface::class => static fn (): RateLimitStoreInterface =>
                     self::rateLimitStore($settings),

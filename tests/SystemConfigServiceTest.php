@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use VertoAD\Domain\Assets\AssetType;
 use VertoAD\Domain\Assets\AssetUploadPolicy;
 use VertoAD\Domain\Review\AiReviewPolicy;
+use VertoAD\Domain\Security\TurnstilePolicy;
 use VertoAD\Domain\Serving\ServingEventPolicy;
 use VertoAD\Domain\Webhooks\WebhookDeliveryPolicy;
 use VertoAD\Infrastructure\Security\RateLimitPolicy;
@@ -368,6 +369,38 @@ final class SystemConfigServiceTest extends TestCase
         self::assertSame(300, $policy->retryBaseBackoffSeconds);
     }
 
+    public function testTurnstilePolicyUsesConfiguredTimeoutAndProtectedEndpoints(): void
+    {
+        $repository = new ArraySystemConfigRepository([
+            'security.turnstile_policy' => [
+                'enabled' => true,
+                'timeout_seconds' => 4,
+                'protected_endpoints' => [
+                    'POST:/api/v1/auth/login',
+                    'POST:/api/v1/oauth/consent',
+                ],
+            ],
+        ]);
+
+        $policy = (new SystemConfigService($repository))->turnstilePolicy();
+
+        self::assertInstanceOf(TurnstilePolicy::class, $policy);
+        self::assertTrue($policy->enabled);
+        self::assertSame(4, $policy->timeoutSeconds);
+        self::assertTrue($policy->protects('post', '/api/v1/auth/login'));
+        self::assertFalse($policy->protects('POST', '/api/v1/oauth/token'));
+        self::assertSame(['security.turnstile_policy'], $repository->queries);
+    }
+
+    public function testTurnstilePolicyFallsBackWhenConfigIsMissing(): void
+    {
+        $policy = (new SystemConfigService(new ArraySystemConfigRepository()))->turnstilePolicy();
+
+        self::assertTrue($policy->enabled);
+        self::assertSame(5, $policy->timeoutSeconds);
+        self::assertTrue($policy->protects('POST', '/anything'));
+    }
+
     public function testWebhookDeliveryPolicyRejectsInvalidConfiguredValues(): void
     {
         foreach (
@@ -394,6 +427,39 @@ final class SystemConfigServiceTest extends TestCase
                 self::fail('Invalid webhook.delivery_policy value must be rejected.');
             } catch (\UnexpectedValueException $exception) {
                 self::assertStringStartsWith('Invalid webhook.delivery_policy ', $exception->getMessage());
+            }
+        }
+    }
+
+    public function testTurnstilePolicyRejectsInvalidConfiguredValues(): void
+    {
+        foreach (
+            [
+                ['timeout_seconds' => 5, 'protected_endpoints' => ['POST:/api/v1/auth/login']],
+                ['enabled' => true, 'protected_endpoints' => ['POST:/api/v1/auth/login']],
+                ['enabled' => true, 'timeout_seconds' => 5],
+                ['enabled' => true, 'verify_url' => 'https://turnstile.example.test/siteverify', 'timeout_seconds' => 5, 'protected_endpoints' => ['POST:/api/v1/auth/login']],
+                ['enabled' => true, 'timeout_seconds' => 0, 'protected_endpoints' => ['POST:/api/v1/auth/login']],
+                ['enabled' => true, 'timeout_seconds' => 31, 'protected_endpoints' => ['POST:/api/v1/auth/login']],
+                ['enabled' => true, 'timeout_seconds' => 5, 'protected_endpoints' => []],
+                ['enabled' => true, 'timeout_seconds' => 5, 'protected_endpoints' => ['*']],
+                ['enabled' => true, 'timeout_seconds' => 5, 'protected_endpoints' => ['POST:/api/v1/auth/login' => true]],
+                ['enabled' => true, 'timeout_seconds' => 5, 'protected_endpoints' => [42]],
+                ['enabled' => true, 'timeout_seconds' => 5, 'protected_endpoints' => ['GET:/api/v1/auth/login']],
+                ['enabled' => true, 'timeout_seconds' => 5, 'protected_endpoints' => ['POST:relative']],
+                ['enabled' => true, 'timeout_seconds' => 5, 'protected_endpoints' => ['POST:/api/v1/auth/login'], 'unexpected' => true],
+                ['enabled' => true, 'timeout_seconds' => '5', 'protected_endpoints' => ['POST:/api/v1/auth/login']],
+            ] as $value
+        ) {
+            $service = new SystemConfigService(new ArraySystemConfigRepository([
+                'security.turnstile_policy' => $value,
+            ]));
+
+            try {
+                $service->turnstilePolicy();
+                self::fail('Invalid security.turnstile_policy value must be rejected.');
+            } catch (\UnexpectedValueException $exception) {
+                self::assertStringStartsWith('Invalid security.turnstile_policy ', $exception->getMessage());
             }
         }
     }
@@ -629,6 +695,13 @@ final class SystemConfigServiceTest extends TestCase
             self::fail('Production runtime config must not silently fall back when webhook delivery policy is missing.');
         } catch (\RuntimeException $exception) {
             self::assertSame('Missing required system config: webhook.delivery_policy.', $exception->getMessage());
+        }
+
+        try {
+            $service->turnstilePolicy();
+            self::fail('Production runtime config must not silently fall back when Turnstile policy is missing.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('Missing required system config: security.turnstile_policy.', $exception->getMessage());
         }
     }
 

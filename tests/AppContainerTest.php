@@ -686,6 +686,9 @@ PHP);
                 'max_output_tokens' => 99,
                 'temperature' => 0.99,
             ],
+            'turnstile' => [
+                'secret_key' => 'unit-test-turnstile-secret',
+            ],
         ], 'vertoad-appfactory-system-config-');
 
         try {
@@ -725,6 +728,14 @@ PHP);
                 'max_retry_count' => 5,
                 'retry_base_backoff_seconds' => 30,
             ]);
+            $this->insertSystemConfig($connection, 'security.turnstile_policy', 1, [
+                'enabled' => true,
+                'timeout_seconds' => 7,
+                'protected_endpoints' => [
+                    'POST:/api/v1/auth/login',
+                    'POST:/api/v1/billing/recharge-keys/redeem',
+                ],
+            ]);
 
             $container = AppFactory::create($basePath)->getContainer();
             $policy = $container?->get(RateLimitPolicy::class);
@@ -733,6 +744,7 @@ PHP);
             $assetUploads = $container?->get(AssetUploadService::class);
             $reviewProvider = $container?->get(CreativeReviewProviderInterface::class);
             $webhookDelivery = $container?->get(WebhookDeliveryJob::class);
+            $turnstile = $container?->get(TurnstileVerifier::class);
 
             self::assertInstanceOf(RateLimitPolicy::class, $policy);
             self::assertSame(7, $policy->limit);
@@ -763,6 +775,9 @@ PHP);
             self::assertSame(12, $this->privateIntProperty($webhookDelivery, 'batchSize'));
             self::assertSame(5, $this->privateIntProperty($webhookDelivery, 'maxRetryCount'));
             self::assertSame(30, $this->privateIntProperty($webhookDelivery, 'baseBackoffSeconds'));
+            self::assertInstanceOf(TurnstileVerifier::class, $turnstile);
+            self::assertSame(TurnstileVerifier::CLOUDFLARE_SITEVERIFY_URL, $this->privateStringProperty($turnstile, 'verifyUrl'));
+            self::assertSame(7, $this->privateIntProperty($turnstile, 'timeoutSeconds'));
         } finally {
             $this->removeTemporaryAppBasePath($basePath);
             @unlink($databasePath);
@@ -859,6 +874,13 @@ PHP);
                 self::fail('Production webhook delivery job must require versioned system config.');
             } catch (\RuntimeException $exception) {
                 self::assertSame('Missing required system config: webhook.delivery_policy.', $exception->getMessage());
+            }
+
+            try {
+                $container?->get(TurnstileVerifier::class);
+                self::fail('Production Turnstile verifier must require versioned system config.');
+            } catch (\RuntimeException $exception) {
+                self::assertSame('Missing required system config: security.turnstile_policy.', $exception->getMessage());
             }
         } finally {
             $this->removeTemporaryAppBasePath($basePath);
@@ -1002,6 +1024,7 @@ PHP);
                 'temperature' => 0.2,
             ]);
             $this->insertSystemConfig($connection, 'assets.upload_policy', 1, $this->assetUploadPolicyConfig());
+            $this->insertSystemConfig($connection, 'security.turnstile_policy', 1, $this->turnstilePolicyConfig());
 
             $configPath = $basePath . '/config/routes.php';
             file_put_contents($configPath, <<<'PHP'
@@ -1025,6 +1048,102 @@ PHP);
             self::assertSame(503, $response->getStatusCode());
             self::assertSame('runtime_config_unhealthy', $payload['error']['code']);
             self::assertSame('Missing required system config: webhook.delivery_policy.', $payload['error']['message']);
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
+            @unlink($databasePath);
+        }
+    }
+
+    public function testProductionHealthRouteReportsDegradedWhenTurnstilePolicyIsMissing(): void
+    {
+        $databasePath = sys_get_temp_dir() . '/vertoad-health-turnstile-policy-' . bin2hex(random_bytes(4)) . '.sqlite';
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ],
+            'redis' => [
+                'driver' => 'predis',
+                'password' => 'unit-test-redis-secret',
+                'prefix' => 'vertoad:test:',
+            ],
+            'storage' => [
+                's3' => [
+                    'endpoint' => 'https://r2.example.test',
+                    'bucket' => 'creative-assets',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                    'path_style_endpoint' => true,
+                    'public_base_url' => 'https://assets.example.test',
+                ],
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+            'ai_review' => [
+                'api_key' => 'unit-test-ai-review-key',
+            ],
+            'turnstile' => [
+                'secret_key' => 'unit-test-turnstile-secret',
+            ],
+        ], 'vertoad-appfactory-health-turnstile-policy-');
+
+        try {
+            $connection = \Doctrine\DBAL\DriverManager::getConnection([
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ]);
+            $this->createSystemConfigSchema($connection);
+            $this->insertSystemConfig($connection, 'security.rate_limit', 1, ['limit' => 60, 'window_seconds' => 60]);
+            $this->insertSystemConfig($connection, 'attribution.default_window_seconds', 1, ['seconds' => 604800]);
+            $this->insertSystemConfig($connection, 'serving.event_validation', 1, [
+                'min_visible_ratio' => 0.5,
+                'min_visible_ms' => 1000,
+                'repeat_click_window_seconds' => 30,
+            ]);
+            $this->insertSystemConfig($connection, 'review.ai_policy', 1, [
+                'enabled' => true,
+                'provider' => 'openai_compatible',
+                'base_url' => 'https://ai.example.test/v1',
+                'model' => 'review-model',
+                'prompt' => 'Return JSON.',
+                'timeout_seconds' => 60,
+                'max_input_tokens' => 12000,
+                'max_output_tokens' => 2000,
+                'temperature' => 0.2,
+            ]);
+            $this->insertSystemConfig($connection, 'assets.upload_policy', 1, $this->assetUploadPolicyConfig());
+            $this->insertSystemConfig($connection, 'webhook.delivery_policy', 1, $this->webhookDeliveryPolicyConfig());
+
+            $configPath = $basePath . '/config/routes.php';
+            file_put_contents($configPath, <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+use Slim\App;
+use VertoAD\Http\Action\HealthAction;
+
+return static function (App $app): void {
+    $app->get('/api/v1/health', HealthAction::class);
+};
+PHP);
+
+            $app = AppFactory::create($basePath);
+            $request = (new ServerRequestFactory())->createServerRequest('GET', '/api/v1/health');
+            $response = $app->handle($request);
+            $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+            self::assertSame(503, $response->getStatusCode());
+            self::assertSame('runtime_config_unhealthy', $payload['error']['code']);
+            self::assertSame('Missing required system config: security.turnstile_policy.', $payload['error']['message']);
         } finally {
             $this->removeTemporaryAppBasePath($basePath);
             @unlink($databasePath);
@@ -1095,6 +1214,7 @@ PHP);
             ]);
             $this->insertSystemConfig($connection, 'assets.upload_policy', 1, $this->assetUploadPolicyConfig());
             $this->insertSystemConfig($connection, 'webhook.delivery_policy', 1, $this->webhookDeliveryPolicyConfig());
+            $this->insertSystemConfig($connection, 'security.turnstile_policy', 1, $this->turnstilePolicyConfig());
 
             $configPath = $basePath . '/config/routes.php';
             file_put_contents($configPath, <<<'PHP'
@@ -1118,6 +1238,279 @@ PHP);
             self::assertSame(503, $response->getStatusCode());
             self::assertSame('runtime_config_unhealthy', $payload['error']['code']);
             self::assertSame('AI_REVIEW_API_KEY is required outside local/testing.', $payload['error']['message']);
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
+            @unlink($databasePath);
+        }
+    }
+
+    public function testProductionHealthRouteReportsDegradedWhenTurnstileSecretIsMissing(): void
+    {
+        $databasePath = sys_get_temp_dir() . '/vertoad-health-turnstile-secret-' . bin2hex(random_bytes(4)) . '.sqlite';
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ],
+            'redis' => [
+                'driver' => 'predis',
+                'password' => 'unit-test-redis-secret',
+                'prefix' => 'vertoad:test:',
+            ],
+            'storage' => [
+                's3' => [
+                    'endpoint' => 'https://r2.example.test',
+                    'bucket' => 'creative-assets',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                    'path_style_endpoint' => true,
+                    'public_base_url' => 'https://assets.example.test',
+                ],
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+            'ai_review' => [
+                'api_key' => 'unit-test-ai-review-key',
+            ],
+            'turnstile' => [
+                'secret_key' => '',
+            ],
+        ], 'vertoad-appfactory-health-turnstile-secret-');
+
+        try {
+            $connection = \Doctrine\DBAL\DriverManager::getConnection([
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ]);
+            $this->createSystemConfigSchema($connection);
+            $this->insertSystemConfig($connection, 'security.rate_limit', 1, ['limit' => 60, 'window_seconds' => 60]);
+            $this->insertSystemConfig($connection, 'attribution.default_window_seconds', 1, ['seconds' => 604800]);
+            $this->insertSystemConfig($connection, 'serving.event_validation', 1, [
+                'min_visible_ratio' => 0.5,
+                'min_visible_ms' => 1000,
+                'repeat_click_window_seconds' => 30,
+            ]);
+            $this->insertSystemConfig($connection, 'review.ai_policy', 1, [
+                'enabled' => true,
+                'provider' => 'openai_compatible',
+                'base_url' => 'https://ai.example.test/v1',
+                'model' => 'review-model',
+                'prompt' => 'Return JSON.',
+                'timeout_seconds' => 60,
+                'max_input_tokens' => 12000,
+                'max_output_tokens' => 2000,
+                'temperature' => 0.2,
+            ]);
+            $this->insertSystemConfig($connection, 'assets.upload_policy', 1, $this->assetUploadPolicyConfig());
+            $this->insertSystemConfig($connection, 'webhook.delivery_policy', 1, $this->webhookDeliveryPolicyConfig());
+            $this->insertSystemConfig($connection, 'security.turnstile_policy', 1, $this->turnstilePolicyConfig());
+
+            $configPath = $basePath . '/config/routes.php';
+            file_put_contents($configPath, <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+use Slim\App;
+use VertoAD\Http\Action\HealthAction;
+
+return static function (App $app): void {
+    $app->get('/api/v1/health', HealthAction::class);
+};
+PHP);
+
+            $app = AppFactory::create($basePath);
+            $request = (new ServerRequestFactory())->createServerRequest('GET', '/api/v1/health');
+            $response = $app->handle($request);
+            $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+            self::assertSame(503, $response->getStatusCode());
+            self::assertSame('runtime_config_unhealthy', $payload['error']['code']);
+            self::assertSame('TURNSTILE_SECRET_KEY is required outside local/testing when security.turnstile_policy is enabled.', $payload['error']['message']);
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
+            @unlink($databasePath);
+        }
+    }
+
+    public function testProductionTurnstileProtectedRouteFailsClosedWhenSecretIsMissing(): void
+    {
+        $databasePath = sys_get_temp_dir() . '/vertoad-route-turnstile-secret-' . bin2hex(random_bytes(4)) . '.sqlite';
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ],
+            'redis' => [
+                'driver' => 'predis',
+                'password' => 'unit-test-redis-secret',
+                'prefix' => 'vertoad:test:',
+            ],
+            'storage' => [
+                's3' => [
+                    'endpoint' => 'https://r2.example.test',
+                    'bucket' => 'creative-assets',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                    'path_style_endpoint' => true,
+                    'public_base_url' => 'https://assets.example.test',
+                ],
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+            'ai_review' => [
+                'api_key' => 'unit-test-ai-review-key',
+            ],
+            'turnstile' => [
+                'secret_key' => '',
+            ],
+        ], 'vertoad-appfactory-route-turnstile-secret-');
+
+        try {
+            $connection = \Doctrine\DBAL\DriverManager::getConnection([
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ]);
+            $this->createSystemConfigSchema($connection);
+            $this->createAuditLogSchema($connection);
+            $this->insertSystemConfig($connection, 'security.turnstile_policy', 1, $this->turnstilePolicyConfig());
+
+            $configPath = $basePath . '/config/routes.php';
+            file_put_contents($configPath, <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+use Psr\Http\Message\ResponseInterface;
+use Psr\Http\Message\ServerRequestInterface;
+use Slim\App;
+use VertoAD\Http\Middleware\TurnstileMiddleware;
+
+return static function (App $app): void {
+    $app->post('/api/v1/auth/login', static function (ServerRequestInterface $request, ResponseInterface $response): ResponseInterface {
+        $response->getBody()->write(json_encode(['status' => 'handler-reached'], JSON_THROW_ON_ERROR));
+
+        return $response->withHeader('Content-Type', 'application/json');
+    })->add(TurnstileMiddleware::class);
+};
+PHP);
+
+            $app = AppFactory::create($basePath);
+            $request = (new ServerRequestFactory())
+                ->createServerRequest('POST', '/api/v1/auth/login')
+                ->withParsedBody(['cf_turnstile_token' => 'token-value']);
+            $response = $app->handle($request);
+            $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+            self::assertSame(503, $response->getStatusCode());
+            self::assertSame('turnstile_not_configured', $payload['error']['code']);
+            self::assertNotSame('handler-reached', $payload['data']['status'] ?? null);
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
+            @unlink($databasePath);
+        }
+    }
+
+    public function testProductionTurnstileProtectedRouteFailsClosedWhenPolicyIsDisabled(): void
+    {
+        $databasePath = sys_get_temp_dir() . '/vertoad-route-turnstile-disabled-' . bin2hex(random_bytes(4)) . '.sqlite';
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ],
+            'redis' => [
+                'driver' => 'predis',
+                'password' => 'unit-test-redis-secret',
+                'prefix' => 'vertoad:test:',
+            ],
+            'storage' => [
+                's3' => [
+                    'endpoint' => 'https://r2.example.test',
+                    'bucket' => 'creative-assets',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                    'path_style_endpoint' => true,
+                    'public_base_url' => 'https://assets.example.test',
+                ],
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+            'ai_review' => [
+                'api_key' => 'unit-test-ai-review-key',
+            ],
+            'turnstile' => [
+                'secret_key' => 'unit-test-turnstile-secret',
+            ],
+        ], 'vertoad-appfactory-route-turnstile-disabled-');
+
+        try {
+            $connection = \Doctrine\DBAL\DriverManager::getConnection([
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ]);
+            $this->createSystemConfigSchema($connection);
+            $this->createAuditLogSchema($connection);
+            $this->insertSystemConfig($connection, 'security.turnstile_policy', 1, [
+                'enabled' => false,
+                'timeout_seconds' => 5,
+                'protected_endpoints' => ['POST:/api/v1/auth/login'],
+            ]);
+
+            $configPath = $basePath . '/config/routes.php';
+            file_put_contents($configPath, <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+use Psr\Http\Message\ResponseInterface;
+use Psr\Http\Message\ServerRequestInterface;
+use Slim\App;
+use VertoAD\Http\Middleware\TurnstileMiddleware;
+
+return static function (App $app): void {
+    $app->post('/api/v1/auth/login', static function (ServerRequestInterface $request, ResponseInterface $response): ResponseInterface {
+        $response->getBody()->write(json_encode(['status' => 'handler-reached'], JSON_THROW_ON_ERROR));
+
+        return $response->withHeader('Content-Type', 'application/json');
+    })->add(TurnstileMiddleware::class);
+};
+PHP);
+
+            $app = AppFactory::create($basePath);
+            $request = (new ServerRequestFactory())
+                ->createServerRequest('POST', '/api/v1/auth/login')
+                ->withParsedBody(['cf_turnstile_token' => 'token-value']);
+            $response = $app->handle($request);
+            $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+            self::assertSame(503, $response->getStatusCode());
+            self::assertSame('turnstile_policy_disabled', $payload['error']['code']);
+            self::assertNotSame('handler-reached', $payload['data']['status'] ?? null);
         } finally {
             $this->removeTemporaryAppBasePath($basePath);
             @unlink($databasePath);
@@ -1188,6 +1581,7 @@ PHP);
             ]);
             $this->insertSystemConfig($connection, 'assets.upload_policy', 1, $this->assetUploadPolicyConfig());
             $this->insertSystemConfig($connection, 'webhook.delivery_policy', 1, $this->webhookDeliveryPolicyConfig());
+            $this->insertSystemConfig($connection, 'security.turnstile_policy', 1, $this->turnstilePolicyConfig());
 
             $configPath = $basePath . '/config/routes.php';
             file_put_contents($configPath, <<<'PHP'
@@ -1211,6 +1605,107 @@ PHP);
             self::assertSame(503, $response->getStatusCode());
             self::assertSame('runtime_config_unhealthy', $payload['error']['code']);
             self::assertSame('review.ai_policy must enable AI review outside local/testing.', $payload['error']['message']);
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
+            @unlink($databasePath);
+        }
+    }
+
+    public function testProductionHealthRouteReportsDegradedWhenTurnstilePolicyIsDisabled(): void
+    {
+        $databasePath = sys_get_temp_dir() . '/vertoad-health-turnstile-disabled-' . bin2hex(random_bytes(4)) . '.sqlite';
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ],
+            'redis' => [
+                'driver' => 'predis',
+                'password' => 'unit-test-redis-secret',
+                'prefix' => 'vertoad:test:',
+            ],
+            'storage' => [
+                's3' => [
+                    'endpoint' => 'https://r2.example.test',
+                    'bucket' => 'creative-assets',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                    'path_style_endpoint' => true,
+                    'public_base_url' => 'https://assets.example.test',
+                ],
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+            'ai_review' => [
+                'api_key' => 'unit-test-ai-review-key',
+            ],
+            'turnstile' => [
+                'secret_key' => 'unit-test-turnstile-secret',
+            ],
+        ], 'vertoad-appfactory-health-turnstile-disabled-');
+
+        try {
+            $connection = \Doctrine\DBAL\DriverManager::getConnection([
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ]);
+            $this->createSystemConfigSchema($connection);
+            $this->insertSystemConfig($connection, 'security.rate_limit', 1, ['limit' => 60, 'window_seconds' => 60]);
+            $this->insertSystemConfig($connection, 'attribution.default_window_seconds', 1, ['seconds' => 604800]);
+            $this->insertSystemConfig($connection, 'serving.event_validation', 1, [
+                'min_visible_ratio' => 0.5,
+                'min_visible_ms' => 1000,
+                'repeat_click_window_seconds' => 30,
+            ]);
+            $this->insertSystemConfig($connection, 'review.ai_policy', 1, [
+                'enabled' => true,
+                'provider' => 'openai_compatible',
+                'base_url' => 'https://ai.example.test/v1',
+                'model' => 'review-model',
+                'prompt' => 'Return JSON.',
+                'timeout_seconds' => 60,
+                'max_input_tokens' => 12000,
+                'max_output_tokens' => 2000,
+                'temperature' => 0.2,
+            ]);
+            $this->insertSystemConfig($connection, 'assets.upload_policy', 1, $this->assetUploadPolicyConfig());
+            $this->insertSystemConfig($connection, 'webhook.delivery_policy', 1, $this->webhookDeliveryPolicyConfig());
+            $this->insertSystemConfig($connection, 'security.turnstile_policy', 1, [
+                'enabled' => false,
+                'timeout_seconds' => 5,
+                'protected_endpoints' => ['POST:/api/v1/auth/login'],
+            ]);
+
+            $configPath = $basePath . '/config/routes.php';
+            file_put_contents($configPath, <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+use Slim\App;
+use VertoAD\Http\Action\HealthAction;
+
+return static function (App $app): void {
+    $app->get('/api/v1/health', HealthAction::class);
+};
+PHP);
+
+            $app = AppFactory::create($basePath);
+            $request = (new ServerRequestFactory())->createServerRequest('GET', '/api/v1/health');
+            $response = $app->handle($request);
+            $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+            self::assertSame(503, $response->getStatusCode());
+            self::assertSame('runtime_config_unhealthy', $payload['error']['code']);
+            self::assertSame('security.turnstile_policy must be enabled outside local/testing.', $payload['error']['message']);
         } finally {
             $this->removeTemporaryAppBasePath($basePath);
             @unlink($databasePath);
@@ -1754,6 +2249,24 @@ PHP);
         );
     }
 
+    private function createAuditLogSchema(Connection $connection): void
+    {
+        $connection->executeStatement(
+            'CREATE TABLE audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NULL,
+                actor_user_id INTEGER NULL,
+                action VARCHAR(160) NOT NULL,
+                subject_type VARCHAR(120) NOT NULL,
+                subject_id INTEGER NULL,
+                ip_address BLOB NULL,
+                user_agent VARCHAR(512) NULL,
+                metadata_json TEXT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )',
+        );
+    }
+
     /**
      * @param array<string, mixed> $value
      */
@@ -1848,6 +2361,26 @@ PHP);
             'http_timeout_seconds' => 5,
             'max_retry_count' => 3,
             'retry_base_backoff_seconds' => 300,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function turnstilePolicyConfig(): array
+    {
+        return [
+            'enabled' => true,
+            'timeout_seconds' => 5,
+            'protected_endpoints' => [
+                'POST:/api/v1/auth/register',
+                'POST:/api/v1/auth/login',
+                'POST:/api/v1/auth/password-reset/request',
+                'POST:/api/v1/auth/password-reset/confirm',
+                'POST:/api/v1/billing/recharge-keys/redeem',
+                'GET:/api/v1/oauth/authorize',
+                'POST:/api/v1/oauth/consent',
+            ],
         ];
     }
 

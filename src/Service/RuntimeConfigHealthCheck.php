@@ -13,9 +13,13 @@ final readonly class RuntimeConfigHealthCheck
         $this->check = \Closure::fromCallable($check);
     }
 
-    public static function fromSystemConfig(SystemConfigService $configs, ?callable $aiReviewApiKeyResolver = null): self
+    public static function fromSystemConfig(
+        SystemConfigService $configs,
+        ?callable $aiReviewApiKeyResolver = null,
+        ?callable $turnstileSecretResolver = null,
+    ): self
     {
-        return new self(static function () use ($configs, $aiReviewApiKeyResolver): void {
+        return new self(static function () use ($configs, $aiReviewApiKeyResolver, $turnstileSecretResolver): void {
             $configs->assetUploadPolicy();
             $configs->attributionDefaultWindowSeconds();
             $configs->rateLimitPolicy();
@@ -31,6 +35,16 @@ final readonly class RuntimeConfigHealthCheck
                 }
             }
             $configs->webhookDeliveryPolicy();
+            $turnstilePolicy = $configs->turnstilePolicy();
+            if ($turnstileSecretResolver !== null) {
+                if (!$turnstilePolicy->enabled) {
+                    throw new \RuntimeException('security.turnstile_policy must be enabled outside local/testing.');
+                }
+
+                if (trim((string) $turnstileSecretResolver()) === '') {
+                    throw new \RuntimeException('TURNSTILE_SECRET_KEY is required outside local/testing when security.turnstile_policy is enabled.');
+                }
+            }
         });
     }
 

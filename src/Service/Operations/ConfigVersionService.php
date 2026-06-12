@@ -11,6 +11,7 @@ use VertoAD\Domain\Assets\AssetUploadPolicy;
 use RuntimeException;
 use VertoAD\Domain\Operations\ConfigVersion;
 use VertoAD\Domain\Review\AiReviewPolicy;
+use VertoAD\Domain\Security\TurnstilePolicy;
 use VertoAD\Domain\Webhooks\WebhookDeliveryPolicy;
 use VertoAD\Repository\Operations\ConfigVersionRepositoryInterface;
 use VertoAD\Service\AuditLogService;
@@ -20,6 +21,7 @@ final readonly class ConfigVersionService
     private const ASSET_UPLOAD_POLICY_KEY = 'assets.upload_policy';
     private const AI_REVIEW_POLICY_KEY = 'review.ai_policy';
     private const WEBHOOK_DELIVERY_POLICY_KEY = 'webhook.delivery_policy';
+    private const TURNSTILE_POLICY_KEY = 'security.turnstile_policy';
     private const REQUIRED_BLOCKED_EXTENSIONS = ['html', 'htm', 'js', 'mjs', 'svg'];
     private const REQUIRED_BLOCKED_CONTENT_TYPES = ['text/html', 'application/javascript', 'text/javascript', 'image/svg+xml'];
 
@@ -82,7 +84,7 @@ final readonly class ConfigVersionService
         $this->assertValidValue($configKey, $value);
         $versionNumber = $this->versions->nextVersionNumber($configKey);
 
-        return $this->versions->append(new ConfigVersion(
+        $created = $this->versions->append(new ConfigVersion(
             version_id: 'cfgv_' . sha1($configKey . '|' . $versionNumber . '|' . json_encode($value, JSON_THROW_ON_ERROR)),
             config_key: $configKey,
             version_number: $versionNumber,
@@ -90,6 +92,18 @@ final readonly class ConfigVersionService
             created_by_user_id: $createdByUserId,
             created_at: new DateTimeImmutable(),
         ));
+        $this->audit->record(
+            action: 'operations.config.version_created',
+            subjectType: 'config_version',
+            actorUserId: $createdByUserId,
+            metadata: [
+                'config_key' => $created->config_key,
+                'created_version_id' => $created->version_id,
+                'version_number' => $created->version_number,
+            ],
+        );
+
+        return $created;
     }
 
     private function assertValidKey(string $configKey): void
@@ -129,6 +143,10 @@ final readonly class ConfigVersionService
 
         if ($configKey === self::WEBHOOK_DELIVERY_POLICY_KEY) {
             $this->assertValidWebhookDeliveryPolicy($value);
+        }
+
+        if ($configKey === self::TURNSTILE_POLICY_KEY) {
+            $this->assertValidTurnstilePolicy($value);
         }
     }
 
@@ -220,6 +238,18 @@ final readonly class ConfigVersionService
             WebhookDeliveryPolicy::fromArray($value);
         } catch (InvalidArgumentException $exception) {
             throw new InvalidArgumentException('Invalid webhook.delivery_policy ' . $exception->getMessage(), 0, $exception);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     */
+    private function assertValidTurnstilePolicy(array $value): void
+    {
+        try {
+            TurnstilePolicy::fromArray($value);
+        } catch (InvalidArgumentException $exception) {
+            throw new InvalidArgumentException('Invalid security.turnstile_policy ' . $exception->getMessage(), 0, $exception);
         }
     }
 }

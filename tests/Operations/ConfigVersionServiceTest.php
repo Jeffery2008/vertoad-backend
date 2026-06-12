@@ -22,7 +22,8 @@ final class ConfigVersionServiceTest extends TestCase
         self::assertTrue(class_exists($repositoryClass), $repositoryClass . ' must exist.');
         self::assertTrue(class_exists($serviceClass), $serviceClass . ' must exist.');
 
-        $service = new $serviceClass(new $repositoryClass(), new AuditLogService(new ConfigAuditRepository()));
+        $auditRepository = new ConfigAuditRepository();
+        $service = new $serviceClass(new $repositoryClass(), new AuditLogService($auditRepository));
 
         $first = $service->createVersion('security.rate_limit', ['limit' => 60, 'window_seconds' => 60], 7);
         $second = $service->createVersion('security.rate_limit', ['limit' => 100, 'window_seconds' => 60], 7);
@@ -34,6 +35,13 @@ final class ConfigVersionServiceTest extends TestCase
         self::assertSame(['limit' => 100, 'window_seconds' => 60], $this->value($second, 'value'));
         self::assertSame(7, $this->value($second, 'created_by_user_id'));
         self::assertCount(2, $versions);
+        self::assertCount(2, $auditRepository->entries);
+        self::assertSame('operations.config.version_created', $auditRepository->entries[0]->action);
+        self::assertSame('config_version', $auditRepository->entries[0]->subjectType);
+        self::assertSame(7, $auditRepository->entries[0]->actorUserId);
+        self::assertSame('security.rate_limit', $auditRepository->entries[0]->metadata['config_key'] ?? null);
+        self::assertSame((string) $this->value($first, 'version_id'), $auditRepository->entries[0]->metadata['created_version_id'] ?? null);
+        self::assertSame(1, $auditRepository->entries[0]->metadata['version_number'] ?? null);
     }
 
     public function testRejectsInvalidConfigKeysAndValues(): void
@@ -80,10 +88,17 @@ final class ConfigVersionServiceTest extends TestCase
         self::assertSame(3, $this->value($rolledBack, 'version_number'));
         self::assertSame(['seconds' => 10], $this->value($rolledBack, 'value'));
         self::assertSame(11, $this->value($rolledBack, 'created_by_user_id'));
-        self::assertSame('operations.config.rollback', $auditRepository->entries[0]->action ?? null);
-        self::assertSame('config_version', $auditRepository->entries[0]->subjectType ?? null);
-        self::assertSame((string) $this->value($first, 'version_id'), $auditRepository->entries[0]->metadata['rolled_back_to_version_id'] ?? null);
-        self::assertSame((string) $this->value($rolledBack, 'version_id'), $auditRepository->entries[0]->metadata['created_version_id'] ?? null);
+        self::assertSame([
+            'operations.config.version_created',
+            'operations.config.version_created',
+            'operations.config.version_created',
+            'operations.config.rollback',
+        ], array_map(static fn (AuditLogEntry $entry): string => $entry->action, $auditRepository->entries));
+        $rollbackAudit = $auditRepository->entries[3];
+        self::assertSame('operations.config.rollback', $rollbackAudit->action);
+        self::assertSame('config_version', $rollbackAudit->subjectType);
+        self::assertSame((string) $this->value($first, 'version_id'), $rollbackAudit->metadata['rolled_back_to_version_id'] ?? null);
+        self::assertSame((string) $this->value($rolledBack, 'version_id'), $rollbackAudit->metadata['created_version_id'] ?? null);
     }
 
     public function testRollbackRejectsMissingVersionAndNestedSecretValues(): void
@@ -261,6 +276,55 @@ final class ConfigVersionServiceTest extends TestCase
         }
     }
 
+    public function testTurnstilePolicyVersionAcceptsValidNonSecretPolicy(): void
+    {
+        $service = new ConfigVersionService(new InMemoryConfigVersionRepository(), new AuditLogService(new ConfigAuditRepository()));
+
+        $created = $service->createVersion('security.turnstile_policy', $this->validTurnstilePolicyConfig(), 7);
+
+        self::assertSame(1, $this->value($created, 'version_number'));
+        self::assertSame('security.turnstile_policy', $this->value($created, 'config_key'));
+        self::assertSame($this->validTurnstilePolicyConfig(), $this->value($created, 'value'));
+    }
+
+    public function testTurnstilePolicyVersionsRejectInvalidUnknownOrSecretValues(): void
+    {
+        $service = new ConfigVersionService(new InMemoryConfigVersionRepository(), new AuditLogService(new ConfigAuditRepository()));
+        $valid = $this->validTurnstilePolicyConfig();
+
+        foreach (
+            [
+                'missing enabled flag' => [
+                    'timeout_seconds' => 5,
+                    'protected_endpoints' => ['POST:/api/v1/auth/login'],
+                ],
+                'secret key' => [...$valid, 'secret_key' => 'must-stay-in-env'],
+                'unknown policy field' => [...$valid, 'unexpected' => true],
+                'database controlled verify url' => [...$valid, 'verify_url' => 'https://attacker.example.test/siteverify'],
+                'zero timeout' => [...$valid, 'timeout_seconds' => 0],
+                'oversized timeout' => [...$valid, 'timeout_seconds' => 31],
+                'empty endpoints' => [...$valid, 'protected_endpoints' => []],
+                'wildcard endpoint' => [...$valid, 'protected_endpoints' => ['*']],
+                'map endpoints' => [...$valid, 'protected_endpoints' => ['POST:/api/v1/auth/login' => true]],
+                'non-string endpoint' => [...$valid, 'protected_endpoints' => [42]],
+                'unsupported method' => [...$valid, 'protected_endpoints' => ['GET:/api/v1/auth/login']],
+                'relative endpoint path' => [...$valid, 'protected_endpoints' => ['POST:api/v1/auth/login']],
+                'string timeout' => [...$valid, 'timeout_seconds' => '5'],
+            ] as $case => $value
+        ) {
+            try {
+                $service->createVersion('security.turnstile_policy', $value, 7);
+                self::fail('Invalid security.turnstile_policy value must be rejected: ' . $case);
+            } catch (\InvalidArgumentException $exception) {
+                if ($case === 'secret key') {
+                    self::assertSame('Secret config values must stay in environment secrets.', $exception->getMessage());
+                } else {
+                    self::assertStringStartsWith('Invalid security.turnstile_policy ', $exception->getMessage());
+                }
+            }
+        }
+    }
+
     public function testAssetUploadPolicyRollbackRejectsInvalidHistoricalPolicyWithoutAppendingVersion(): void
     {
         $repository = new InMemoryConfigVersionRepository();
@@ -380,6 +444,26 @@ final class ConfigVersionServiceTest extends TestCase
             'http_timeout_seconds' => 5,
             'max_retry_count' => 3,
             'retry_base_backoff_seconds' => 300,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function validTurnstilePolicyConfig(): array
+    {
+        return [
+            'enabled' => true,
+            'timeout_seconds' => 5,
+            'protected_endpoints' => [
+                'POST:/api/v1/auth/register',
+                'POST:/api/v1/auth/login',
+                'POST:/api/v1/auth/password-reset/request',
+                'POST:/api/v1/auth/password-reset/confirm',
+                'POST:/api/v1/billing/recharge-keys/redeem',
+                'GET:/api/v1/oauth/authorize',
+                'POST:/api/v1/oauth/consent',
+            ],
         ];
     }
 }

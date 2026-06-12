@@ -108,7 +108,6 @@ return [
     'turnstile' => [
         'site_key' => getenv('TURNSTILE_SITE_KEY') ?: '',
         'secret_key' => getenv('TURNSTILE_SECRET_KEY') ?: '',
-        'verify_url' => getenv('TURNSTILE_VERIFY_URL') ?: 'https://challenges.cloudflare.com/turnstile/v0/siteverify',
     ],
     'security' => [
         'rate_limit' => [

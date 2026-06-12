@@ -129,6 +129,20 @@ final class SystemConfigRepositoryTest extends TestCase
             'max_retry_count' => 3,
             'retry_base_backoff_seconds' => 300,
         ]);
+        $turnstilePolicy = [
+            'enabled' => true,
+            'timeout_seconds' => 5,
+            'protected_endpoints' => [
+                'POST:/api/v1/auth/register',
+                'POST:/api/v1/auth/login',
+                'POST:/api/v1/auth/password-reset/request',
+                'POST:/api/v1/auth/password-reset/confirm',
+                'POST:/api/v1/billing/recharge-keys/redeem',
+                'GET:/api/v1/oauth/authorize',
+                'POST:/api/v1/oauth/consent',
+            ],
+        ];
+        $this->insertVersion($connection, 'security.turnstile_policy', 1, $turnstilePolicy);
 
         $repository = new SystemConfigRepository($connection);
 
@@ -140,6 +154,7 @@ final class SystemConfigRepositoryTest extends TestCase
             'assets.upload_policy' => $assetUploadPolicy,
             'attribution.default_window_seconds' => ['seconds' => 7200],
             'security.rate_limit' => ['limit' => 60, 'window_seconds' => 60],
+            'security.turnstile_policy' => $turnstilePolicy,
             'serving.event_validation' => [
                 'min_visible_ratio' => 0.5,
                 'min_visible_ms' => 1000,

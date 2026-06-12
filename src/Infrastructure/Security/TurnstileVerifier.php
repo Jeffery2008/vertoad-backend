@@ -10,6 +10,8 @@ use Throwable;
 
 final readonly class TurnstileVerifier
 {
+    public const CLOUDFLARE_SITEVERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
+
     /**
      * @param callable(string, array<string, string>): array<string, mixed>|null $transport
      */
@@ -17,7 +19,12 @@ final readonly class TurnstileVerifier
         private string $secretKey,
         private string $verifyUrl,
         private mixed $transport = null,
+        private int $timeoutSeconds = 5,
+        private bool $allowUnconfiguredSuccess = true,
     ) {
+        if ($this->timeoutSeconds < 1) {
+            throw new RuntimeException('Turnstile timeout must be positive.');
+        }
     }
 
     public function isConfigured(): bool
@@ -39,7 +46,7 @@ final readonly class TurnstileVerifier
 
         if (!$this->isConfigured()) {
             return new TurnstileVerificationResult(
-                success: true,
+                success: $this->allowUnconfiguredSuccess,
                 code: 'turnstile_not_configured',
                 message: 'Turnstile verification is not configured.',
                 providerAvailable: false,
@@ -103,7 +110,7 @@ final readonly class TurnstileVerifier
                 'method' => 'POST',
                 'header' => "Content-Type: application/x-www-form-urlencoded\r\n",
                 'content' => http_build_query($payload),
-                'timeout' => 5,
+                'timeout' => $this->timeoutSeconds,
                 'ignore_errors' => true,
             ],
         ]);

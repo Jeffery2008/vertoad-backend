@@ -177,6 +177,25 @@ VALUES
         @super_admin_user_id
     ),
     (
+        'cfgv_bootstrap_security_turnstile_policy_v1',
+        'security.turnstile_policy',
+        1,
+        JSON_OBJECT(
+            'enabled', true,
+            'timeout_seconds', 5,
+            'protected_endpoints', JSON_ARRAY(
+                'POST:/api/v1/auth/register',
+                'POST:/api/v1/auth/login',
+                'POST:/api/v1/auth/password-reset/request',
+                'POST:/api/v1/auth/password-reset/confirm',
+                'POST:/api/v1/billing/recharge-keys/redeem',
+                'GET:/api/v1/oauth/authorize',
+                'POST:/api/v1/oauth/consent'
+            )
+        ),
+        @super_admin_user_id
+    ),
+    (
         'cfgv_bootstrap_review_ai_policy_v1',
         'review.ai_policy',
         1,

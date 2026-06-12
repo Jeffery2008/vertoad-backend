@@ -7,6 +7,7 @@ namespace VertoAD\Service;
 use UnexpectedValueException;
 use VertoAD\Domain\Assets\AssetUploadPolicy;
 use VertoAD\Domain\Review\AiReviewPolicy;
+use VertoAD\Domain\Security\TurnstilePolicy;
 use VertoAD\Domain\Serving\ServingEventPolicy;
 use VertoAD\Domain\Webhooks\WebhookDeliveryPolicy;
 use VertoAD\Infrastructure\Security\RateLimitPolicy;
@@ -21,6 +22,7 @@ final class SystemConfigService
     private const ASSET_UPLOAD_POLICY_KEY = 'assets.upload_policy';
     private const AI_REVIEW_POLICY_KEY = 'review.ai_policy';
     private const WEBHOOK_DELIVERY_POLICY_KEY = 'webhook.delivery_policy';
+    private const TURNSTILE_POLICY_KEY = 'security.turnstile_policy';
     private const FALLBACK_PUBLISHER_PERCENT = 70;
     private const FALLBACK_ATTRIBUTION_DEFAULT_WINDOW_SECONDS = 604800;
     private const FALLBACK_RATE_LIMIT_LIMIT = 60;
@@ -187,6 +189,25 @@ final class SystemConfigService
             return WebhookDeliveryPolicy::fromArray($config);
         } catch (\InvalidArgumentException $exception) {
             throw new UnexpectedValueException('Invalid webhook.delivery_policy ' . $exception->getMessage(), previous: $exception);
+        }
+    }
+
+    public function turnstilePolicy(): TurnstilePolicy
+    {
+        $config = $this->findLatestValue(self::TURNSTILE_POLICY_KEY);
+
+        if ($config === null) {
+            if (!$this->allowRuntimeFallbacks) {
+                throw new \RuntimeException('Missing required system config: security.turnstile_policy.');
+            }
+
+            return TurnstilePolicy::default();
+        }
+
+        try {
+            return TurnstilePolicy::fromArray($config);
+        } catch (\InvalidArgumentException $exception) {
+            throw new UnexpectedValueException('Invalid security.turnstile_policy ' . $exception->getMessage(), previous: $exception);
         }
     }
 

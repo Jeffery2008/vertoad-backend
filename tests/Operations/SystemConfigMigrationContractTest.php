@@ -69,6 +69,13 @@ final class SystemConfigMigrationContractTest extends TestCase
             "JSON_OBJECT('batch_size', 50, 'http_timeout_seconds', 5, 'max_retry_count', 3, 'retry_base_backoff_seconds', 300)",
             $bootstrapSql,
         );
+        self::assertStringContainsString("'security.turnstile_policy'", $bootstrapSql);
+        self::assertStringNotContainsString("'verify_url'", $bootstrapSql);
+        self::assertStringContainsString("'timeout_seconds', 5", $bootstrapSql);
+        self::assertStringContainsString("'protected_endpoints', JSON_ARRAY(", $bootstrapSql);
+        self::assertStringContainsString("'POST:/api/v1/auth/login'", $bootstrapSql);
+        self::assertStringContainsString("'GET:/api/v1/oauth/authorize'", $bootstrapSql);
+        self::assertStringNotContainsString('TURNSTILE_SECRET_KEY', $bootstrapSql);
         self::assertStringContainsString('@super_admin_user_id', $bootstrapSql);
     }
 

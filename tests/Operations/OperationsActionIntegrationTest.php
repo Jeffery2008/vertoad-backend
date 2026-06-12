@@ -157,7 +157,12 @@ final class OperationsActionIntegrationTest extends TestCase
             (string) $retry['body']['data']['signature_header'],
         ));
         self::assertSame(404, $retryMissing['status']);
-        self::assertSame('operations.error.raw_context.viewed', $auditRepository->entries[0]->action);
+        $rawContextAudit = array_values(array_filter(
+            $auditRepository->entries,
+            static fn ($entry): bool => $entry->action === 'operations.error.raw_context.viewed',
+        ));
+        self::assertCount(1, $rawContextAudit);
+        self::assertSame($captured['error_id'], $rawContextAudit[0]->metadata['error_id'] ?? null);
     }
 
     private function createApp(

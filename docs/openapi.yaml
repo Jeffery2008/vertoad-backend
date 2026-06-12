@@ -3005,7 +3005,7 @@ paths:
         - Operations
       operationId: createConfigVersion
       summary: Create a new config version.
-      description: Creates an audited business configuration version. `review.ai_policy` stores the OpenAI-compatible provider base URL, model, prompt, timeout, token limits, temperature, and enabled state; `AI_REVIEW_API_KEY` stays in environment secrets and is rejected if submitted in the config value.
+      description: Creates an audited business configuration version. Provider API keys, Turnstile secrets, signing secrets, passwords, tokens, and provider egress URLs stay out of database-backed config values.
       security:
         - BearerAuth: []
       requestBody:
@@ -3013,18 +3013,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required:
-                - config_key
-                - value
-              properties:
-                config_key:
-                  type: string
-                  minLength: 1
-                value:
-                  type: object
-                  additionalProperties: true
-              additionalProperties: false
+              $ref: "#/components/schemas/ConfigVersionCreateRequest"
       responses:
         "201":
           description: Config version created.
@@ -6048,15 +6037,381 @@ components:
           type: integer
           minimum: 1
         value:
-          type: object
-          description: Versioned business configuration value. For `review.ai_policy`, include `enabled`, `provider`, `base_url`, `model`, `prompt`, `timeout_seconds`, `max_input_tokens`, `max_output_tokens`, and `temperature`; for `webhook.delivery_policy`, include bounded integers `batch_size` (1-500), `http_timeout_seconds` (1-60), `max_retry_count` (1-20), and `retry_base_backoff_seconds` (1-86400); do not include provider API keys, signing secrets, or other secrets.
-          additionalProperties: true
+          $ref: "#/components/schemas/ConfigVersionValue"
         created_by_user_id:
           type: integer
           minimum: 0
         created_at:
           type: string
           format: date-time
+      additionalProperties: false
+    ConfigVersionCreateRequest:
+      oneOf:
+        - $ref: "#/components/schemas/RateLimitConfigVersionCreateRequest"
+        - $ref: "#/components/schemas/AttributionWindowConfigVersionCreateRequest"
+        - $ref: "#/components/schemas/ServingEventValidationConfigVersionCreateRequest"
+        - $ref: "#/components/schemas/AssetUploadPolicyConfigVersionCreateRequest"
+        - $ref: "#/components/schemas/AiReviewPolicyConfigVersionCreateRequest"
+        - $ref: "#/components/schemas/WebhookDeliveryPolicyConfigVersionCreateRequest"
+        - $ref: "#/components/schemas/SecurityTurnstilePolicyConfigVersionCreateRequest"
+    RateLimitConfigVersionCreateRequest:
+      type: object
+      required:
+        - config_key
+        - value
+      properties:
+        config_key:
+          const: security.rate_limit
+        value:
+          $ref: "#/components/schemas/RateLimitPolicyConfig"
+      additionalProperties: false
+    AttributionWindowConfigVersionCreateRequest:
+      type: object
+      required:
+        - config_key
+        - value
+      properties:
+        config_key:
+          const: attribution.default_window_seconds
+        value:
+          $ref: "#/components/schemas/AttributionWindowConfig"
+      additionalProperties: false
+    ServingEventValidationConfigVersionCreateRequest:
+      type: object
+      required:
+        - config_key
+        - value
+      properties:
+        config_key:
+          const: serving.event_validation
+        value:
+          $ref: "#/components/schemas/ServingEventValidationConfig"
+      additionalProperties: false
+    AssetUploadPolicyConfigVersionCreateRequest:
+      type: object
+      required:
+        - config_key
+        - value
+      properties:
+        config_key:
+          const: assets.upload_policy
+        value:
+          $ref: "#/components/schemas/AssetUploadPolicyConfig"
+      additionalProperties: false
+    AiReviewPolicyConfigVersionCreateRequest:
+      type: object
+      required:
+        - config_key
+        - value
+      properties:
+        config_key:
+          const: review.ai_policy
+        value:
+          $ref: "#/components/schemas/AiReviewPolicyConfig"
+      additionalProperties: false
+    WebhookDeliveryPolicyConfigVersionCreateRequest:
+      type: object
+      required:
+        - config_key
+        - value
+      properties:
+        config_key:
+          const: webhook.delivery_policy
+        value:
+          $ref: "#/components/schemas/WebhookDeliveryPolicyConfig"
+      additionalProperties: false
+    SecurityTurnstilePolicyConfigVersionCreateRequest:
+      type: object
+      required:
+        - config_key
+        - value
+      properties:
+        config_key:
+          const: security.turnstile_policy
+        value:
+          $ref: "#/components/schemas/SecurityTurnstilePolicyConfig"
+      additionalProperties: false
+    ConfigVersionValue:
+      oneOf:
+        - $ref: "#/components/schemas/RateLimitPolicyConfig"
+        - $ref: "#/components/schemas/AttributionWindowConfig"
+        - $ref: "#/components/schemas/ServingEventValidationConfig"
+        - $ref: "#/components/schemas/AssetUploadPolicyConfig"
+        - $ref: "#/components/schemas/AiReviewPolicyConfig"
+        - $ref: "#/components/schemas/WebhookDeliveryPolicyConfig"
+        - $ref: "#/components/schemas/SecurityTurnstilePolicyConfig"
+    RateLimitPolicyConfig:
+      type: object
+      required:
+        - limit
+        - window_seconds
+      properties:
+        limit:
+          type: integer
+          minimum: 1
+        window_seconds:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    AttributionWindowConfig:
+      type: object
+      required:
+        - seconds
+      properties:
+        seconds:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    ServingEventValidationConfig:
+      type: object
+      required:
+        - min_visible_ratio
+        - min_visible_ms
+        - repeat_click_window_seconds
+      properties:
+        min_visible_ratio:
+          type: number
+          minimum: 0
+          maximum: 1
+        min_visible_ms:
+          type: integer
+          minimum: 1
+        repeat_click_window_seconds:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    AssetUploadPolicyConfig:
+      type: object
+      required:
+        - upload_intent_ttl_seconds
+        - blocked_extensions
+        - blocked_content_types
+        - types
+      properties:
+        upload_intent_ttl_seconds:
+          type: integer
+          minimum: 60
+        blocked_extensions:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+        blocked_content_types:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+        types:
+          type: object
+          required:
+            - image
+            - video
+            - fabric_snapshot
+            - text
+          properties:
+            image:
+              $ref: "#/components/schemas/AssetUploadImageTypeConfig"
+            video:
+              $ref: "#/components/schemas/AssetUploadVideoTypeConfig"
+            fabric_snapshot:
+              $ref: "#/components/schemas/AssetUploadBasicTypeConfig"
+            text:
+              $ref: "#/components/schemas/AssetUploadBasicTypeConfig"
+          additionalProperties: false
+      additionalProperties: false
+    AssetUploadImageTypeConfig:
+      type: object
+      required:
+        - max_bytes
+        - max_width
+        - max_height
+        - allowed_content_types
+        - magic_signatures
+      properties:
+        max_bytes:
+          type: integer
+          minimum: 1
+        max_width:
+          type: integer
+          minimum: 1
+        max_height:
+          type: integer
+          minimum: 1
+        allowed_content_types:
+          type: object
+          minProperties: 1
+          additionalProperties:
+            type: string
+            minLength: 1
+        magic_signatures:
+          type: object
+          minProperties: 1
+          additionalProperties:
+            type: array
+            minItems: 1
+            items:
+              type: object
+              additionalProperties: true
+      additionalProperties: false
+    AssetUploadVideoTypeConfig:
+      type: object
+      required:
+        - max_bytes
+        - max_width
+        - max_height
+        - max_duration_seconds
+        - allowed_content_types
+        - magic_signatures
+      properties:
+        max_bytes:
+          type: integer
+          minimum: 1
+        max_width:
+          type: integer
+          minimum: 1
+        max_height:
+          type: integer
+          minimum: 1
+        max_duration_seconds:
+          type: number
+          exclusiveMinimum: 0
+        allowed_content_types:
+          type: object
+          minProperties: 1
+          additionalProperties:
+            type: string
+            minLength: 1
+        magic_signatures:
+          type: object
+          minProperties: 1
+          additionalProperties:
+            type: array
+            minItems: 1
+            items:
+              type: object
+              additionalProperties: true
+      additionalProperties: false
+    AssetUploadBasicTypeConfig:
+      type: object
+      required:
+        - max_bytes
+        - allowed_content_types
+        - magic_signatures
+      properties:
+        max_bytes:
+          type: integer
+          minimum: 1
+        allowed_content_types:
+          type: object
+          minProperties: 1
+          additionalProperties:
+            type: string
+            minLength: 1
+        magic_signatures:
+          type: object
+          minProperties: 1
+          additionalProperties:
+            type: array
+            minItems: 1
+            items:
+              type: object
+              additionalProperties: true
+      additionalProperties: false
+    AiReviewPolicyConfig:
+      type: object
+      required:
+        - enabled
+        - provider
+        - base_url
+        - model
+        - prompt
+        - timeout_seconds
+        - max_input_tokens
+        - max_output_tokens
+        - temperature
+      properties:
+        enabled:
+          type: boolean
+        provider:
+          const: openai_compatible
+        base_url:
+          type: string
+          format: uri
+        model:
+          type: string
+          minLength: 1
+        prompt:
+          type: string
+          minLength: 1
+        timeout_seconds:
+          type: integer
+          minimum: 1
+          maximum: 60
+        max_input_tokens:
+          type: integer
+          minimum: 1
+        max_output_tokens:
+          type: integer
+          minimum: 1
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+      additionalProperties: false
+    WebhookDeliveryPolicyConfig:
+      type: object
+      required:
+        - batch_size
+        - http_timeout_seconds
+        - max_retry_count
+        - retry_base_backoff_seconds
+      properties:
+        batch_size:
+          type: integer
+          minimum: 1
+          maximum: 500
+        http_timeout_seconds:
+          type: integer
+          minimum: 1
+          maximum: 60
+        max_retry_count:
+          type: integer
+          minimum: 1
+          maximum: 20
+        retry_base_backoff_seconds:
+          type: integer
+          minimum: 1
+          maximum: 86400
+      additionalProperties: false
+    SecurityTurnstilePolicyConfig:
+      type: object
+      description: Cloudflare Turnstile runtime policy. The verification endpoint is fixed in backend code to Cloudflare's official siteverify URL and is intentionally not configurable through database-backed business config.
+      required:
+        - enabled
+        - timeout_seconds
+        - protected_endpoints
+      properties:
+        enabled:
+          type: boolean
+        timeout_seconds:
+          type: integer
+          minimum: 1
+          maximum: 30
+        protected_endpoints:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum:
+              - POST:/api/v1/auth/register
+              - POST:/api/v1/auth/login
+              - POST:/api/v1/auth/password-reset/request
+              - POST:/api/v1/auth/password-reset/confirm
+              - POST:/api/v1/billing/recharge-keys/redeem
+              - GET:/api/v1/oauth/authorize
+              - POST:/api/v1/oauth/consent
       additionalProperties: false
     WebhookEndpointCreateRequest:
       type: object

@@ -9,23 +9,43 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\MiddlewareInterface;
 use Psr\Http\Server\RequestHandlerInterface;
+use VertoAD\Domain\Security\TurnstilePolicy;
 use VertoAD\Infrastructure\Security\ClientIpResolver;
 use VertoAD\Infrastructure\Security\TurnstileVerifier;
 use VertoAD\Service\AuditLogService;
 
 final readonly class TurnstileMiddleware implements MiddlewareInterface
 {
+    private TurnstilePolicy $policy;
+
     public function __construct(
         private ResponseFactoryInterface $responseFactory,
         private TurnstileVerifier $verifier,
         private ?AuditLogService $audit = null,
         private ?ClientIpResolver $ipResolver = null,
+        ?TurnstilePolicy $policy = null,
+        private bool $allowRuntimeBypass = true,
     ) {
+        $this->policy = $policy ?? TurnstilePolicy::default();
     }
 
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
-        if (!$this->verifier->isConfigured()) {
+        if (!$this->policy->enabled && !$this->allowRuntimeBypass) {
+            $this->audit($request, 'security.turnstile.denied', 'turnstile_policy_disabled');
+
+            return $this->errorResponse(
+                503,
+                'turnstile_policy_disabled',
+                'Turnstile verification is disabled by runtime policy.',
+            );
+        }
+
+        if (!$this->policy->protects($request->getMethod(), $request->getUri()->getPath())) {
+            return $handler->handle($request);
+        }
+
+        if (!$this->verifier->isConfigured() && $this->allowRuntimeBypass) {
             return $handler->handle($request);
         }
 
@@ -37,7 +57,7 @@ final readonly class TurnstileMiddleware implements MiddlewareInterface
         }
 
         $this->audit($request, 'security.turnstile.denied', $result->code);
-        $statusCode = $result->code === 'turnstile_provider_unavailable' ? 503 : 400;
+        $statusCode = in_array($result->code, ['turnstile_provider_unavailable', 'turnstile_not_configured'], true) ? 503 : 400;
 
         return $this->errorResponse($statusCode, $result->code, $result->message);
     }

@@ -12,6 +12,7 @@ use Psr\Http\Server\RequestHandlerInterface;
 use Slim\App;
 use Slim\Psr7\Factory\ResponseFactory;
 use Slim\Psr7\Factory\ServerRequestFactory;
+use VertoAD\Domain\Security\TurnstilePolicy;
 use VertoAD\Domain\Audit\AuditLogEntry;
 use VertoAD\Http\Middleware\ApiEnvelopeMiddleware;
 use VertoAD\Http\Middleware\TurnstileMiddleware;
@@ -155,6 +156,14 @@ final class TurnstileTest extends TestCase
         self::assertFalse($result->providerAvailable);
     }
 
+    public function testVerifierRejectsInvalidTimeout(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Turnstile timeout must be positive.');
+
+        new TurnstileVerifier('secret-value', 'https://turnstile.example/verify', timeoutSeconds: 0);
+    }
+
     public function testVerifierIgnoresMalformedProviderErrorCodes(): void
     {
         $verifier = new TurnstileVerifier(
@@ -204,6 +213,26 @@ final class TurnstileTest extends TestCase
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('ok', $payload['data']['status']);
         self::assertSame([], $auditRepository->entries);
+    }
+
+    public function testMiddlewareFailsClosedWhenTurnstileSecretIsMissingOutsideLocalTesting(): void
+    {
+        $auditRepository = new CapturingAuditLogRepository();
+        $app = $this->createProtectedApp(
+            new TurnstileVerifier(' ', 'https://turnstile.example/verify', static function (): array {
+                TestCase::fail('Provider should not be called when Turnstile is unconfigured.');
+            }, allowUnconfiguredSuccess: false),
+            new AuditLogService($auditRepository),
+            TurnstilePolicy::default(),
+            allowRuntimeBypass: false,
+        );
+
+        $response = $this->handleJson($app, ['cf_turnstile_token' => 'token-value'], 'turnstile-unconfigured-prod');
+        $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame(503, $response->getStatusCode());
+        self::assertSame('turnstile_not_configured', $payload['error']['code']);
+        self::assertSame('security.turnstile.denied', $auditRepository->entries[0]->action ?? null);
     }
 
     public function testMiddlewareAllowsSuccessAndAuditsAcceptedEvent(): void
@@ -285,6 +314,76 @@ final class TurnstileTest extends TestCase
         self::assertSame('security.turnstile.denied', $auditRepository->entries[0]->action ?? null);
     }
 
+    public function testMiddlewareSkipsVerificationWhenEndpointIsNotProtectedByPolicy(): void
+    {
+        $auditRepository = new CapturingAuditLogRepository();
+        $app = $this->createProtectedApp(
+            new TurnstileVerifier('secret-value', 'https://turnstile.example/verify', static function (): array {
+                TestCase::fail('Provider should not be called for endpoints outside the Turnstile policy.');
+            }),
+            new AuditLogService($auditRepository),
+            new TurnstilePolicy(
+                enabled: true,
+                timeoutSeconds: 5,
+                protectedEndpoints: ['POST:/api/v1/auth/login'],
+            ),
+        );
+
+        $response = $this->handleJson($app, [], 'turnstile-unprotected-endpoint');
+        $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame('ok', $payload['data']['status']);
+        self::assertSame([], $auditRepository->entries);
+    }
+
+    public function testMiddlewareSkipsVerificationWhenPolicyIsDisabled(): void
+    {
+        $auditRepository = new CapturingAuditLogRepository();
+        $app = $this->createProtectedApp(
+            new TurnstileVerifier('secret-value', 'https://turnstile.example/verify', static function (): array {
+                TestCase::fail('Provider should not be called when the Turnstile policy is disabled.');
+            }),
+            new AuditLogService($auditRepository),
+            new TurnstilePolicy(
+                enabled: false,
+                timeoutSeconds: 5,
+                protectedEndpoints: ['POST:/protected'],
+            ),
+        );
+
+        $response = $this->handleJson($app, [], 'turnstile-disabled-policy');
+        $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame('ok', $payload['data']['status']);
+        self::assertSame([], $auditRepository->entries);
+    }
+
+    public function testMiddlewareFailsClosedWhenPolicyIsDisabledOutsideLocalTesting(): void
+    {
+        $auditRepository = new CapturingAuditLogRepository();
+        $app = $this->createProtectedApp(
+            new TurnstileVerifier('secret-value', 'https://turnstile.example/verify', static function (): array {
+                TestCase::fail('Provider should not be called when the Turnstile policy is disabled.');
+            }),
+            new AuditLogService($auditRepository),
+            new TurnstilePolicy(
+                enabled: false,
+                timeoutSeconds: 5,
+                protectedEndpoints: ['POST:/protected'],
+            ),
+            allowRuntimeBypass: false,
+        );
+
+        $response = $this->handleJson($app, ['cf_turnstile_token' => 'token-value'], 'turnstile-disabled-prod');
+        $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame(503, $response->getStatusCode());
+        self::assertSame('turnstile_policy_disabled', $payload['error']['code']);
+        self::assertSame('security.turnstile.denied', $auditRepository->entries[0]->action ?? null);
+    }
+
     /**
      * @param array<string, mixed> $payload
      */
@@ -297,7 +396,12 @@ final class TurnstileTest extends TestCase
             ->withHeader('User-Agent', 'SecurityTest/1.0'));
     }
 
-    private function createProtectedApp(TurnstileVerifier $verifier, AuditLogService $audit): App
+    private function createProtectedApp(
+        TurnstileVerifier $verifier,
+        AuditLogService $audit,
+        ?TurnstilePolicy $policy = null,
+        bool $allowRuntimeBypass = true,
+    ): App
     {
         $app = new App(new ResponseFactory());
         $responseFactory = $app->getResponseFactory();
@@ -305,7 +409,7 @@ final class TurnstileTest extends TestCase
             $response->getBody()->write(json_encode(['status' => 'ok'], JSON_THROW_ON_ERROR));
 
             return $response->withHeader('Content-Type', 'application/json');
-        })->add(new TurnstileMiddleware($responseFactory, $verifier, $audit));
+        })->add(new TurnstileMiddleware($responseFactory, $verifier, $audit, policy: $policy, allowRuntimeBypass: $allowRuntimeBypass));
         $app->add(new ApiEnvelopeMiddleware($responseFactory));
         $app->addRoutingMiddleware();
         $app->addErrorMiddleware(false, true, true);
