@@ -106,7 +106,10 @@ use VertoAD\Infrastructure\Security\RateLimitStoreInterface;
 use VertoAD\Infrastructure\Security\RedisRateLimitStore;
 use VertoAD\Infrastructure\Security\InMemoryRateLimitStore;
 use VertoAD\Infrastructure\Security\TurnstileVerifier;
+use VertoAD\Infrastructure\Storage\AwsS3PresignedUploadSigner;
+use VertoAD\Infrastructure\Storage\DeterministicPresignedUploadSigner;
 use VertoAD\Infrastructure\Storage\ObjectStorageInspectorInterface;
+use VertoAD\Infrastructure\Storage\ObjectStorageUploadSignerInterface;
 use VertoAD\Infrastructure\Storage\UnavailableObjectStorageInspector;
 
 final class AppContainerTest extends TestCase
@@ -2019,6 +2022,89 @@ PHP);
         } finally {
             $this->removeTemporaryAppBasePath($basePath);
             @unlink($databasePath);
+        }
+    }
+
+    public function testProductionObjectStorageUploadSignerUsesAwsS3PresignedUrls(): void
+    {
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'memory' => true,
+            ],
+            'storage' => [
+                's3' => [
+                    'endpoint' => 'https://account-id.r2.cloudflarestorage.com',
+                    'region' => 'auto',
+                    'bucket' => 'creative-assets',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                    'path_style_endpoint' => true,
+                    'public_base_url' => 'https://assets.example.test',
+                ],
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+        ], 'vertoad-appfactory-object-signer-prod-');
+
+        try {
+            $container = AppFactory::create($basePath)->getContainer();
+
+            self::assertInstanceOf(
+                AwsS3PresignedUploadSigner::class,
+                $container?->get(ObjectStorageUploadSignerInterface::class),
+            );
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
+        }
+    }
+
+    public function testLocalObjectStorageUploadSignerKeepsDeterministicFallback(): void
+    {
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'local',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'memory' => true,
+            ],
+            'storage' => [
+                's3' => [
+                    'endpoint' => 'https://r2.example.test',
+                    'bucket' => 'creative-assets',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                    'path_style_endpoint' => true,
+                    'public_base_url' => '',
+                ],
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+        ], 'vertoad-appfactory-object-signer-local-');
+
+        try {
+            $container = AppFactory::create($basePath)->getContainer();
+
+            self::assertInstanceOf(
+                DeterministicPresignedUploadSigner::class,
+                $container?->get(ObjectStorageUploadSignerInterface::class),
+            );
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
         }
     }
 

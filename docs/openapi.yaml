@@ -977,7 +977,7 @@ paths:
         - Assets
       operationId: createAssetUploadIntent
       summary: Create a presigned creative asset upload intent.
-      description: Creates a scoped signed object-storage upload intent according to the current `assets.upload_policy` system configuration version. Allowed content types, byte limits, extensions, dimensions, video duration, magic signatures, and intent TTL are policy-controlled and are not hard-coded in this contract.
+      description: Creates a scoped signed object-storage upload intent according to the current `assets.upload_policy` system configuration version. Allowed content types, byte limits, extensions, dimensions, video duration, magic signatures, and intent TTL are policy-controlled and are not hard-coded in this contract. Production and staging use S3-compatible SigV4 presigned PUT URLs for R2/S3; local and test environments may use the deterministic signer.
       security:
         - BearerAuth: []
       parameters:
@@ -5042,7 +5042,9 @@ components:
             - PUT
         status_code:
           type: integer
+          description: Expected successful status from the object-storage PUT. S3-compatible production signers usually return 200; the deterministic local/test signer returns 201.
           enum:
+            - 200
             - 201
         headers:
           type: object

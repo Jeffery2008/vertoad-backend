@@ -30,6 +30,7 @@ use VertoAD\Infrastructure\Security\RateLimitPolicy;
 use VertoAD\Infrastructure\Security\RateLimitStoreInterface;
 use VertoAD\Infrastructure\Security\RedisRateLimitStore;
 use VertoAD\Infrastructure\Security\TurnstileVerifier;
+use VertoAD\Infrastructure\Storage\AwsS3PresignedUploadSigner;
 use VertoAD\Infrastructure\Redis\InMemoryRedisClient;
 use VertoAD\Infrastructure\Redis\RedisClientInterface;
 use VertoAD\Infrastructure\Redis\RedisClientFactory;
@@ -258,7 +259,7 @@ final class AppFactory
                 AssetRepositoryInterface::class => static fn (Connection $connection): AssetRepositoryInterface =>
                     new AssetRepository($connection),
                 ObjectStorageUploadSignerInterface::class => static fn (): ObjectStorageUploadSignerInterface =>
-                    new DeterministicPresignedUploadSigner($settings['storage']['s3'] ?? []),
+                    self::objectStorageUploadSigner($settings),
                 ObjectStorageInspectorInterface::class => static fn (): ObjectStorageInspectorInterface =>
                     self::objectStorageInspector($settings),
                 AssetUploadService::class => static fn (
@@ -684,6 +685,18 @@ final class AppFactory
         $errorMiddleware->setDefaultErrorHandler($container->get(OperationErrorHandler::class));
 
         return $app;
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function objectStorageUploadSigner(array $settings): ObjectStorageUploadSignerInterface
+    {
+        $config = $settings['storage']['s3'] ?? [];
+        $config = is_array($config) ? $config : [];
+        if (self::localFallbackAllowed($settings)) {
+            return new DeterministicPresignedUploadSigner($config);
+        }
+
+        return new AwsS3PresignedUploadSigner($config);
     }
 
     /** @param array<string, mixed> $settings */
