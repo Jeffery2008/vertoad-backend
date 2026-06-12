@@ -423,7 +423,16 @@ final class AppFactory
                     AdEventRepositoryInterface $events,
                     CampaignSpendEligibilityInterface $spendEligibility,
                     AdSelectionPolicyInterface $selectionPolicy,
-                ): AdServingService => new AdServingService($inventory, $candidates, $decisions, $events, $spendEligibility, $selectionPolicy),
+                    SystemConfigService $configs,
+                ): AdServingService => new AdServingService(
+                    $inventory,
+                    $candidates,
+                    $decisions,
+                    $events,
+                    $spendEligibility,
+                    $selectionPolicy,
+                    $configs->servingEventPolicy(),
+                ),
                 AuditLogRepositoryInterface::class => static fn (Connection $connection): AuditLogRepositoryInterface =>
                     new AuditLogRepository($connection),
                 AuditLogService::class => static fn (AuditLogRepositoryInterface $repository): AuditLogService =>

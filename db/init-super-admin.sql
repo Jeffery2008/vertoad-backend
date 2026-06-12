@@ -157,6 +157,17 @@ VALUES
         1,
         JSON_OBJECT('seconds', 604800),
         @super_admin_user_id
+    ),
+    (
+        'cfgv_bootstrap_serving_event_validation_v1',
+        'serving.event_validation',
+        1,
+        JSON_OBJECT(
+            'min_visible_ratio', 0.5,
+            'min_visible_ms', 1000,
+            'repeat_click_window_seconds', 30
+        ),
+        @super_admin_user_id
     );
 
 INSERT INTO audit_logs (organization_id, actor_user_id, action, subject_type, subject_id, metadata_json)

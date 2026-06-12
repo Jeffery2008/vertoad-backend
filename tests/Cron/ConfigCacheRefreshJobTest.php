@@ -19,6 +19,11 @@ final class ConfigCacheRefreshJobTest extends TestCase
                 'billing.default_revenue_share' => ['publisher_percent' => 70],
                 'attribution.default_window_seconds' => ['seconds' => 604800],
                 'security.rate_limit' => ['limit' => 60, 'window_seconds' => 60],
+                'serving.event_validation' => [
+                    'min_visible_ratio' => 0.5,
+                    'min_visible_ms' => 1000,
+                    'repeat_click_window_seconds' => 30,
+                ],
             ]),
             $redis,
             'vertoad:test:',
@@ -29,7 +34,7 @@ final class ConfigCacheRefreshJobTest extends TestCase
 
         self::assertSame('config-cache-refresh', $job->name());
         self::assertSame('completed', $result->status);
-        self::assertSame(3, $result->metrics['refreshed'] ?? null);
+        self::assertSame(4, $result->metrics['refreshed'] ?? null);
         self::assertSame([
             [
                 "return {redis.call('SETEX', KEYS[1], ARGV[1], ARGV[2])}",
@@ -45,6 +50,11 @@ final class ConfigCacheRefreshJobTest extends TestCase
                 "return {redis.call('SETEX', KEYS[1], ARGV[1], ARGV[2])}",
                 ['vertoad:test:config:security.rate_limit'],
                 ['3600', '{"limit":60,"window_seconds":60}'],
+            ],
+            [
+                "return {redis.call('SETEX', KEYS[1], ARGV[1], ARGV[2])}",
+                ['vertoad:test:config:serving.event_validation'],
+                ['3600', '{"min_visible_ratio":0.5,"min_visible_ms":1000,"repeat_click_window_seconds":30}'],
             ],
         ], $redis->evalCalls);
     }

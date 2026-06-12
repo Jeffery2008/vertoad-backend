@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use PHPUnit\Framework\TestCase;
 use VertoAD\Domain\Budget\SpendFailureReason;
 use VertoAD\Domain\Serving\AdCandidate;
+use VertoAD\Domain\Serving\ServingEventPolicy;
 use VertoAD\Repository\Serving\InMemoryAdDecisionRepository;
 use VertoAD\Repository\Serving\InMemoryAdEventRepository;
 use VertoAD\Repository\Serving\StaticAdCandidateRepository;
@@ -21,6 +22,24 @@ use VertoAD\Service\Serving\ServingRiskAssessorInterface;
 
 final class AdServingServiceTest extends TestCase
 {
+    public function testServingEventPolicyRejectsInvalidConstructorValues(): void
+    {
+        foreach (
+            [
+                [1.1, 1000, 30, 'Minimum visible ratio must be between 0 and 1.'],
+                [0.5, 0, 30, 'Minimum visible milliseconds must be at least 1.'],
+                [0.5, 1000, 0, 'Repeat click window must be at least 1 second.'],
+            ] as [$minVisibleRatio, $minVisibleMs, $repeatClickWindowSeconds, $message]
+        ) {
+            try {
+                new ServingEventPolicy($minVisibleRatio, $minVisibleMs, $repeatClickWindowSeconds);
+                self::fail('Invalid serving event policy constructor values must be rejected.');
+            } catch (\InvalidArgumentException $exception) {
+                self::assertSame($message, $exception->getMessage());
+            }
+        }
+    }
+
     public function testServeReturnsDeterministicNoFillWhenNoEligibleAdExists(): void
     {
         $service = new AdServingService(
@@ -93,6 +112,45 @@ final class AdServingServiceTest extends TestCase
         $duplicate = $service->trackImpression($decision->decisionId, 'viewer-1', 0.1, 10, 'evt-2', new DateTimeImmutable('2026-06-08 10:00:04'));
         self::assertTrue($duplicate->accepted);
         self::assertTrue($duplicate->duplicate);
+        self::assertSame(1, $events->impressionCount());
+    }
+
+    public function testTrackImpressionUsesConfiguredViewabilityThreshold(): void
+    {
+        $events = new InMemoryAdEventRepository();
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([$this->safeCandidate()]),
+            new InMemoryAdDecisionRepository(),
+            $events,
+            eventPolicy: new ServingEventPolicy(
+                minVisibleRatio: 0.75,
+                minVisibleMs: 1500,
+                repeatClickWindowSeconds: 30,
+            ),
+        );
+        $decision = $service->serve(10, 20, 'viewer-policy', null, false, new DateTimeImmutable('2026-06-08 10:00:00'));
+
+        $oldDefaultThreshold = $service->trackImpression(
+            $decision->decisionId,
+            'viewer-policy',
+            0.5,
+            1000,
+            'imp-policy-low',
+            new DateTimeImmutable('2026-06-08 10:00:02'),
+        );
+        $configuredThreshold = $service->trackImpression(
+            $decision->decisionId,
+            'viewer-policy',
+            0.75,
+            1500,
+            'imp-policy-ok',
+            new DateTimeImmutable('2026-06-08 10:00:03'),
+        );
+
+        self::assertFalse($oldDefaultThreshold->accepted);
+        self::assertSame('viewability_threshold_not_met', $oldDefaultThreshold->reason);
+        self::assertTrue($configuredThreshold->accepted);
         self::assertSame(1, $events->impressionCount());
     }
 
@@ -309,6 +367,30 @@ final class AdServingServiceTest extends TestCase
         self::assertNull($duplicateInvalid->redirectUrl);
         self::assertSame(1, $events->clickCount());
         self::assertCount(3, $events->events());
+    }
+
+    public function testRepeatClickWindowUsesConfiguredPolicy(): void
+    {
+        $events = new InMemoryAdEventRepository();
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([$this->safeCandidate()]),
+            new InMemoryAdDecisionRepository(),
+            $events,
+            eventPolicy: new ServingEventPolicy(
+                minVisibleRatio: 0.5,
+                minVisibleMs: 1000,
+                repeatClickWindowSeconds: 5,
+            ),
+        );
+        $decision = $service->serve(10, 20, 'viewer-click-policy', null, false, new DateTimeImmutable('2026-06-08 10:00:00'));
+        $service->trackImpression($decision->decisionId, 'viewer-click-policy', 0.5, 1000, 'imp-click-policy', new DateTimeImmutable('2026-06-08 10:00:02'));
+        $firstClick = $service->recordClick($decision->decisionId, 'viewer-click-policy', 'clk-policy-1', new DateTimeImmutable('2026-06-08 10:00:35'));
+        $outsideConfiguredWindow = $service->recordClick($decision->decisionId, 'viewer-click-policy', 'clk-policy-2', new DateTimeImmutable('2026-06-08 10:00:41'));
+
+        self::assertTrue($firstClick->accepted);
+        self::assertTrue($outsideConfiguredWindow->accepted);
+        self::assertSame(2, $events->clickCount());
     }
 
     public function testServeRejectsMalformedAndUnsupportedLandingUrls(): void

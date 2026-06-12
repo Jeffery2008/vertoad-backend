@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VertoAD\Tests;
 
 use PHPUnit\Framework\TestCase;
+use VertoAD\Domain\Serving\ServingEventPolicy;
 use VertoAD\Infrastructure\Security\RateLimitPolicy;
 use VertoAD\Repository\SystemConfigRepositoryInterface;
 use VertoAD\Service\SystemConfigService;
@@ -159,6 +160,59 @@ final class SystemConfigServiceTest extends TestCase
         }
     }
 
+    public function testServingEventPolicyUsesConfiguredThresholds(): void
+    {
+        $repository = new ArraySystemConfigRepository([
+            'serving.event_validation' => [
+                'min_visible_ratio' => 0.75,
+                'min_visible_ms' => 1500,
+                'repeat_click_window_seconds' => 60,
+            ],
+        ]);
+
+        $policy = (new SystemConfigService($repository))->servingEventPolicy();
+
+        self::assertInstanceOf(ServingEventPolicy::class, $policy);
+        self::assertSame(0.75, $policy->minVisibleRatio);
+        self::assertSame(1500, $policy->minVisibleMs);
+        self::assertSame(60, $policy->repeatClickWindowSeconds);
+        self::assertSame(['serving.event_validation'], $repository->queries);
+    }
+
+    public function testServingEventPolicyFallsBackWhenConfigIsMissing(): void
+    {
+        $policy = (new SystemConfigService(new ArraySystemConfigRepository()))->servingEventPolicy();
+
+        self::assertSame(0.5, $policy->minVisibleRatio);
+        self::assertSame(1000, $policy->minVisibleMs);
+        self::assertSame(30, $policy->repeatClickWindowSeconds);
+    }
+
+    public function testServingEventPolicyRejectsInvalidConfiguredValues(): void
+    {
+        foreach (
+            [
+                ['min_visible_ratio' => -0.1, 'min_visible_ms' => 1000, 'repeat_click_window_seconds' => 30],
+                ['min_visible_ratio' => 1.1, 'min_visible_ms' => 1000, 'repeat_click_window_seconds' => 30],
+                ['min_visible_ratio' => '0.5', 'min_visible_ms' => 1000, 'repeat_click_window_seconds' => 30],
+                ['min_visible_ratio' => 0.5, 'min_visible_ms' => 0, 'repeat_click_window_seconds' => 30],
+                ['min_visible_ratio' => 0.5, 'min_visible_ms' => 1000, 'repeat_click_window_seconds' => 0],
+                ['min_visible_ratio' => 0.5, 'min_visible_ms' => 1000],
+            ] as $value
+        ) {
+            $service = new SystemConfigService(new ArraySystemConfigRepository([
+                'serving.event_validation' => $value,
+            ]));
+
+            try {
+                $service->servingEventPolicy();
+                self::fail('Invalid serving.event_validation value must be rejected.');
+            } catch (\UnexpectedValueException $exception) {
+                self::assertStringStartsWith('Invalid serving.event_validation ', $exception->getMessage());
+            }
+        }
+    }
+
     public function testMissingRuntimeConfigFailsWhenFallbacksAreDisabled(): void
     {
         $service = new SystemConfigService(new ArraySystemConfigRepository(), allowRuntimeFallbacks: false);
@@ -178,6 +232,13 @@ final class SystemConfigServiceTest extends TestCase
             self::fail('Production runtime config must not silently fall back when rate limit config is missing.');
         } catch (\RuntimeException $exception) {
             self::assertSame('Missing required system config: security.rate_limit.', $exception->getMessage());
+        }
+
+        try {
+            $service->servingEventPolicy();
+            self::fail('Production runtime config must not silently fall back when serving event config is missing.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('Missing required system config: serving.event_validation.', $exception->getMessage());
         }
     }
 

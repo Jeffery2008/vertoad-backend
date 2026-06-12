@@ -627,6 +627,11 @@ PHP);
                 'driver' => 'pdo_sqlite',
                 'path' => $databasePath,
             ],
+            'redis' => [
+                'driver' => 'predis',
+                'password' => 'unit-test-redis-secret',
+                'prefix' => 'vertoad:test:',
+            ],
             'cron' => [
                 'token' => '',
                 'allowed_ips' => [],
@@ -652,16 +657,27 @@ PHP);
             $this->insertSystemConfig($connection, 'security.rate_limit', 1, ['limit' => 30, 'window_seconds' => 10]);
             $this->insertSystemConfig($connection, 'security.rate_limit', 2, ['limit' => 7, 'window_seconds' => 3]);
             $this->insertSystemConfig($connection, 'attribution.default_window_seconds', 1, ['seconds' => 3600]);
+            $this->insertSystemConfig($connection, 'serving.event_validation', 1, [
+                'min_visible_ratio' => 0.75,
+                'min_visible_ms' => 1500,
+                'repeat_click_window_seconds' => 45,
+            ]);
 
             $container = AppFactory::create($basePath)->getContainer();
             $policy = $container?->get(RateLimitPolicy::class);
             $attribution = $container?->get(AttributionService::class);
+            $serving = $container?->get(AdServingService::class);
 
             self::assertInstanceOf(RateLimitPolicy::class, $policy);
             self::assertSame(7, $policy->limit);
             self::assertSame(3, $policy->windowSeconds);
             self::assertInstanceOf(AttributionService::class, $attribution);
             self::assertSame(3600, $this->privateIntProperty($attribution, 'defaultWindowSeconds'));
+            self::assertInstanceOf(AdServingService::class, $serving);
+            $eventPolicy = $this->privateObjectProperty($serving, 'eventPolicy');
+            self::assertSame(0.75, $eventPolicy->minVisibleRatio);
+            self::assertSame(1500, $eventPolicy->minVisibleMs);
+            self::assertSame(45, $eventPolicy->repeatClickWindowSeconds);
         } finally {
             $this->removeTemporaryAppBasePath($basePath);
             @unlink($databasePath);
@@ -680,6 +696,11 @@ PHP);
             'database' => [
                 'driver' => 'pdo_sqlite',
                 'path' => $databasePath,
+            ],
+            'redis' => [
+                'driver' => 'predis',
+                'password' => 'unit-test-redis-secret',
+                'prefix' => 'vertoad:test:',
             ],
             'cron' => [
                 'token' => '',
@@ -712,6 +733,13 @@ PHP);
                     'Missing required system config: attribution.default_window_seconds.',
                     $exception->getMessage(),
                 );
+            }
+
+            try {
+                $container?->get(AdServingService::class);
+                self::fail('Production ad serving service must require versioned system config.');
+            } catch (\RuntimeException $exception) {
+                self::assertSame('Missing required system config: serving.event_validation.', $exception->getMessage());
             }
         } finally {
             $this->removeTemporaryAppBasePath($basePath);
@@ -1019,6 +1047,14 @@ PHP);
         $reflection->setAccessible(true);
 
         return (int) $reflection->getValue($object);
+    }
+
+    private function privateObjectProperty(object $object, string $property): object
+    {
+        $reflection = new \ReflectionProperty($object, $property);
+        $reflection->setAccessible(true);
+
+        return $reflection->getValue($object);
     }
 
     private function createSystemConfigSchema(Connection $connection): void

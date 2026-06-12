@@ -9,6 +9,7 @@ use VertoAD\Domain\Budget\SpendFailureReason;
 use VertoAD\Domain\Serving\AdCandidate;
 use VertoAD\Domain\Serving\AdDecision;
 use VertoAD\Domain\Serving\AdEventResult;
+use VertoAD\Domain\Serving\ServingEventPolicy;
 use VertoAD\Repository\Serving\AdCandidateRepositoryInterface;
 use VertoAD\Repository\Serving\AdDecisionRepositoryInterface;
 use VertoAD\Repository\Serving\AdEventRepositoryInterface;
@@ -16,10 +17,6 @@ use VertoAD\Repository\Serving\ServingInventoryRepositoryInterface;
 
 final readonly class AdServingService
 {
-    private const MIN_VISIBLE_RATIO = 0.5;
-    private const MIN_VISIBLE_MS = 1000;
-    private const REPEAT_CLICK_WINDOW_SECONDS = 30;
-
     public function __construct(
         private ServingInventoryRepositoryInterface $inventory,
         private AdCandidateRepositoryInterface $candidates,
@@ -27,13 +24,16 @@ final readonly class AdServingService
         private AdEventRepositoryInterface $events,
         ?CampaignSpendEligibilityInterface $spendEligibility = null,
         ?AdSelectionPolicyInterface $selectionPolicy = null,
+        ?ServingEventPolicy $eventPolicy = null,
     ) {
         $this->spendEligibility = $spendEligibility ?? new AllowAllCampaignSpendEligibility();
         $this->selectionPolicy = $selectionPolicy ?? new DefaultAdSelectionPolicy();
+        $this->eventPolicy = $eventPolicy ?? new ServingEventPolicy(0.5, 1000, 30);
     }
 
     private CampaignSpendEligibilityInterface $spendEligibility;
     private AdSelectionPolicyInterface $selectionPolicy;
+    private ServingEventPolicy $eventPolicy;
 
     /**
      * @param array{width:int,height:int}|null $size
@@ -115,7 +115,7 @@ final readonly class AdServingService
             return AdEventResult::accepted(duplicate: true);
         }
 
-        if ($visibleRatio < self::MIN_VISIBLE_RATIO || $visibleMs < self::MIN_VISIBLE_MS) {
+        if ($visibleRatio < $this->eventPolicy->minVisibleRatio || $visibleMs < $this->eventPolicy->minVisibleMs) {
             return AdEventResult::rejected('viewability_threshold_not_met');
         }
 
@@ -152,7 +152,12 @@ final readonly class AdServingService
             return AdEventResult::rejected('valid_impression_required');
         }
 
-        if ($this->events->hasRecentValidClick($decision->decisionId, $viewerId, $occurredAt, self::REPEAT_CLICK_WINDOW_SECONDS)) {
+        if ($this->events->hasRecentValidClick(
+            $decision->decisionId,
+            $viewerId,
+            $occurredAt,
+            $this->eventPolicy->repeatClickWindowSeconds,
+        )) {
             $this->events->recordInvalidClick($decision, $eventId, $occurredAt, 'repeat_click_window');
 
             return AdEventResult::rejected('repeat_click_window');

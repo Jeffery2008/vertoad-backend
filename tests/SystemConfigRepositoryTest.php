@@ -85,6 +85,11 @@ final class SystemConfigRepositoryTest extends TestCase
         $this->insertVersion($connection, 'attribution.default_window_seconds', 1, ['seconds' => 3600]);
         $this->insertVersion($connection, 'attribution.default_window_seconds', 2, ['seconds' => 7200]);
         $this->insertVersion($connection, 'security.rate_limit', 1, ['limit' => 60, 'window_seconds' => 60]);
+        $this->insertVersion($connection, 'serving.event_validation', 1, [
+            'min_visible_ratio' => 0.5,
+            'min_visible_ms' => 1000,
+            'repeat_click_window_seconds' => 30,
+        ]);
 
         $repository = new SystemConfigRepository($connection);
 
@@ -95,6 +100,11 @@ final class SystemConfigRepositoryTest extends TestCase
         self::assertSame([
             'attribution.default_window_seconds' => ['seconds' => 7200],
             'security.rate_limit' => ['limit' => 60, 'window_seconds' => 60],
+            'serving.event_validation' => [
+                'min_visible_ratio' => 0.5,
+                'min_visible_ms' => 1000,
+                'repeat_click_window_seconds' => 30,
+            ],
         ], $repository->listLatestValues());
     }
 

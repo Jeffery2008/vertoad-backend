@@ -50,6 +50,10 @@ final class SystemConfigMigrationContractTest extends TestCase
         self::assertStringContainsString("JSON_OBJECT('limit', 60, 'window_seconds', 60)", $bootstrapSql);
         self::assertStringContainsString("'attribution.default_window_seconds'", $bootstrapSql);
         self::assertStringContainsString("JSON_OBJECT('seconds', 604800)", $bootstrapSql);
+        self::assertStringContainsString("'serving.event_validation'", $bootstrapSql);
+        self::assertStringContainsString("'min_visible_ratio', 0.5", $bootstrapSql);
+        self::assertStringContainsString("'min_visible_ms', 1000", $bootstrapSql);
+        self::assertStringContainsString("'repeat_click_window_seconds', 30", $bootstrapSql);
         self::assertStringContainsString('@super_admin_user_id', $bootstrapSql);
     }
 
