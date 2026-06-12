@@ -196,8 +196,11 @@ VALUES
                 'POST:/api/v1/auth/password-reset/request',
                 'POST:/api/v1/auth/password-reset/confirm',
                 'POST:/api/v1/billing/recharge-keys/redeem',
-                'GET:/api/v1/oauth/authorize',
                 'POST:/api/v1/oauth/consent'
+            ),
+            'conditional_protected_endpoints', JSON_ARRAY(
+                'POST:/api/v1/ads/track',
+                'GET:/api/v1/ads/click'
             )
         ),
         @super_admin_user_id

@@ -72,8 +72,10 @@ paths:
         - Auth
       operationId: registerUser
       summary: Register a first-party user.
-      description: Creates an active first-party user account and returns non-sensitive user metadata.
+      description: Creates an active first-party user account and returns non-sensitive user metadata. Requires Cloudflare Turnstile verification through the `CF-Turnstile-Token` header.
       security: []
+      parameters:
+        - $ref: "#/components/parameters/TurnstileToken"
       requestBody:
         required: true
         content:
@@ -104,8 +106,10 @@ paths:
         - Auth
       operationId: loginUser
       summary: Authenticate a first-party user.
-      description: Verifies credentials for an active user and returns bearer token metadata for the first-party session bridge.
+      description: Verifies credentials for an active user and returns bearer token metadata for the first-party session bridge. Requires Cloudflare Turnstile verification through the `CF-Turnstile-Token` header.
       security: []
+      parameters:
+        - $ref: "#/components/parameters/TurnstileToken"
       requestBody:
         required: true
         content:
@@ -167,8 +171,10 @@ paths:
         - Auth
       operationId: requestPasswordReset
       summary: Request a password reset.
-      description: Always returns an accepted response for syntactically valid email input so account existence is not leaked.
+      description: Always returns an accepted response for syntactically valid email input so account existence is not leaked. Requires Cloudflare Turnstile verification through the `CF-Turnstile-Token` header.
       security: []
+      parameters:
+        - $ref: "#/components/parameters/TurnstileToken"
       requestBody:
         required: true
         content:
@@ -197,8 +203,10 @@ paths:
         - Auth
       operationId: confirmPasswordReset
       summary: Confirm a password reset.
-      description: Consumes a single-use reset token and updates the user's password hash.
+      description: Consumes a single-use reset token and updates the user's password hash. Requires Cloudflare Turnstile verification through the `CF-Turnstile-Token` header.
       security: []
+      parameters:
+        - $ref: "#/components/parameters/TurnstileToken"
       requestBody:
         required: true
         content:
@@ -584,10 +592,11 @@ paths:
         - Billing
       operationId: redeemRechargeKey
       summary: Redeem a recharge key into advertiser points.
-      description: Credits advertiser balance through the append-only points ledger. Requires a bearer token and organization scope.
+      description: Credits advertiser balance through the append-only points ledger. Requires a bearer token, organization scope, and Cloudflare Turnstile verification through the `CF-Turnstile-Token` header.
       security:
         - BearerAuth: []
       parameters:
+        - $ref: "#/components/parameters/TurnstileToken"
         - name: organization_id
           in: query
           required: true
@@ -1921,8 +1930,11 @@ paths:
         - Serving
       operationId: trackAdImpression
       summary: Record a valid viewable impression event.
-      description: Accepts only impression events that meet the configured visible ratio and dwell-time threshold, with event-id idempotency.
+      description: Accepts only impression events that meet the configured visible ratio and dwell-time threshold, with event-id idempotency. Normal SDK telemetry does not require Turnstile; submissions flagged with `risk`, `traffic_risk`, `abnormal`, `high_risk`, or matching risk headers are treated as abnormal traffic and must include `CF-Turnstile-Token`.
       security: []
+      parameters:
+        - $ref: "#/components/parameters/OptionalTrafficRisk"
+        - $ref: "#/components/parameters/OptionalTurnstileToken"
       requestBody:
         required: true
         content:
@@ -1951,9 +1963,10 @@ paths:
         - Serving
       operationId: redirectAdClick
       summary: Record click intent and redirect to the validated landing URL.
-      description: Valid click decisions return a 302 Location header pointing only to a validated http or https landing URL.
+      description: Valid click decisions return a 302 Location header pointing only to a validated http or https landing URL. Normal click redirects do not require Turnstile; clicks flagged with `risk`, `traffic_risk`, `abnormal`, `high_risk`, or matching risk headers are treated as abnormal traffic and must include `CF-Turnstile-Token`.
       security: []
       parameters:
+        - $ref: "#/components/parameters/OptionalTurnstileToken"
         - name: decision_id
           in: query
           required: true
@@ -1972,6 +1985,19 @@ paths:
           schema:
             type: string
             minLength: 1
+        - $ref: "#/components/parameters/OptionalTrafficRisk"
+        - name: abnormal
+          in: query
+          required: false
+          description: Optional abnormal traffic marker. Values such as `1`, `true`, or `yes` require Turnstile verification.
+          schema:
+            type: string
+        - name: high_risk
+          in: query
+          required: false
+          description: Optional high-risk traffic marker. Values such as `1`, `true`, or `yes` require Turnstile verification.
+          schema:
+            type: string
       responses:
         "302":
           description: Redirect to validated advertiser landing URL.
@@ -2491,7 +2517,7 @@ paths:
         - OAuth
       operationId: authorizeOAuthClient
       summary: Issue an OAuth authorization code with PKCE.
-      description: Requires an authenticated first-party user, organization scope when applicable, exact redirect URI matching, and S256 PKCE. The returned code is single-use and short-lived.
+      description: Requires an authenticated first-party user, organization scope when applicable, exact redirect URI matching, S256 PKCE, and previously recorded user consent. The returned code is single-use and short-lived.
       security:
         - BearerAuth: []
       parameters:
@@ -2559,6 +2585,7 @@ paths:
       security:
         - BearerAuth: []
       parameters:
+        - $ref: "#/components/parameters/TurnstileToken"
         - name: organization_id
           in: query
           required: false
@@ -3577,6 +3604,36 @@ components:
                 meta: {}
                 request_id: req_0123456789abcdef
   parameters:
+    TurnstileToken:
+      name: CF-Turnstile-Token
+      in: header
+      required: true
+      description: Cloudflare Turnstile response token collected from the client challenge for protected high-risk entrypoints. The backend verifies this token server-side; do not send Turnstile tokens in JSON request bodies.
+      schema:
+        type: string
+        minLength: 1
+    OptionalTurnstileToken:
+      name: CF-Turnstile-Token
+      in: header
+      required: false
+      description: Cloudflare Turnstile response token required only when the serving request is explicitly flagged as abnormal or high-risk traffic.
+      schema:
+        type: string
+        minLength: 1
+    OptionalTrafficRisk:
+      name: risk
+      in: query
+      required: false
+      description: Optional traffic risk marker. Values `abnormal`, `high`, `high_risk`, `suspicious`, or `challenge_required` require Turnstile verification on conditionally protected serving endpoints.
+      schema:
+        type: string
+        enum:
+          - normal
+          - abnormal
+          - high
+          - high_risk
+          - suspicious
+          - challenge_required
     OrganizationId:
       name: organization_id
       in: query
@@ -6417,6 +6474,7 @@ components:
         - enabled
         - timeout_seconds
         - protected_endpoints
+        - conditional_protected_endpoints
       properties:
         enabled:
           type: boolean
@@ -6427,6 +6485,7 @@ components:
         protected_endpoints:
           type: array
           minItems: 1
+          description: Endpoints that always require Cloudflare Turnstile.
           items:
             type: string
             enum:
@@ -6435,8 +6494,15 @@ components:
               - POST:/api/v1/auth/password-reset/request
               - POST:/api/v1/auth/password-reset/confirm
               - POST:/api/v1/billing/recharge-keys/redeem
-              - GET:/api/v1/oauth/authorize
               - POST:/api/v1/oauth/consent
+        conditional_protected_endpoints:
+          type: array
+          description: Serving endpoints that require Turnstile only when the request is explicitly flagged as abnormal or high-risk traffic.
+          items:
+            type: string
+            enum:
+              - POST:/api/v1/ads/track
+              - GET:/api/v1/ads/click
       additionalProperties: false
     WebhookEndpointCreateRequest:
       type: object

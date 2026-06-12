@@ -31,18 +31,28 @@ final readonly class TurnstileMiddleware implements MiddlewareInterface
 
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
-        if (!$this->policy->enabled && !$this->allowRuntimeBypass) {
+        $protected = $this->policy->matchesRequest(
+            $request->getMethod(),
+            $request->getUri()->getPath(),
+            $this->isAbnormalTrafficSubmission($request),
+        );
+        if (!$protected) {
+            return $handler->handle($request);
+        }
+
+        if (!$this->policy->enabled) {
+            if ($this->allowRuntimeBypass) {
+                return $handler->handle($request);
+            }
+
             $this->audit($request, 'security.turnstile.denied', 'turnstile_policy_disabled');
 
             return $this->errorResponse(
+                $request,
                 503,
                 'turnstile_policy_disabled',
                 'Turnstile verification is disabled by runtime policy.',
             );
-        }
-
-        if (!$this->policy->protects($request->getMethod(), $request->getUri()->getPath())) {
-            return $handler->handle($request);
         }
 
         if (!$this->verifier->isConfigured() && $this->allowRuntimeBypass) {
@@ -59,7 +69,7 @@ final readonly class TurnstileMiddleware implements MiddlewareInterface
         $this->audit($request, 'security.turnstile.denied', $result->code);
         $statusCode = in_array($result->code, ['turnstile_provider_unavailable', 'turnstile_not_configured'], true) ? 503 : 400;
 
-        return $this->errorResponse($statusCode, $result->code, $result->message);
+        return $this->errorResponse($request, $statusCode, $result->code, $result->message);
     }
 
     private function token(ServerRequestInterface $request): ?string
@@ -88,6 +98,55 @@ final readonly class TurnstileMiddleware implements MiddlewareInterface
         return ($this->ipResolver ?? new ClientIpResolver())->resolve($request);
     }
 
+    private function isAbnormalTrafficSubmission(ServerRequestInterface $request): bool
+    {
+        foreach ([
+            $request->getHeaderLine('X-VertoAD-Traffic-Risk'),
+            $request->getHeaderLine('X-VertoAD-Risk'),
+            $request->getHeaderLine('X-Traffic-Risk'),
+            $this->stringQueryParam($request, 'traffic_risk'),
+            $this->stringQueryParam($request, 'risk'),
+            $this->stringQueryParam($request, 'abnormal'),
+            $this->stringQueryParam($request, 'high_risk'),
+            $this->stringBodyParam($request, 'traffic_risk'),
+            $this->stringBodyParam($request, 'risk'),
+            $this->stringBodyParam($request, 'abnormal'),
+            $this->stringBodyParam($request, 'high_risk'),
+        ] as $value) {
+            if ($this->isAbnormalRiskValue($value)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function stringQueryParam(ServerRequestInterface $request, string $key): ?string
+    {
+        $value = $request->getQueryParams()[$key] ?? null;
+
+        return is_scalar($value) ? (string) $value : null;
+    }
+
+    private function stringBodyParam(ServerRequestInterface $request, string $key): ?string
+    {
+        $body = $request->getParsedBody();
+        if (!is_array($body)) {
+            return null;
+        }
+
+        $value = $body[$key] ?? null;
+
+        return is_scalar($value) ? (string) $value : null;
+    }
+
+    private function isAbnormalRiskValue(?string $value): bool
+    {
+        $normalized = strtolower(trim((string) $value));
+
+        return in_array($normalized, ['1', 'true', 'yes', 'abnormal', 'high', 'high_risk', 'suspicious', 'challenge_required'], true);
+    }
+
     private function audit(ServerRequestInterface $request, string $action, string $reason): void
     {
         $this->audit?->record(
@@ -102,11 +161,28 @@ final readonly class TurnstileMiddleware implements MiddlewareInterface
         );
     }
 
-    private function errorResponse(int $statusCode, string $code, string $message): ResponseInterface
+    private function errorResponse(ServerRequestInterface $request, int $statusCode, string $code, string $message): ResponseInterface
     {
-        $response = $this->responseFactory->createResponse($statusCode);
-        $response->getBody()->write(json_encode(['code' => $code, 'message' => $message], JSON_THROW_ON_ERROR));
+        $requestId = trim($request->getHeaderLine('X-Request-Id'));
+        if ($requestId === '') {
+            $requestId = bin2hex(random_bytes(16));
+        }
 
-        return $response->withHeader('Content-Type', 'application/json');
+        $response = $this->responseFactory->createResponse($statusCode);
+        $response->getBody()->write(json_encode([
+            'data' => null,
+            'error' => [
+                'code' => $code,
+                'message' => $message,
+            ],
+            'meta' => [
+                'api_version' => 'v1',
+            ],
+            'request_id' => $requestId,
+        ], JSON_THROW_ON_ERROR));
+
+        return $response
+            ->withHeader('Content-Type', 'application/json')
+            ->withHeader('X-Request-Id', $requestId);
     }
 }

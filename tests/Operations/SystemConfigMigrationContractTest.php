@@ -76,7 +76,10 @@ final class SystemConfigMigrationContractTest extends TestCase
         self::assertStringContainsString("'timeout_seconds', 5", $bootstrapSql);
         self::assertStringContainsString("'protected_endpoints', JSON_ARRAY(", $bootstrapSql);
         self::assertStringContainsString("'POST:/api/v1/auth/login'", $bootstrapSql);
-        self::assertStringContainsString("'GET:/api/v1/oauth/authorize'", $bootstrapSql);
+        self::assertStringNotContainsString("'GET:/api/v1/oauth/authorize'", $bootstrapSql);
+        self::assertStringContainsString("'conditional_protected_endpoints', JSON_ARRAY(", $bootstrapSql);
+        self::assertStringContainsString("'POST:/api/v1/ads/track'", $bootstrapSql);
+        self::assertStringContainsString("'GET:/api/v1/ads/click'", $bootstrapSql);
         self::assertStringNotContainsString('TURNSTILE_SECRET_KEY', $bootstrapSql);
         self::assertStringContainsString('INSERT INTO revenue_share_rules', $bootstrapSql);
         self::assertStringContainsString("'global'", $bootstrapSql);

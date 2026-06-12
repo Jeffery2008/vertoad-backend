@@ -379,6 +379,10 @@ final class SystemConfigServiceTest extends TestCase
                     'POST:/api/v1/auth/login',
                     'POST:/api/v1/oauth/consent',
                 ],
+                'conditional_protected_endpoints' => [
+                    'POST:/api/v1/ads/track',
+                    'GET:/api/v1/ads/click',
+                ],
             ],
         ]);
 
@@ -388,6 +392,9 @@ final class SystemConfigServiceTest extends TestCase
         self::assertTrue($policy->enabled);
         self::assertSame(4, $policy->timeoutSeconds);
         self::assertTrue($policy->protects('post', '/api/v1/auth/login'));
+        self::assertTrue($policy->protectsRequest('POST', '/api/v1/ads/track', true));
+        self::assertFalse($policy->protectsRequest('POST', '/api/v1/ads/track', false));
+        self::assertTrue($policy->conditionallyProtects('GET', '/api/v1/ads/click'));
         self::assertFalse($policy->protects('POST', '/api/v1/oauth/token'));
         self::assertSame(['security.turnstile_policy'], $repository->queries);
     }
@@ -398,7 +405,9 @@ final class SystemConfigServiceTest extends TestCase
 
         self::assertTrue($policy->enabled);
         self::assertSame(5, $policy->timeoutSeconds);
-        self::assertTrue($policy->protects('POST', '/anything'));
+        self::assertTrue($policy->protects('POST', '/api/v1/auth/login'));
+        self::assertFalse($policy->protects('POST', '/api/v1/ads/track'));
+        self::assertTrue($policy->protectsRequest('POST', '/api/v1/ads/track', true));
     }
 
     public function testWebhookDeliveryPolicyRejectsInvalidConfiguredValues(): void
@@ -447,6 +456,10 @@ final class SystemConfigServiceTest extends TestCase
                 ['enabled' => true, 'timeout_seconds' => 5, 'protected_endpoints' => [42]],
                 ['enabled' => true, 'timeout_seconds' => 5, 'protected_endpoints' => ['GET:/api/v1/auth/login']],
                 ['enabled' => true, 'timeout_seconds' => 5, 'protected_endpoints' => ['POST:relative']],
+                ['enabled' => true, 'timeout_seconds' => 5, 'protected_endpoints' => ['POST:/api/v1/auth/login'], 'conditional_protected_endpoints' => ['POST:/api/v1/auth/login']],
+                ['enabled' => true, 'timeout_seconds' => 5, 'protected_endpoints' => ['POST:/api/v1/auth/login'], 'conditional_protected_endpoints' => ['POST:api/v1/ads/track']],
+                ['enabled' => true, 'timeout_seconds' => 5, 'protected_endpoints' => ['POST:/api/v1/auth/login'], 'conditional_protected_endpoints' => ['POST:/api/v1/ads/track' => true]],
+                ['enabled' => true, 'timeout_seconds' => 5, 'protected_endpoints' => ['POST:/api/v1/auth/login'], 'conditional_protected_endpoints' => [42]],
                 ['enabled' => true, 'timeout_seconds' => 5, 'protected_endpoints' => ['POST:/api/v1/auth/login'], 'unexpected' => true],
                 ['enabled' => true, 'timeout_seconds' => '5', 'protected_endpoints' => ['POST:/api/v1/auth/login']],
             ] as $value

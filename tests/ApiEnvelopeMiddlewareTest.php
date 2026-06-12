@@ -98,6 +98,29 @@ final class ApiEnvelopeMiddlewareTest extends TestCase
         self::assertSame($body, (string) $response->getBody());
         self::assertSame('existing-envelope-request', $response->getHeaderLine('X-Request-Id'));
     }
+
+    public function testKeepsExistingEnvelopeResponseRequestIdHeaderWhenPresent(): void
+    {
+        $middleware = new ApiEnvelopeMiddleware(new ResponseFactory());
+        $request = (new ServerRequestFactory())
+            ->createServerRequest('GET', '/already-enveloped')
+            ->withHeader('X-Request-Id', 'request-header-id');
+        $body = json_encode([
+            'data' => null,
+            'error' => ['code' => 'turnstile_token_required', 'message' => 'Turnstile token is required.'],
+            'meta' => ['api_version' => 'v1'],
+            'request_id' => 'response-header-id',
+        ], JSON_THROW_ON_ERROR);
+
+        $response = $middleware->process($request, new FixedResponseHandler(
+            statusCode: 400,
+            body: $body,
+            headers: ['Content-Type' => 'application/json', 'X-Request-Id' => 'response-header-id'],
+        ));
+
+        self::assertSame($body, (string) $response->getBody());
+        self::assertSame('response-header-id', $response->getHeaderLine('X-Request-Id'));
+    }
 }
 
 final class FixedResponseHandler implements RequestHandlerInterface

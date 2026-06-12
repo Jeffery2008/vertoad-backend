@@ -14,11 +14,14 @@ use Slim\Factory\AppFactory as SlimAppFactory;
 use Slim\Psr7\Factory\ServerRequestFactory;
 use VertoAD\Domain\Serving\AdCandidate;
 use VertoAD\Domain\Serving\AdDecision;
+use VertoAD\Domain\Security\TurnstilePolicy;
 use VertoAD\Http\Action\Serving\ClickAction;
 use VertoAD\Http\Action\Serving\ServeAction;
 use VertoAD\Http\Action\Serving\ServeFrameAction;
 use VertoAD\Http\Action\Serving\TrackAction;
 use VertoAD\Http\Middleware\ApiEnvelopeMiddleware;
+use VertoAD\Http\Middleware\TurnstileMiddleware;
+use VertoAD\Infrastructure\Security\TurnstileVerifier;
 use VertoAD\Repository\Serving\InMemoryAdDecisionRepository;
 use VertoAD\Repository\Serving\InMemoryAdEventRepository;
 use VertoAD\Repository\Serving\StaticAdCandidateRepository;
@@ -301,10 +304,97 @@ final class ServingRouteIntegrationTest extends TestCase
         self::assertSame('decision_not_found', $unknownClickDecision['error']['code']);
     }
 
+    public function testTurnstileOnlyProtectsRiskFlaggedTrackAndClickRequests(): void
+    {
+        $verificationTokens = [];
+        $events = new InMemoryAdEventRepository();
+        $app = $this->createApp(
+            [$this->safeCandidate()],
+            $events,
+            new TurnstileVerifier(
+                'secret-value',
+                'https://turnstile.example/verify',
+                static function (string $url, array $form) use (&$verificationTokens): array {
+                    $verificationTokens[] = $form['response'];
+
+                    return ['success' => true];
+                },
+            ),
+        );
+
+        $served = $this->handleJson($app, 'POST', '/api/v1/ads/serve', [
+            'site_id' => 10,
+            'slot_id' => 20,
+            'viewer_id' => 'viewer-1',
+        ]);
+
+        $normalTrack = $this->handleJson($app, 'POST', '/api/v1/ads/track', [
+            'decision_id' => $served['data']['decision_id'],
+            'viewer_id' => 'viewer-1',
+            'event_id' => 'evt-normal',
+            'visible_ratio' => 0.5,
+            'visible_ms' => 1000,
+        ]);
+        self::assertTrue($normalTrack['data']['accepted']);
+
+        $normalClick = $this->handleRaw($app, 'GET', '/api/v1/ads/click?decision_id=' . rawurlencode($served['data']['decision_id']) . '&viewer_id=viewer-1&event_id=clk-normal');
+        self::assertSame(302, $normalClick->getStatusCode());
+        self::assertSame([], $verificationTokens);
+
+        $riskTrack = $this->handleJson($app, 'POST', '/api/v1/ads/track?risk=high', [
+            'decision_id' => $served['data']['decision_id'],
+            'viewer_id' => 'viewer-1',
+            'event_id' => 'evt-risk',
+            'visible_ratio' => 0.5,
+            'visible_ms' => 1000,
+        ]);
+        self::assertSame('turnstile_token_required', $riskTrack['error']['code']);
+
+        $riskClick = $this->handleJson($app, 'GET', '/api/v1/ads/click?decision_id=' . rawurlencode($served['data']['decision_id']) . '&viewer_id=viewer-1&event_id=clk-risk&abnormal=1');
+        self::assertSame('turnstile_token_required', $riskClick['error']['code']);
+
+        $acceptedRiskTrack = $this->handleJson($app, 'POST', '/api/v1/ads/track', [
+            'decision_id' => $served['data']['decision_id'],
+            'viewer_id' => 'viewer-1',
+            'event_id' => 'evt-risk-verified',
+            'visible_ratio' => 0.5,
+            'visible_ms' => 1000,
+        ], ['X-VertoAD-Risk' => 'high', 'CF-Turnstile-Token' => 'track-token']);
+        self::assertTrue($acceptedRiskTrack['data']['accepted']);
+
+        $riskClickServed = $this->handleJson($app, 'POST', '/api/v1/ads/serve', [
+            'site_id' => 10,
+            'slot_id' => 20,
+            'viewer_id' => 'viewer-risk-click',
+        ]);
+        $riskClickImpression = $this->handleJson($app, 'POST', '/api/v1/ads/track', [
+            'decision_id' => $riskClickServed['data']['decision_id'],
+            'viewer_id' => 'viewer-risk-click',
+            'event_id' => 'evt-risk-click-impression',
+            'visible_ratio' => 0.5,
+            'visible_ms' => 1000,
+        ]);
+        self::assertTrue($riskClickImpression['data']['accepted']);
+
+        $acceptedRiskClick = $this->handleRaw(
+            $app,
+            'GET',
+            '/api/v1/ads/click?decision_id=' . rawurlencode($riskClickServed['data']['decision_id']) . '&viewer_id=viewer-risk-click&event_id=clk-risk-verified&high_risk=true',
+            null,
+            ['CF-Turnstile-Token' => 'click-token'],
+        );
+        self::assertSame(302, $acceptedRiskClick->getStatusCode());
+        self::assertSame(['track-token', 'click-token'], $verificationTokens);
+    }
+
     /**
      * @param list<AdCandidate> $candidates
      */
-    private function createApp(array $candidates, ?InMemoryAdEventRepository $events = null): App
+    private function createApp(
+        array $candidates,
+        ?InMemoryAdEventRepository $events = null,
+        ?TurnstileVerifier $turnstileVerifier = null,
+    ): App
     {
         $decisions = new InMemoryAdDecisionRepository();
         $events ??= new InMemoryAdEventRepository();
@@ -322,8 +412,28 @@ final class ServingRouteIntegrationTest extends TestCase
         $app->addBodyParsingMiddleware();
         $app->get('/api/v1/ads/serve', ServeFrameAction::class);
         $app->post('/api/v1/ads/serve', ServeAction::class);
-        $app->post('/api/v1/ads/track', TrackAction::class);
-        $app->get('/api/v1/ads/click', ClickAction::class);
+        $track = $app->post('/api/v1/ads/track', TrackAction::class);
+        $click = $app->get('/api/v1/ads/click', ClickAction::class);
+        if ($turnstileVerifier !== null) {
+            $turnstile = new TurnstileMiddleware(
+                $app->getResponseFactory(),
+                $turnstileVerifier,
+                null,
+                null,
+                new TurnstilePolicy(
+                    enabled: true,
+                    timeoutSeconds: 5,
+                    protectedEndpoints: ['POST:/api/v1/auth/login'],
+                    conditionalProtectedEndpoints: [
+                        'POST:/api/v1/ads/track',
+                        'GET:/api/v1/ads/click',
+                    ],
+                ),
+                allowRuntimeBypass: false,
+            );
+            $track->add($turnstile);
+            $click->add($turnstile);
+        }
         $app->add(new ApiEnvelopeMiddleware($app->getResponseFactory()));
         $app->addRoutingMiddleware();
         $app->addErrorMiddleware(false, true, true);
@@ -335,9 +445,9 @@ final class ServingRouteIntegrationTest extends TestCase
      * @param array<string, mixed>|null $payload
      * @return array<string, mixed>
      */
-    private function handleJson(App $app, string $method, string $uri, ?array $payload = null): array
+    private function handleJson(App $app, string $method, string $uri, ?array $payload = null, array $headers = []): array
     {
-        $response = $this->handleRaw($app, $method, $uri, $payload);
+        $response = $this->handleRaw($app, $method, $uri, $payload, $headers);
         $decoded = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
         self::assertIsArray($decoded);
 
@@ -346,12 +456,17 @@ final class ServingRouteIntegrationTest extends TestCase
 
     /**
      * @param array<string, mixed>|null $payload
+     * @param array<string, string> $headers
      */
-    private function handleRaw(App $app, string $method, string $uri, ?array $payload = null): ResponseInterface
+    private function handleRaw(App $app, string $method, string $uri, ?array $payload = null, array $headers = []): ResponseInterface
     {
         $request = (new ServerRequestFactory())->createServerRequest($method, $uri);
         if ($payload !== null) {
             $request = $request->withParsedBody($payload);
+        }
+
+        foreach ($headers as $name => $value) {
+            $request = $request->withHeader($name, $value);
         }
 
         return $app->handle($request);

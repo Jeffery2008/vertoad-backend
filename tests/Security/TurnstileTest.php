@@ -191,7 +191,9 @@ final class TurnstileTest extends TestCase
         $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
 
         self::assertSame(400, $response->getStatusCode());
+        self::assertNull($payload['data']);
         self::assertSame('turnstile_token_required', $payload['error']['code']);
+        self::assertSame(['api_version' => 'v1'], $payload['meta']);
         self::assertSame('turnstile-request-1', $payload['request_id']);
         self::assertSame('turnstile-request-1', $response->getHeaderLine('X-Request-Id'));
         self::assertSame('security.turnstile.denied', $auditRepository->entries[0]->action ?? null);
@@ -223,7 +225,11 @@ final class TurnstileTest extends TestCase
                 TestCase::fail('Provider should not be called when Turnstile is unconfigured.');
             }, allowUnconfiguredSuccess: false),
             new AuditLogService($auditRepository),
-            TurnstilePolicy::default(),
+            new TurnstilePolicy(
+                enabled: true,
+                timeoutSeconds: 5,
+                protectedEndpoints: ['POST:/protected'],
+            ),
             allowRuntimeBypass: false,
         );
 
@@ -231,7 +237,10 @@ final class TurnstileTest extends TestCase
         $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
 
         self::assertSame(503, $response->getStatusCode());
+        self::assertNull($payload['data']);
         self::assertSame('turnstile_not_configured', $payload['error']['code']);
+        self::assertSame('turnstile-unconfigured-prod', $payload['request_id']);
+        self::assertSame('turnstile-unconfigured-prod', $response->getHeaderLine('X-Request-Id'));
         self::assertSame('security.turnstile.denied', $auditRepository->entries[0]->action ?? null);
     }
 
@@ -291,7 +300,9 @@ final class TurnstileTest extends TestCase
         $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
 
         self::assertSame(400, $response->getStatusCode());
+        self::assertNull($payload['data']);
         self::assertSame('turnstile_token_required', $payload['error']['code']);
+        self::assertSame('turnstile-non-array-body', $payload['request_id']);
     }
 
     public function testMiddlewareReturnsServiceUnavailableWhenProviderCannotBeReached(): void
@@ -310,7 +321,9 @@ final class TurnstileTest extends TestCase
         $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
 
         self::assertSame(503, $response->getStatusCode());
+        self::assertNull($payload['data']);
         self::assertSame('turnstile_provider_unavailable', $payload['error']['code']);
+        self::assertSame('turnstile-provider-down', $payload['request_id']);
         self::assertSame('security.turnstile.denied', $auditRepository->entries[0]->action ?? null);
     }
 
@@ -335,6 +348,26 @@ final class TurnstileTest extends TestCase
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('ok', $payload['data']['status']);
         self::assertSame([], $auditRepository->entries);
+    }
+
+    public function testPolicyProtectsServingEndpointsOnlyWhenTheyAreRiskFlagged(): void
+    {
+        $policy = new TurnstilePolicy(
+            enabled: true,
+            timeoutSeconds: 5,
+            protectedEndpoints: ['POST:/api/v1/auth/login'],
+            conditionalProtectedEndpoints: [
+                'POST:/api/v1/ads/track',
+                'GET:/api/v1/ads/click',
+            ],
+        );
+
+        self::assertTrue($policy->protects('POST', '/api/v1/auth/login'));
+        self::assertFalse($policy->protects('POST', '/api/v1/ads/track'));
+        self::assertFalse($policy->protects('GET', '/api/v1/ads/click'));
+        self::assertTrue($policy->conditionallyProtects('POST', '/api/v1/ads/track'));
+        self::assertTrue($policy->conditionallyProtects('get', '/api/v1/ads/click'));
+        self::assertFalse($policy->conditionallyProtects('POST', '/api/v1/auth/login'));
     }
 
     public function testMiddlewareSkipsVerificationWhenPolicyIsDisabled(): void
@@ -380,7 +413,58 @@ final class TurnstileTest extends TestCase
         $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
 
         self::assertSame(503, $response->getStatusCode());
+        self::assertNull($payload['data']);
         self::assertSame('turnstile_policy_disabled', $payload['error']['code']);
+        self::assertSame('turnstile-disabled-prod', $payload['request_id']);
+        self::assertSame('security.turnstile.denied', $auditRepository->entries[0]->action ?? null);
+    }
+
+    public function testMiddlewareDoesNotFailClosedForUnflaggedConditionalEndpointWhenPolicyIsDisabledOutsideLocalTesting(): void
+    {
+        $auditRepository = new CapturingAuditLogRepository();
+        $app = new App(new ResponseFactory());
+        $responseFactory = $app->getResponseFactory();
+        $policy = new TurnstilePolicy(
+            enabled: false,
+            timeoutSeconds: 5,
+            protectedEndpoints: ['POST:/api/v1/auth/login'],
+            conditionalProtectedEndpoints: ['POST:/api/v1/ads/track'],
+        );
+        $app->post('/api/v1/ads/track', static function (ServerRequestInterface $request, ResponseInterface $response): ResponseInterface {
+            $response->getBody()->write(json_encode(['status' => 'ok'], JSON_THROW_ON_ERROR));
+
+            return $response->withHeader('Content-Type', 'application/json');
+        })->add(new TurnstileMiddleware(
+            $responseFactory,
+            new TurnstileVerifier('secret-value', 'https://turnstile.example/verify', static function (): array {
+                TestCase::fail('Provider should not be called for unflagged conditional traffic.');
+            }),
+            new AuditLogService($auditRepository),
+            policy: $policy,
+            allowRuntimeBypass: false,
+        ));
+        $app->add(new ApiEnvelopeMiddleware($responseFactory));
+        $app->addRoutingMiddleware();
+        $app->addErrorMiddleware(false, true, true);
+
+        $normalResponse = $app->handle((new ServerRequestFactory())
+            ->createServerRequest('POST', '/api/v1/ads/track')
+            ->withHeader('X-Request-Id', 'turnstile-disabled-normal-conditional'));
+        $normalPayload = json_decode((string) $normalResponse->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame(200, $normalResponse->getStatusCode());
+        self::assertSame('ok', $normalPayload['data']['status']);
+        self::assertSame([], $auditRepository->entries);
+
+        $riskResponse = $app->handle((new ServerRequestFactory())
+            ->createServerRequest('POST', '/api/v1/ads/track?risk=high')
+            ->withHeader('X-Request-Id', 'turnstile-disabled-risk-conditional'));
+        $riskPayload = json_decode((string) $riskResponse->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame(503, $riskResponse->getStatusCode());
+        self::assertNull($riskPayload['data']);
+        self::assertSame('turnstile_policy_disabled', $riskPayload['error']['code']);
+        self::assertSame('turnstile-disabled-risk-conditional', $riskPayload['request_id']);
         self::assertSame('security.turnstile.denied', $auditRepository->entries[0]->action ?? null);
     }
 
@@ -409,7 +493,17 @@ final class TurnstileTest extends TestCase
             $response->getBody()->write(json_encode(['status' => 'ok'], JSON_THROW_ON_ERROR));
 
             return $response->withHeader('Content-Type', 'application/json');
-        })->add(new TurnstileMiddleware($responseFactory, $verifier, $audit, policy: $policy, allowRuntimeBypass: $allowRuntimeBypass));
+        })->add(new TurnstileMiddleware(
+            $responseFactory,
+            $verifier,
+            $audit,
+            policy: $policy ?? new TurnstilePolicy(
+                enabled: true,
+                timeoutSeconds: 5,
+                protectedEndpoints: ['POST:/protected'],
+            ),
+            allowRuntimeBypass: $allowRuntimeBypass,
+        ));
         $app->add(new ApiEnvelopeMiddleware($responseFactory));
         $app->addRoutingMiddleware();
         $app->addErrorMiddleware(false, true, true);

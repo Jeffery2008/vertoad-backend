@@ -239,7 +239,6 @@ return static function (App $app): void {
         ->add($permission('sdk.oauth_client.rotate_secret.own'))
         ->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/oauth/authorize', AuthorizeAction::class)
-        ->add(TurnstileMiddleware::class)
         ->add(RateLimitMiddleware::class)
         ->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/oauth/consent', ConsentAction::class)
@@ -332,8 +331,8 @@ return static function (App $app): void {
         ->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/ads/serve', ServeFrameAction::class);
     $app->post('/api/v1/ads/serve', ServeAction::class);
-    $app->post('/api/v1/ads/track', TrackAction::class);
-    $app->get('/api/v1/ads/click', ClickAction::class);
+    $app->post('/api/v1/ads/track', TrackAction::class)->add(TurnstileMiddleware::class);
+    $app->get('/api/v1/ads/click', ClickAction::class)->add(TurnstileMiddleware::class);
 
     $app->group('/api/v1/cron', function (RouteCollectorProxy $group): void {
         $group->get('/status', CronStatusAction::class);

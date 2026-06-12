@@ -424,6 +424,10 @@ final class ConfigVersionServiceTest extends TestCase
                 'non-string endpoint' => [...$valid, 'protected_endpoints' => [42]],
                 'unsupported method' => [...$valid, 'protected_endpoints' => ['GET:/api/v1/auth/login']],
                 'relative endpoint path' => [...$valid, 'protected_endpoints' => ['POST:api/v1/auth/login']],
+                'unsupported conditional endpoint' => [...$valid, 'conditional_protected_endpoints' => ['POST:/api/v1/auth/login']],
+                'relative conditional endpoint path' => [...$valid, 'conditional_protected_endpoints' => ['POST:api/v1/ads/track']],
+                'map conditional endpoints' => [...$valid, 'conditional_protected_endpoints' => ['POST:/api/v1/ads/track' => true]],
+                'non-string conditional endpoint' => [...$valid, 'conditional_protected_endpoints' => [42]],
                 'string timeout' => [...$valid, 'timeout_seconds' => '5'],
             ] as $case => $value
         ) {
@@ -576,8 +580,11 @@ final class ConfigVersionServiceTest extends TestCase
                 'POST:/api/v1/auth/password-reset/request',
                 'POST:/api/v1/auth/password-reset/confirm',
                 'POST:/api/v1/billing/recharge-keys/redeem',
-                'GET:/api/v1/oauth/authorize',
                 'POST:/api/v1/oauth/consent',
+            ],
+            'conditional_protected_endpoints' => [
+                'POST:/api/v1/ads/track',
+                'GET:/api/v1/ads/click',
             ],
         ];
     }

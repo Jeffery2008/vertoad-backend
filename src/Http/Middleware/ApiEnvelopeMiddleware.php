@@ -28,7 +28,9 @@ final class ApiEnvelopeMiddleware implements MiddlewareInterface
 
         $decoded = $this->decodeBody((string) $response->getBody());
         if ($this->isEnvelope($decoded)) {
-            return $response->withHeader('X-Request-Id', $requestId);
+            $responseRequestId = trim($response->getHeaderLine('X-Request-Id'));
+
+            return $response->withHeader('X-Request-Id', $responseRequestId !== '' ? $responseRequestId : $requestId);
         }
 
         $envelope = [
