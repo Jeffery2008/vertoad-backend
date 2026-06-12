@@ -58,6 +58,11 @@ return [
         'query_results_base_object_key' => getenv('ARCHIVE_QUERY_RESULTS_BASE_OBJECT_KEY') ?: 's3://vertoad-archive/query-results',
         'writer' => getenv('ARCHIVE_WRITER') ?: '',
         'cold_query_runner' => getenv('ARCHIVE_COLD_QUERY_RUNNER') ?: '',
+        'duckdb_binary' => getenv('ARCHIVE_DUCKDB_BINARY') ?: 'duckdb',
+        'temp_dir' => getenv('ARCHIVE_TEMP_DIR') ?: sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'vertoad-archive',
+        'command_timeout_seconds' => (int) (getenv('ARCHIVE_COMMAND_TIMEOUT_SECONDS') ?: 120),
+        'max_scanned_objects' => (int) (getenv('ARCHIVE_MAX_SCANNED_OBJECTS') ?: 500),
+        'max_result_bytes' => (int) (getenv('ARCHIVE_MAX_RESULT_BYTES') ?: 10485760),
     ],
     'oauth' => [
         'private_key_path' => getenv('OAUTH_PRIVATE_KEY_PATH') ?: 'storage/oauth/private.key',

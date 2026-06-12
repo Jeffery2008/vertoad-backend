@@ -78,7 +78,7 @@ final readonly class TurnstilePolicy
         return new self(
             enabled: $enabled,
             timeoutSeconds: self::requiredInt($value, 'timeout_seconds'),
-            protectedEndpoints: self::requiredEndpointList($value, 'protected_endpoints', self::ALLOWED_ENDPOINTS, allowWildcard: false),
+            protectedEndpoints: self::requiredEndpointList($value, 'protected_endpoints', self::ALLOWED_ENDPOINTS),
             conditionalProtectedEndpoints: self::optionalEndpointList(
                 $value,
                 'conditional_protected_endpoints',
@@ -143,7 +143,7 @@ final readonly class TurnstilePolicy
      * @param array<string, mixed> $value
      * @return list<string>
      */
-    private static function requiredEndpointList(array $value, string $key, array $allowedEndpoints, bool $allowWildcard): array
+    private static function requiredEndpointList(array $value, string $key, array $allowedEndpoints): array
     {
         $endpoints = $value[$key] ?? null;
         if (!is_array($endpoints) || !array_is_list($endpoints)) {
@@ -154,7 +154,7 @@ final readonly class TurnstilePolicy
             throw new InvalidArgumentException($key . ' must not be empty.');
         }
 
-        return self::endpointList($endpoints, $key, $allowedEndpoints, $allowWildcard);
+        return self::endpointList($endpoints, $key, $allowedEndpoints);
     }
 
     /**
@@ -173,7 +173,7 @@ final readonly class TurnstilePolicy
             throw new InvalidArgumentException($key . ' must be a list.');
         }
 
-        return self::endpointList($endpoints, $key, $allowedEndpoints, allowWildcard: false);
+        return self::endpointList($endpoints, $key, $allowedEndpoints);
     }
 
     /**
@@ -181,7 +181,7 @@ final readonly class TurnstilePolicy
      * @param array<string, true> $allowedEndpoints
      * @return list<string>
      */
-    private static function endpointList(array $endpoints, string $key, array $allowedEndpoints, bool $allowWildcard): array
+    private static function endpointList(array $endpoints, string $key, array $allowedEndpoints): array
     {
         $normalized = [];
         foreach ($endpoints as $endpoint) {
@@ -189,7 +189,7 @@ final readonly class TurnstilePolicy
                 throw new InvalidArgumentException($key . ' entries must be strings.');
             }
 
-            $normalizedEndpoint = self::normalizeEndpoint($endpoint, $key, $allowedEndpoints, $allowWildcard);
+            $normalizedEndpoint = self::normalizeEndpoint($endpoint, $key, $allowedEndpoints);
             if (!isset($normalized[$normalizedEndpoint])) {
                 $normalized[$normalizedEndpoint] = $normalizedEndpoint;
             }
@@ -205,15 +205,10 @@ final readonly class TurnstilePolicy
         string $endpoint,
         string $key,
         array $allowedEndpoints,
-        bool $allowWildcard,
     ): string
     {
         $endpoint = trim($endpoint);
         if ($endpoint === self::WILDCARD_ENDPOINT) {
-            if ($allowWildcard) {
-                return self::WILDCARD_ENDPOINT;
-            }
-
             throw new InvalidArgumentException($key . ' must list explicit high-risk endpoints.');
         }
 

@@ -111,6 +111,8 @@ Serving events and serving frequency caps are Redis-first outside local/test env
 
 Production must not fall back to DB-first serving event buffering or in-memory serving frequency caps. In `prod`/`staging`, missing Redis extension or missing `REDIS_PASSWORD` is a startup/configuration failure for the serving event buffer, frequency caps, cron locks, rate limits, and config cache refresh. Local and test environments may use in-memory fallback to keep unit tests independent from Redis.
 
+Cold archive runtime is also fail-closed outside local/test environments. Use `ARCHIVE_WRITER=duckdb-s3` and `ARCHIVE_COLD_QUERY_RUNNER=duckdb-s3` with a configured DuckDB CLI binary, writable temp directory, and S3-compatible archive bucket. The real writer exports newline-delimited raw events to Parquet through DuckDB and uploads partition objects. The real cold-query runner downloads completed partition objects, executes a single read-only `SELECT` against a DuckDB `archive` view, and uploads JSON results. `deterministic` and `fixture` adapters are local/test only.
+
 Redis serving settings:
 
 - `REDIS_PASSWORD`: required for production serving event buffering and frequency caps; use 32+ random characters at minimum.
@@ -122,11 +124,24 @@ Redis serving settings:
 - `CRON_EVENT_CONSUME_BATCH_SIZE`: max events consumed per Cron run.
 - `CRON_LOCK_TTL_SECONDS`: Redis lock TTL used to prevent concurrent Cron runs.
 
+Archive runtime settings:
+
+- `ARCHIVE_WRITER`: `duckdb-s3` in staging/prod; `deterministic` only in local/test.
+- `ARCHIVE_COLD_QUERY_RUNNER`: `duckdb-s3` in staging/prod; `fixture` only in local/test.
+- `ARCHIVE_RAW_EVENTS_BASE_OBJECT_KEY`: S3 URI base for Parquet partitions.
+- `ARCHIVE_QUERY_RESULTS_BASE_OBJECT_KEY`: S3 URI base for JSON cold-query results.
+- `ARCHIVE_DUCKDB_BINARY`: DuckDB CLI executable path.
+- `ARCHIVE_TEMP_DIR`: writable local workspace for Parquet export/query scans.
+- `ARCHIVE_COMMAND_TIMEOUT_SECONDS`: per DuckDB CLI invocation timeout.
+- `ARCHIVE_MAX_SCANNED_OBJECTS`: maximum completed partition objects per cold query.
+- `ARCHIVE_MAX_RESULT_BYTES`: maximum JSON result object size.
+
 Recommended targeted checks before deploying Redis/Cron changes:
 
 ```powershell
 vendor\bin\phpunit tests\Serving
 vendor\bin\phpunit tests\Cron
+vendor\bin\phpunit tests\Archive tests\Storage\S3ArchiveObjectStorageTest.php
 composer test:coverage
 composer test:redis-integration
 composer openapi:check

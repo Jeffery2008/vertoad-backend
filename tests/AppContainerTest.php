@@ -55,6 +55,8 @@ use VertoAD\Service\Archive\ArchiveWriterInterface;
 use VertoAD\Service\Archive\ColdQueryRunnerInterface;
 use VertoAD\Service\Archive\ColdQueryService;
 use VertoAD\Service\Archive\DeterministicArchiveWriter;
+use VertoAD\Service\Archive\DuckDbCliArchiveWriter;
+use VertoAD\Service\Archive\DuckDbCliColdQueryRunner;
 use VertoAD\Service\Archive\FixtureColdQueryRunner;
 use VertoAD\Service\Assets\AssetUploadService;
 use VertoAD\Service\Attribution\AttributionService;
@@ -110,6 +112,7 @@ use VertoAD\Infrastructure\Storage\AwsS3PresignedUploadSigner;
 use VertoAD\Infrastructure\Storage\DeterministicPresignedUploadSigner;
 use VertoAD\Infrastructure\Storage\ObjectStorageInspectorInterface;
 use VertoAD\Infrastructure\Storage\ObjectStorageUploadSignerInterface;
+use VertoAD\Infrastructure\Storage\S3ArchiveObjectStorage;
 use VertoAD\Infrastructure\Storage\UnavailableObjectStorageInspector;
 
 final class AppContainerTest extends TestCase
@@ -2258,6 +2261,197 @@ PHP);
         } finally {
             $this->removeTemporaryAppBasePath($localBasePath);
             $this->removeTemporaryAppBasePath($prodBasePath);
+        }
+    }
+
+    public function testProductionArchiveRuntimeUsesDuckDbS3AdaptersWhenExplicitlyConfigured(): void
+    {
+        $tempDirectory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'vertoad-prod-archive-' . bin2hex(random_bytes(4));
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'memory' => true,
+            ],
+            'storage' => [
+                's3' => [
+                    'endpoint' => 'https://r2.example.test',
+                    'region' => 'auto',
+                    'bucket' => 'archive-bucket',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                    'path_style_endpoint' => true,
+                ],
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+            'archive' => [
+                'raw_events_base_object_key' => 's3://archive-bucket/raw-events',
+                'query_results_base_object_key' => 's3://archive-bucket/query-results',
+                'writer' => 'duckdb-s3',
+                'cold_query_runner' => 'duckdb-s3',
+                'duckdb_binary' => 'duckdb-prod',
+                'temp_dir' => $tempDirectory,
+                'command_timeout_seconds' => 77,
+                'max_scanned_objects' => 88,
+                'max_result_bytes' => 99,
+            ],
+        ], 'vertoad-appfactory-archive-prod-');
+
+        try {
+            $container = AppFactory::create($basePath)->getContainer();
+            $writer = $container?->get(ArchiveWriterInterface::class);
+            $runner = $container?->get(ColdQueryRunnerInterface::class);
+
+            self::assertInstanceOf(DuckDbCliArchiveWriter::class, $writer);
+            self::assertInstanceOf(DuckDbCliColdQueryRunner::class, $runner);
+            self::assertInstanceOf(S3ArchiveObjectStorage::class, $this->privateObjectProperty($writer, 'storage'));
+            self::assertInstanceOf(S3ArchiveObjectStorage::class, $this->privateObjectProperty($runner, 'storage'));
+            self::assertSame('duckdb-prod', $this->privateStringProperty($writer, 'duckDbBinary'));
+            self::assertSame('duckdb-prod', $this->privateStringProperty($runner, 'duckDbBinary'));
+            self::assertSame($tempDirectory, $this->privateStringProperty($writer, 'tempDirectory'));
+            self::assertSame($tempDirectory, $this->privateStringProperty($runner, 'tempDirectory'));
+            self::assertSame(77, $this->privateIntProperty($writer, 'timeoutSeconds'));
+            self::assertSame(77, $this->privateIntProperty($runner, 'timeoutSeconds'));
+            self::assertSame(88, $this->privateIntProperty($runner, 'maxScannedObjects'));
+            self::assertSame(99, $this->privateIntProperty($runner, 'maxResultBytes'));
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
+        }
+    }
+
+    public function testDuckDbArchiveRuntimeRejectsInvalidProductionLimits(): void
+    {
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'memory' => true,
+            ],
+            'storage' => [
+                's3' => [
+                    'endpoint' => 'https://r2.example.test',
+                    'region' => 'auto',
+                    'bucket' => 'archive-bucket',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                    'path_style_endpoint' => true,
+                ],
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+            'archive' => [
+                'writer' => 'duckdb-s3',
+                'cold_query_runner' => 'duckdb-s3',
+                'duckdb_binary' => 'duckdb-prod',
+                'temp_dir' => sys_get_temp_dir(),
+                'command_timeout_seconds' => 0,
+                'max_scanned_objects' => 88,
+                'max_result_bytes' => 99,
+            ],
+        ], 'vertoad-appfactory-archive-invalid-');
+
+        try {
+            $container = AppFactory::create($basePath)->getContainer();
+
+            $this->expectException(\InvalidArgumentException::class);
+            $this->expectExceptionMessage('ARCHIVE_COMMAND_TIMEOUT_SECONDS must be positive.');
+
+            $container?->get(ArchiveWriterInterface::class);
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
+        }
+    }
+
+    public function testDuckDbArchiveRuntimeRequiresBinaryAndTempDirectory(): void
+    {
+        foreach (
+            [
+                'missing binary' => [
+                    'archive' => [
+                        'writer' => 'duckdb-s3',
+                        'cold_query_runner' => 'duckdb-s3',
+                        'temp_dir' => sys_get_temp_dir(),
+                        'command_timeout_seconds' => 60,
+                        'max_scanned_objects' => 88,
+                        'max_result_bytes' => 99,
+                    ],
+                    'message' => 'ARCHIVE_DUCKDB_BINARY is required for DuckDB archive adapters.',
+                ],
+                'missing temp dir' => [
+                    'archive' => [
+                        'writer' => 'duckdb-s3',
+                        'cold_query_runner' => 'duckdb-s3',
+                        'duckdb_binary' => 'duckdb-prod',
+                        'command_timeout_seconds' => 60,
+                        'max_scanned_objects' => 88,
+                        'max_result_bytes' => 99,
+                    ],
+                    'message' => 'ARCHIVE_TEMP_DIR is required for DuckDB archive adapters.',
+                ],
+            ] as $case
+        ) {
+            $basePath = $this->temporaryAppBasePathWithSettings([
+                'app' => [
+                    'env' => 'prod',
+                    'debug' => false,
+                    'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+                ],
+                'database' => [
+                    'driver' => 'pdo_sqlite',
+                    'memory' => true,
+                ],
+                'storage' => [
+                    's3' => [
+                        'endpoint' => 'https://r2.example.test',
+                        'region' => 'auto',
+                        'bucket' => 'archive-bucket',
+                        'access_key_id' => 'access-key',
+                        'secret_access_key' => 'secret-key',
+                        'path_style_endpoint' => true,
+                    ],
+                ],
+                'cron' => [
+                    'token' => '',
+                    'allowed_ips' => [],
+                    'jobs' => [],
+                ],
+                'archive' => $case['archive'],
+            ], 'vertoad-appfactory-archive-required-');
+
+            try {
+                $container = AppFactory::create($basePath)->getContainer();
+
+                try {
+                    $container?->get(ArchiveWriterInterface::class);
+                    self::fail('Expected DuckDB archive runtime configuration to be rejected.');
+                } catch (\RuntimeException $exception) {
+                    self::assertSame($case['message'], $exception->getMessage());
+                }
+
+                try {
+                    $container?->get(ColdQueryRunnerInterface::class);
+                    self::fail('Expected DuckDB cold query runtime configuration to be rejected.');
+                } catch (\RuntimeException $exception) {
+                    self::assertSame($case['message'], $exception->getMessage());
+                }
+            } finally {
+                $this->removeTemporaryAppBasePath($basePath);
+            }
         }
     }
 

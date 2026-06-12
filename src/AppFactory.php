@@ -38,6 +38,7 @@ use VertoAD\Infrastructure\Storage\DeterministicPresignedUploadSigner;
 use VertoAD\Infrastructure\Storage\ObjectStorageInspectorInterface;
 use VertoAD\Infrastructure\Storage\ObjectStorageUploadSignerInterface;
 use VertoAD\Infrastructure\Storage\PublicUrlObjectStorageInspector;
+use VertoAD\Infrastructure\Storage\S3ArchiveObjectStorage;
 use VertoAD\Infrastructure\Storage\UnavailableObjectStorageInspector;
 use VertoAD\Repository\AdSlotRepository;
 use VertoAD\Repository\AdSlotRepositoryInterface;
@@ -112,11 +113,14 @@ use VertoAD\Repository\Webhooks\WebhookEndpointRepositoryInterface;
 use VertoAD\Service\AdSlotSetupService;
 use VertoAD\Service\Assets\AssetUploadService;
 use VertoAD\Service\Archive\ArchiveJob;
+use VertoAD\Service\Archive\ArchiveObjectStorageInterface;
 use VertoAD\Service\Archive\ArchiveService;
 use VertoAD\Service\Archive\ArchiveWriterInterface;
 use VertoAD\Service\Archive\ColdQueryRunnerInterface;
 use VertoAD\Service\Archive\ColdQueryService;
 use VertoAD\Service\Archive\DeterministicArchiveWriter;
+use VertoAD\Service\Archive\DuckDbCliArchiveWriter;
+use VertoAD\Service\Archive\DuckDbCliColdQueryRunner;
 use VertoAD\Service\Archive\FixtureColdQueryRunner;
 use VertoAD\Service\Cron\ArchiveParquetJob;
 use VertoAD\Service\Cron\AiReviewQueueJob;
@@ -338,6 +342,8 @@ final class AppFactory
                 ),
                 ArchiveRepositoryInterface::class => static fn (Connection $connection): ArchiveRepositoryInterface =>
                     new DatabaseArchiveRepository($connection),
+                ArchiveObjectStorageInterface::class => static fn (): ArchiveObjectStorageInterface =>
+                    self::archiveObjectStorage($settings),
                 ArchiveWriterInterface::class => static fn (): ArchiveWriterInterface =>
                     self::archiveWriter($settings),
                 ColdQueryRunnerInterface::class => static fn (): ColdQueryRunnerInterface =>
@@ -738,6 +744,15 @@ final class AppFactory
     {
         $archive = $settings['archive'] ?? [];
         $adapter = is_array($archive) ? (string) ($archive['writer'] ?? '') : '';
+        if ($adapter === 'duckdb-s3') {
+            return new DuckDbCliArchiveWriter(
+                self::archiveObjectStorage($settings),
+                self::archiveDuckDbBinary($settings),
+                self::archiveTempDirectory($settings),
+                timeoutSeconds: self::archiveCommandTimeoutSeconds($settings),
+            );
+        }
+
         if ($adapter === 'deterministic') {
             if (!self::localFallbackAllowed($settings)) {
                 throw new \RuntimeException('ARCHIVE_WRITER=deterministic is only allowed in local/testing.');
@@ -758,6 +773,17 @@ final class AppFactory
     {
         $archive = $settings['archive'] ?? [];
         $adapter = is_array($archive) ? (string) ($archive['cold_query_runner'] ?? '') : '';
+        if ($adapter === 'duckdb-s3') {
+            return new DuckDbCliColdQueryRunner(
+                self::archiveObjectStorage($settings),
+                self::archiveDuckDbBinary($settings),
+                self::archiveTempDirectory($settings),
+                timeoutSeconds: self::archiveCommandTimeoutSeconds($settings),
+                maxScannedObjects: self::positiveArchiveInt($settings, 'max_scanned_objects', 'ARCHIVE_MAX_SCANNED_OBJECTS'),
+                maxResultBytes: self::positiveArchiveInt($settings, 'max_result_bytes', 'ARCHIVE_MAX_RESULT_BYTES'),
+            );
+        }
+
         if ($adapter === 'fixture') {
             if (!self::localFallbackAllowed($settings)) {
                 throw new \RuntimeException('ARCHIVE_COLD_QUERY_RUNNER=fixture is only allowed in local/testing.');
@@ -771,6 +797,57 @@ final class AppFactory
         }
 
         throw new \RuntimeException('ARCHIVE_COLD_QUERY_RUNNER must be configured outside local/testing.');
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function archiveObjectStorage(array $settings): ArchiveObjectStorageInterface
+    {
+        $config = $settings['storage']['s3'] ?? [];
+        $config = is_array($config) ? $config : [];
+
+        return new S3ArchiveObjectStorage($config);
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function archiveDuckDbBinary(array $settings): string
+    {
+        $archive = $settings['archive'] ?? [];
+        $binary = is_array($archive) ? trim((string) ($archive['duckdb_binary'] ?? '')) : '';
+        if ($binary === '') {
+            throw new \RuntimeException('ARCHIVE_DUCKDB_BINARY is required for DuckDB archive adapters.');
+        }
+
+        return $binary;
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function archiveTempDirectory(array $settings): string
+    {
+        $archive = $settings['archive'] ?? [];
+        $temp = is_array($archive) ? trim((string) ($archive['temp_dir'] ?? '')) : '';
+        if ($temp === '') {
+            throw new \RuntimeException('ARCHIVE_TEMP_DIR is required for DuckDB archive adapters.');
+        }
+
+        return $temp;
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function archiveCommandTimeoutSeconds(array $settings): int
+    {
+        return self::positiveArchiveInt($settings, 'command_timeout_seconds', 'ARCHIVE_COMMAND_TIMEOUT_SECONDS');
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function positiveArchiveInt(array $settings, string $key, string $envName): int
+    {
+        $archive = $settings['archive'] ?? [];
+        $value = is_array($archive) ? (int) ($archive[$key] ?? 0) : 0;
+        if ($value <= 0) {
+            throw new \InvalidArgumentException($envName . ' must be positive.');
+        }
+
+        return $value;
     }
 
     /** @param array<string, mixed> $settings */

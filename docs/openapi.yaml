@@ -2783,7 +2783,7 @@ paths:
         - Archive
       operationId: createArchiveJob
       summary: Run a Parquet archive job.
-      description: Creates a completed archive manifest partitioned by event_type/date/hour.
+      description: Creates a completed archive manifest partitioned by event_type/date/hour. Production and staging write real Parquet objects through the DuckDB + S3-compatible archive adapter; local/testing may use deterministic adapter metadata.
       security:
         - BearerAuth: []
       responses:
@@ -2837,7 +2837,7 @@ paths:
         - Archive
       operationId: createColdQuery
       summary: Submit an asynchronous DuckDB cold query.
-      description: Queues a cold data query against archived Parquet partitions without executing synchronously.
+      description: Queues a cold data query against archived Parquet partitions without executing synchronously. The worker accepts one read-only SELECT statement, binds positional scalar parameters, scans completed manifest objects, and writes a JSON result object.
       security:
         - BearerAuth: []
       requestBody:
@@ -5821,7 +5821,7 @@ components:
           minimum: 0
         partitions:
           type: array
-          description: Archive partitions use event_type/date/hour layout.
+          description: Archive partitions use event_type/date/hour layout and point to S3-compatible object keys.
           items:
             $ref: "#/components/schemas/ArchivePartition"
         created_at:
@@ -5844,6 +5844,7 @@ components:
           minLength: 1
         object_key:
           type: string
+          description: S3-compatible object key or s3://bucket/key URI for the written Parquet partition.
           minLength: 1
         event_count:
           type: integer
@@ -5867,9 +5868,11 @@ components:
       properties:
         sql:
           type: string
+          description: Single read-only SELECT statement executed against the DuckDB archive view.
           minLength: 1
         parameters:
           type: array
+          description: Positional scalar parameters bound to `?` placeholders before execution.
           items: {}
           default: []
         requested_by:
@@ -5922,8 +5925,10 @@ components:
           type:
             - string
             - "null"
+          description: S3-compatible JSON result object key when the query completes.
         scanned_object_keys:
           type: array
+          description: Completed Parquet partition objects scanned by the worker.
           items:
             type: string
         error_message:

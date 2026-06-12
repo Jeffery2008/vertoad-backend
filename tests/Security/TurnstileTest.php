@@ -370,6 +370,39 @@ final class TurnstileTest extends TestCase
         self::assertFalse($policy->conditionallyProtects('POST', '/api/v1/auth/login'));
     }
 
+    public function testPolicyDisabledAndWildcardRuntimeBehavior(): void
+    {
+        $disabled = new TurnstilePolicy(
+            enabled: false,
+            timeoutSeconds: 5,
+            protectedEndpoints: ['POST:/protected'],
+            conditionalProtectedEndpoints: ['POST:/api/v1/ads/track'],
+        );
+
+        self::assertFalse($disabled->protectsRequest('POST', '/protected', abnormalTraffic: true));
+        self::assertFalse($disabled->conditionallyProtects('POST', '/api/v1/ads/track'));
+
+        $wildcard = new TurnstilePolicy(
+            enabled: true,
+            timeoutSeconds: 5,
+            protectedEndpoints: ['*'],
+        );
+
+        self::assertTrue($wildcard->matchesRequest('delete', '/any/private/path', abnormalTraffic: false));
+    }
+
+    public function testPolicyRejectsEmptyProtectedEndpointsInConstructor(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('protected_endpoints must not be empty.');
+
+        new TurnstilePolicy(
+            enabled: true,
+            timeoutSeconds: 5,
+            protectedEndpoints: [],
+        );
+    }
+
     public function testMiddlewareSkipsVerificationWhenPolicyIsDisabled(): void
     {
         $auditRepository = new CapturingAuditLogRepository();
