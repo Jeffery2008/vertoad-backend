@@ -7,6 +7,8 @@ namespace VertoAD\Tests;
 use PHPUnit\Framework\TestCase;
 use Slim\Psr7\Factory\ServerRequestFactory;
 use VertoAD\AppFactory;
+use VertoAD\Http\Action\HealthAction;
+use VertoAD\Service\RuntimeConfigHealthCheck;
 
 final class HealthTest extends TestCase
 {
@@ -27,5 +29,20 @@ final class HealthTest extends TestCase
         self::assertNotEmpty($payload['data']['timestamp'] ?? null);
         self::assertIsArray($payload['meta'] ?? null);
         self::assertNotEmpty($payload['request_id'] ?? null);
+    }
+
+    public function testHealthEndpointReportsDegradedWhenRuntimeConfigCheckFails(): void
+    {
+        $action = new HealthAction(new RuntimeConfigHealthCheck(static function (): void {
+            throw new \RuntimeException('Missing required system config: assets.upload_policy.');
+        }));
+        $request = (new ServerRequestFactory())->createServerRequest('GET', '/api/v1/health');
+
+        $response = $action($request, new \Slim\Psr7\Response());
+        $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame(503, $response->getStatusCode());
+        self::assertSame('runtime_config_unhealthy', $payload['code']);
+        self::assertSame('Missing required system config: assets.upload_policy.', $payload['message']);
     }
 }

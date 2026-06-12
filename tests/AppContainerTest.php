@@ -8,6 +8,7 @@ use Defuse\Crypto\Key;
 use Doctrine\DBAL\Connection;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
+use Slim\Psr7\Factory\ServerRequestFactory;
 use VertoAD\AppFactory;
 use VertoAD\Domain\Assets\AssetType;
 use VertoAD\Repository\AuditLogRepositoryInterface;
@@ -105,6 +106,8 @@ use VertoAD\Infrastructure\Security\RateLimitStoreInterface;
 use VertoAD\Infrastructure\Security\RedisRateLimitStore;
 use VertoAD\Infrastructure\Security\InMemoryRateLimitStore;
 use VertoAD\Infrastructure\Security\TurnstileVerifier;
+use VertoAD\Infrastructure\Storage\ObjectStorageInspectorInterface;
+use VertoAD\Infrastructure\Storage\UnavailableObjectStorageInspector;
 
 final class AppContainerTest extends TestCase
 {
@@ -641,6 +644,7 @@ PHP);
                     'access_key_id' => 'access-key',
                     'secret_access_key' => 'secret-key',
                     'path_style_endpoint' => true,
+                    'public_base_url' => 'https://assets.example.test',
                 ],
             ],
             'cron' => [
@@ -733,6 +737,7 @@ PHP);
                     'access_key_id' => 'access-key',
                     'secret_access_key' => 'secret-key',
                     'path_style_endpoint' => true,
+                    'public_base_url' => 'https://assets.example.test',
                 ],
             ],
             'cron' => [
@@ -784,6 +789,177 @@ PHP);
         } finally {
             $this->removeTemporaryAppBasePath($basePath);
             @unlink($databasePath);
+        }
+    }
+
+    public function testProductionHealthRouteReportsDegradedWhenRequiredSystemConfigIsMissing(): void
+    {
+        $databasePath = sys_get_temp_dir() . '/vertoad-health-config-missing-' . bin2hex(random_bytes(4)) . '.sqlite';
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ],
+            'redis' => [
+                'driver' => 'predis',
+                'password' => 'unit-test-redis-secret',
+                'prefix' => 'vertoad:test:',
+            ],
+            'storage' => [
+                's3' => [
+                    'endpoint' => 'https://r2.example.test',
+                    'bucket' => 'creative-assets',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                    'path_style_endpoint' => true,
+                    'public_base_url' => 'https://assets.example.test',
+                ],
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+        ], 'vertoad-appfactory-health-config-missing-');
+
+        try {
+            $connection = \Doctrine\DBAL\DriverManager::getConnection([
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ]);
+            $this->createSystemConfigSchema($connection);
+
+            $configPath = $basePath . '/config/routes.php';
+            file_put_contents($configPath, <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+use Slim\App;
+use VertoAD\Http\Action\HealthAction;
+
+return static function (App $app): void {
+    $app->get('/api/v1/health', HealthAction::class);
+};
+PHP);
+
+            $app = AppFactory::create($basePath);
+            $request = (new ServerRequestFactory())->createServerRequest('GET', '/api/v1/health');
+            $response = $app->handle($request);
+            $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+            self::assertSame(503, $response->getStatusCode());
+            self::assertNull($payload['data']);
+            self::assertSame('runtime_config_unhealthy', $payload['error']['code']);
+            self::assertSame('Missing required system config: assets.upload_policy.', $payload['error']['message']);
+            self::assertSame('v1', $payload['meta']['api_version']);
+            self::assertNotEmpty($payload['request_id']);
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
+            @unlink($databasePath);
+        }
+    }
+
+    public function testProductionAssetUploadServiceRequiresObjectInspectionPublicBaseUrl(): void
+    {
+        $databasePath = sys_get_temp_dir() . '/vertoad-object-inspector-missing-' . bin2hex(random_bytes(4)) . '.sqlite';
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'prod',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ],
+            'redis' => [
+                'driver' => 'predis',
+                'password' => 'unit-test-redis-secret',
+                'prefix' => 'vertoad:test:',
+            ],
+            'storage' => [
+                's3' => [
+                    'endpoint' => 'https://r2.example.test',
+                    'bucket' => 'creative-assets',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                    'path_style_endpoint' => true,
+                    'public_base_url' => '',
+                ],
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+        ], 'vertoad-appfactory-object-inspector-missing-');
+
+        try {
+            $connection = \Doctrine\DBAL\DriverManager::getConnection([
+                'driver' => 'pdo_sqlite',
+                'path' => $databasePath,
+            ]);
+            $this->createSystemConfigSchema($connection);
+            $this->insertSystemConfig($connection, 'assets.upload_policy', 1, $this->assetUploadPolicyConfig());
+
+            $container = AppFactory::create($basePath)->getContainer();
+
+            try {
+                $container?->get(AssetUploadService::class);
+                self::fail('Production asset upload confirmation must require object inspection.');
+            } catch (\RuntimeException $exception) {
+                self::assertSame('R2_PUBLIC_BASE_URL is required for uploaded asset inspection.', $exception->getMessage());
+            }
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
+            @unlink($databasePath);
+        }
+    }
+
+    public function testLocalObjectStorageInspectorFallsBackWhenPublicBaseUrlIsMissing(): void
+    {
+        $basePath = $this->temporaryAppBasePathWithSettings([
+            'app' => [
+                'env' => 'local',
+                'debug' => false,
+                'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
+            ],
+            'database' => [
+                'driver' => 'pdo_sqlite',
+                'memory' => true,
+            ],
+            'storage' => [
+                's3' => [
+                    'endpoint' => 'https://r2.example.test',
+                    'bucket' => 'creative-assets',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                    'path_style_endpoint' => true,
+                    'public_base_url' => '',
+                ],
+            ],
+            'cron' => [
+                'token' => '',
+                'allowed_ips' => [],
+                'jobs' => [],
+            ],
+        ], 'vertoad-appfactory-object-inspector-local-');
+
+        try {
+            $container = AppFactory::create($basePath)->getContainer();
+
+            self::assertInstanceOf(
+                UnavailableObjectStorageInspector::class,
+                $container?->get(ObjectStorageInspectorInterface::class),
+            );
+        } finally {
+            $this->removeTemporaryAppBasePath($basePath);
         }
     }
 

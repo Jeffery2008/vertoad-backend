@@ -6,6 +6,8 @@ namespace VertoAD\Service\Operations;
 
 use DateTimeImmutable;
 use InvalidArgumentException;
+use VertoAD\Domain\Assets\AssetType;
+use VertoAD\Domain\Assets\AssetUploadPolicy;
 use RuntimeException;
 use VertoAD\Domain\Operations\ConfigVersion;
 use VertoAD\Repository\Operations\ConfigVersionRepositoryInterface;
@@ -13,6 +15,10 @@ use VertoAD\Service\AuditLogService;
 
 final readonly class ConfigVersionService
 {
+    private const ASSET_UPLOAD_POLICY_KEY = 'assets.upload_policy';
+    private const REQUIRED_BLOCKED_EXTENSIONS = ['html', 'htm', 'js', 'mjs', 'svg'];
+    private const REQUIRED_BLOCKED_CONTENT_TYPES = ['text/html', 'application/javascript', 'text/javascript', 'image/svg+xml'];
+
     public function __construct(
         private ConfigVersionRepositoryInterface $versions,
         private AuditLogService $audit,
@@ -69,7 +75,7 @@ final readonly class ConfigVersionService
     private function create(string $configKey, array $value, int $createdByUserId): ConfigVersion
     {
         $this->assertValidKey($configKey);
-        $this->assertValidValue($value);
+        $this->assertValidValue($configKey, $value);
         $versionNumber = $this->versions->nextVersionNumber($configKey);
 
         return $this->versions->append(new ConfigVersion(
@@ -92,7 +98,7 @@ final readonly class ConfigVersionService
     /**
      * @param array<string, mixed> $value
      */
-    private function assertValidValue(array $value): void
+    private function assertValidValue(string $configKey, array $value): void
     {
         if ($value === []) {
             throw new InvalidArgumentException('Config value must not be empty.');
@@ -105,7 +111,64 @@ final readonly class ConfigVersionService
             }
 
             if (is_array($item)) {
-                $this->assertValidValue($item);
+                $this->assertNoSecretKeys($item);
+            }
+        }
+
+        if ($configKey === self::ASSET_UPLOAD_POLICY_KEY) {
+            $this->assertValidAssetUploadPolicy($value);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     */
+    private function assertNoSecretKeys(array $value): void
+    {
+        foreach ($value as $key => $item) {
+            $normalized = strtolower((string) $key);
+            if (str_contains($normalized, 'password') || str_contains($normalized, 'secret') || str_contains($normalized, 'token')) {
+                throw new InvalidArgumentException('Secret config values must stay in environment secrets.');
+            }
+
+            if (is_array($item)) {
+                $this->assertNoSecretKeys($item);
+            }
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     */
+    private function assertValidAssetUploadPolicy(array $value): void
+    {
+        try {
+            $policy = AssetUploadPolicy::fromArray($value);
+        } catch (InvalidArgumentException $exception) {
+            throw new InvalidArgumentException('Invalid assets.upload_policy ' . $exception->getMessage(), 0, $exception);
+        }
+
+        foreach (self::REQUIRED_BLOCKED_EXTENSIONS as $extension) {
+            if (!$policy->isBlockedExtension($extension)) {
+                throw new InvalidArgumentException('Invalid assets.upload_policy must block dangerous extension ' . $extension . '.');
+            }
+        }
+
+        foreach (self::REQUIRED_BLOCKED_CONTENT_TYPES as $contentType) {
+            if (!$policy->isBlockedContentType($contentType)) {
+                throw new InvalidArgumentException('Invalid assets.upload_policy must block dangerous content type ' . $contentType . '.');
+            }
+        }
+
+        foreach (AssetType::cases() as $assetType) {
+            foreach ($policy->allowedContentTypes($assetType) as $extension => $contentType) {
+                if ($policy->isBlockedExtension($extension)) {
+                    throw new InvalidArgumentException('Invalid assets.upload_policy cannot allow blocked extension ' . $extension . '.');
+                }
+
+                if ($policy->isBlockedContentType($contentType)) {
+                    throw new InvalidArgumentException('Invalid assets.upload_policy cannot allow blocked content type ' . $contentType . '.');
+                }
             }
         }
     }

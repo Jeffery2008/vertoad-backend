@@ -11,6 +11,7 @@ use Slim\App;
 use Slim\Factory\AppFactory as SlimAppFactory;
 use VertoAD\Http\Action\Cron\CronStatusAction;
 use VertoAD\Http\Action\Cron\CronRunAction;
+use VertoAD\Http\Action\HealthAction;
 use VertoAD\Http\Error\OperationErrorHandler;
 use VertoAD\Http\Auth\BearerTokenAuthenticator;
 use VertoAD\Http\Middleware\AuthenticateRequestMiddleware;
@@ -32,7 +33,10 @@ use VertoAD\Infrastructure\Redis\InMemoryRedisClient;
 use VertoAD\Infrastructure\Redis\RedisClientInterface;
 use VertoAD\Infrastructure\Redis\RedisClientFactory;
 use VertoAD\Infrastructure\Storage\DeterministicPresignedUploadSigner;
+use VertoAD\Infrastructure\Storage\ObjectStorageInspectorInterface;
 use VertoAD\Infrastructure\Storage\ObjectStorageUploadSignerInterface;
+use VertoAD\Infrastructure\Storage\PublicUrlObjectStorageInspector;
+use VertoAD\Infrastructure\Storage\UnavailableObjectStorageInspector;
 use VertoAD\Repository\AdSlotRepository;
 use VertoAD\Repository\AdSlotRepositoryInterface;
 use VertoAD\Repository\Archive\ArchiveRepositoryInterface;
@@ -164,6 +168,7 @@ use VertoAD\Service\Review\DeterministicCreativeReviewProvider;
 use VertoAD\Service\Review\OpenAiCompatibleCreativeReviewProvider;
 use VertoAD\Service\Reporting\ReportQueryService;
 use VertoAD\Service\ReviewService;
+use VertoAD\Service\RuntimeConfigHealthCheck;
 use VertoAD\Service\SystemConfigService;
 use VertoAD\Service\Support\SupportTicketService;
 use VertoAD\Service\TenantAccessService;
@@ -253,11 +258,14 @@ final class AppFactory
                     new AssetRepository($connection),
                 ObjectStorageUploadSignerInterface::class => static fn (): ObjectStorageUploadSignerInterface =>
                     new DeterministicPresignedUploadSigner($settings['storage']['s3'] ?? []),
+                ObjectStorageInspectorInterface::class => static fn (): ObjectStorageInspectorInterface =>
+                    self::objectStorageInspector($settings),
                 AssetUploadService::class => static fn (
                     AssetRepositoryInterface $repository,
                     ObjectStorageUploadSignerInterface $signer,
+                    ObjectStorageInspectorInterface $inspector,
                     SystemConfigService $configs,
-                ): AssetUploadService => new AssetUploadService($repository, $signer, $configs->assetUploadPolicy()),
+                ): AssetUploadService => new AssetUploadService($repository, $signer, $inspector, $configs->assetUploadPolicy()),
                 ReviewRepositoryInterface::class => static fn (Connection $connection): ReviewRepositoryInterface =>
                     new ReviewRepository($connection),
                 CreativeReviewProviderInterface::class => static fn (): CreativeReviewProviderInterface =>
@@ -482,6 +490,8 @@ final class AppFactory
                     new SystemConfigRepository($connection),
                 SystemConfigService::class => static fn (SystemConfigRepositoryInterface $repository): SystemConfigService =>
                     new SystemConfigService($repository, self::localFallbackAllowed($settings)),
+                RuntimeConfigHealthCheck::class => static fn (SystemConfigService $configs): RuntimeConfigHealthCheck =>
+                    RuntimeConfigHealthCheck::fromSystemConfig($configs),
                 CronLockStoreInterface::class => static fn (): CronLockStoreInterface =>
                     self::cronLockStore($settings),
                 EventConsumptionJob::class => static fn (
@@ -608,6 +618,8 @@ final class AppFactory
                 RateLimiter::class => static fn (RateLimitStoreInterface $store): RateLimiter => new RateLimiter($store),
                 RateLimitPolicy::class => static fn (SystemConfigService $configs): RateLimitPolicy =>
                     $configs->rateLimitPolicy(),
+                HealthAction::class => static fn (RuntimeConfigHealthCheck $runtimeConfigHealthCheck): HealthAction =>
+                    new HealthAction($runtimeConfigHealthCheck),
                 RateLimitMiddleware::class => static fn (
                     RateLimiter $limiter,
                     RateLimitPolicy $policy,
@@ -637,6 +649,22 @@ final class AppFactory
         $errorMiddleware->setDefaultErrorHandler($container->get(OperationErrorHandler::class));
 
         return $app;
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function objectStorageInspector(array $settings): ObjectStorageInspectorInterface
+    {
+        $config = $settings['storage']['s3'] ?? [];
+        $publicBaseUrl = is_array($config) ? trim((string) ($config['public_base_url'] ?? '')) : '';
+        if ($publicBaseUrl !== '') {
+            return new PublicUrlObjectStorageInspector($config);
+        }
+
+        if (self::localFallbackAllowed($settings)) {
+            return new UnavailableObjectStorageInspector();
+        }
+
+        throw new \RuntimeException('R2_PUBLIC_BASE_URL is required for uploaded asset inspection.');
     }
 
     /** @param array<string, mixed> $settings */

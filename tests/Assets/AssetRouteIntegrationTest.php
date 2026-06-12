@@ -17,8 +17,10 @@ use VertoAD\Http\Action\Assets\CreateAssetUploadIntentAction;
 use VertoAD\Http\Auth\BearerTokenAuthenticator;
 use VertoAD\Http\Middleware\ApiEnvelopeMiddleware;
 use VertoAD\Http\Middleware\AuthenticateRequestMiddleware;
+use VertoAD\Infrastructure\Storage\ObjectStorageInspectorInterface;
 use VertoAD\Infrastructure\Storage\DeterministicPresignedUploadSigner;
 use VertoAD\Infrastructure\Storage\ObjectStorageUploadSignerInterface;
+use VertoAD\Infrastructure\Storage\StoredObjectInspection;
 use VertoAD\Repository\Assets\AssetRepository;
 use VertoAD\Repository\Assets\AssetRepositoryInterface;
 use VertoAD\Repository\FirstPartySessionRepositoryInterface;
@@ -72,10 +74,7 @@ final class AssetRouteIntegrationTest extends TestCase
             'object_key' => $intent['data']['object_key'],
             'content_type' => 'image/png',
             'byte_size' => 1024,
-            'width' => 800,
-            'height' => 600,
             'checksum' => 'sha256:abc',
-            'magic_base64' => base64_encode("\x89PNG\r\n\x1A\npayload"),
         ], 'valid-token');
 
         self::assertSame('pending_review', $confirmed['data']['status']);
@@ -102,10 +101,6 @@ final class AssetRouteIntegrationTest extends TestCase
             'object_key' => $intent['data']['object_key'],
             'content_type' => 'video/mp4',
             'byte_size' => 1024,
-            'width' => 640,
-            'height' => 360,
-            'duration_seconds' => 30,
-            'magic_base64' => base64_encode("\x00\x00\x00\x18ftypmp42"),
         ], 'valid-token');
 
         self::assertEqualsWithDelta(30.0, (float) $confirmed['data']['duration_seconds'], 0.001);
@@ -114,7 +109,18 @@ final class AssetRouteIntegrationTest extends TestCase
     public function testConfirmRouteReturnsValidationEnvelopeForUnsafeMagic(): void
     {
         $connection = $this->createConnection();
-        $app = $this->createApp($connection);
+        $inspector = $this->defaultInspector();
+        $inspector->put(new StoredObjectInspection(
+            objectKey: 'organizations/99/assets/route-token.png',
+            contentType: 'image/png',
+            byteSize: 1024,
+            width: 800,
+            height: 600,
+            durationSeconds: null,
+            checksum: 'sha256:' . hash('sha256', '<script>alert(1)</script>'),
+            leadingBytes: '<script>alert(1)</script>',
+        ));
+        $app = $this->createApp($connection, $inspector);
 
         $intent = $this->handleJson($app, 'POST', '/api/v1/assets/upload-intents?organization_id=99', [
             'type' => 'image',
@@ -128,9 +134,6 @@ final class AssetRouteIntegrationTest extends TestCase
             'object_key' => $intent['data']['object_key'],
             'content_type' => 'image/png',
             'byte_size' => 1024,
-            'width' => 800,
-            'height' => 600,
-            'magic_base64' => base64_encode('<script>alert(1)</script>'),
         ], 'valid-token');
 
         self::assertSame('asset_magic_mismatch', $rejected['error']['code']);
@@ -172,17 +175,13 @@ final class AssetRouteIntegrationTest extends TestCase
         ], 'valid-token');
         self::assertSame('invalid_request', $badConfirmInt['error']['code']);
 
-        $badDuration = $this->handleJson($app, 'POST', '/api/v1/assets/confirm?organization_id=99', [
+        $badConfirmByteSize = $this->handleJson($app, 'POST', '/api/v1/assets/confirm?organization_id=99', [
             'upload_intent_id' => 1,
             'object_key' => 'organizations/99/assets/route-token.mp4',
             'content_type' => 'video/mp4',
-            'byte_size' => 1024,
-            'width' => 640,
-            'height' => 360,
-            'duration_seconds' => '30',
-            'magic_base64' => base64_encode("\x00\x00\x00\x18ftypmp42"),
+            'byte_size' => '1024',
         ], 'valid-token');
-        self::assertSame('invalid_request', $badDuration['error']['code']);
+        self::assertSame('invalid_request', $badConfirmByteSize['error']['code']);
     }
 
     /**
@@ -211,8 +210,9 @@ final class AssetRouteIntegrationTest extends TestCase
         return $decoded;
     }
 
-    private function createApp(Connection $connection): \Slim\App
+    private function createApp(Connection $connection, ?InMemoryObjectStorageInspector $inspector = null): \Slim\App
     {
+        $inspector ??= $this->defaultInspector();
         $container = (new ContainerBuilder())->addDefinitions([
             Connection::class => $connection,
             FirstPartySessionRepositoryInterface::class => static fn (): FirstPartySessionRepositoryInterface =>
@@ -248,10 +248,12 @@ final class AssetRouteIntegrationTest extends TestCase
                     'secret_access_key' => 'secret-key',
                     'path_style_endpoint' => true,
                 ]),
+            ObjectStorageInspectorInterface::class => static fn (): ObjectStorageInspectorInterface => $inspector,
             AssetUploadService::class => static fn (
                 AssetRepositoryInterface $repository,
                 ObjectStorageUploadSignerInterface $signer,
-            ): AssetUploadService => new AssetUploadService($repository, $signer, tokenGenerator: static fn (): string => 'route-token'),
+                ObjectStorageInspectorInterface $objectInspector,
+            ): AssetUploadService => new AssetUploadService($repository, $signer, $objectInspector, tokenGenerator: static fn (): string => 'route-token'),
         ])->build();
 
         SlimAppFactory::setContainer($container);
@@ -264,6 +266,32 @@ final class AssetRouteIntegrationTest extends TestCase
         $app->addErrorMiddleware(false, true, true);
 
         return $app;
+    }
+
+    private function defaultInspector(): InMemoryObjectStorageInspector
+    {
+        return new InMemoryObjectStorageInspector([
+            new StoredObjectInspection(
+                objectKey: 'organizations/99/assets/route-token.png',
+                contentType: 'image/png',
+                byteSize: 1024,
+                width: 800,
+                height: 600,
+                durationSeconds: null,
+                checksum: 'sha256:abc',
+                leadingBytes: "\x89PNG\r\n\x1A\npayload",
+            ),
+            new StoredObjectInspection(
+                objectKey: 'organizations/99/assets/route-token.mp4',
+                contentType: 'video/mp4',
+                byteSize: 1024,
+                width: 640,
+                height: 360,
+                durationSeconds: 30.0,
+                checksum: 'sha256:' . hash('sha256', "\x00\x00\x00\x18ftypmp42"),
+                leadingBytes: "\x00\x00\x00\x18ftypmp42",
+            ),
+        ]);
     }
 
     private function createConnection(): Connection

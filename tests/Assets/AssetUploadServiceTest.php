@@ -13,6 +13,8 @@ use VertoAD\Domain\Assets\AssetUploadPolicy;
 use VertoAD\Domain\Assets\AssetUploadIntent;
 use VertoAD\Domain\Assets\CreativeAsset;
 use VertoAD\Infrastructure\Storage\DeterministicPresignedUploadSigner;
+use VertoAD\Infrastructure\Storage\ObjectStorageInspectorInterface;
+use VertoAD\Infrastructure\Storage\StoredObjectInspection;
 use VertoAD\Repository\Assets\AssetRepository;
 use VertoAD\Repository\Assets\AssetRepositoryInterface;
 use VertoAD\Service\Assets\AssetUploadService;
@@ -77,6 +79,7 @@ final class AssetUploadServiceTest extends TestCase
     public function testCreateAndConfirmUseConfiguredUploadPolicy(): void
     {
         $connection = $this->createConnection();
+        $inspector = new InMemoryObjectStorageInspector();
         $service = $this->createService($connection, AssetUploadPolicy::fromArray([
             'upload_intent_ttl_seconds' => 120,
             'blocked_extensions' => ['html'],
@@ -124,12 +127,13 @@ final class AssetUploadServiceTest extends TestCase
                     ],
                 ],
             ],
-        ]));
+        ]), $inspector);
 
         $intent = $service->createUploadIntent(99, 7, 'image', 'creative.avif', 'image/avif', 1024);
         $pngRejected = $this->captureValidation(
             fn () => $service->createUploadIntent(99, 7, 'image', 'creative.png', 'image/png', 1024),
         );
+        $this->storeObject($inspector, $intent, "\x00\x00\x00\x18ftypavif", width: 513, height: 512);
         $tooWide = $this->captureValidation(fn () => $service->confirmUploadedAsset(
             99,
             7,
@@ -137,12 +141,8 @@ final class AssetUploadServiceTest extends TestCase
             $intent->objectKey,
             'image/avif',
             1024,
-            513,
-            512,
-            null,
-            null,
-            base64_encode("\x00\x00\x00\x18ftypavif"),
         ));
+        $this->storeObject($inspector, $intent, "\x00\x00\x00\x18ftypavif", width: 512, height: 512);
         $asset = $service->confirmUploadedAsset(
             99,
             7,
@@ -150,11 +150,7 @@ final class AssetUploadServiceTest extends TestCase
             $intent->objectKey,
             'image/avif',
             1024,
-            512,
-            512,
             null,
-            null,
-            base64_encode("\x00\x00\x00\x18ftypavif"),
         );
 
         self::assertSame('image/avif', $intent->contentType);
@@ -168,9 +164,11 @@ final class AssetUploadServiceTest extends TestCase
     public function testConfirmRejectsMagicMismatchAndDimensionBoundaries(): void
     {
         $connection = $this->createConnection();
-        $service = $this->createService($connection);
+        $inspector = new InMemoryObjectStorageInspector();
+        $service = $this->createService($connection, inspector: $inspector);
         $intent = $service->createUploadIntent(99, 7, 'image', 'creative.png', 'image/png', 1024);
 
+        $this->storeObject($inspector, $intent, "\xFF\xD8\xFF\xE0jpeg");
         $magicMismatch = $this->captureValidation(fn () => $service->confirmUploadedAsset(
             99,
             7,
@@ -178,14 +176,22 @@ final class AssetUploadServiceTest extends TestCase
             $intent->objectKey,
             'image/png',
             1024,
-            800,
-            600,
-            null,
-            null,
-            base64_encode("\xFF\xD8\xFF\xE0jpeg"),
         ));
         self::assertSame('asset_magic_mismatch', $magicMismatch->errorCode);
 
+        $this->storeObject($inspector, $intent, '');
+        $missingMagic = $this->captureValidation(fn () => $service->confirmUploadedAsset(
+            99,
+            7,
+            $intent->id,
+            $intent->objectKey,
+            'image/png',
+            1024,
+        ));
+        self::assertSame('asset_magic_mismatch', $missingMagic->errorCode);
+        self::assertSame('Magic bytes are required.', $missingMagic->getMessage());
+
+        $this->storeObject($inspector, $intent, "\x89PNG\r\n\x1A\npayload", width: 4097, height: 600);
         $tooWide = $this->captureValidation(fn () => $service->confirmUploadedAsset(
             99,
             7,
@@ -193,14 +199,10 @@ final class AssetUploadServiceTest extends TestCase
             $intent->objectKey,
             'image/png',
             1024,
-            4097,
-            600,
-            null,
-            null,
-            base64_encode("\x89PNG\r\n\x1A\npayload"),
         ));
         self::assertSame('asset_dimensions_out_of_bounds', $tooWide->errorCode);
 
+        $this->storeObject($inspector, $intent, "\x89PNG\r\n\x1A\npayload", width: 0, height: 600);
         $zeroWidth = $this->captureValidation(fn () => $service->confirmUploadedAsset(
             99,
             7,
@@ -208,22 +210,83 @@ final class AssetUploadServiceTest extends TestCase
             $intent->objectKey,
             'image/png',
             1024,
-            0,
-            600,
-            null,
-            null,
-            base64_encode("\x89PNG\r\n\x1A\npayload"),
         ));
         self::assertSame('asset_dimensions_out_of_bounds', $zeroWidth->errorCode);
+    }
+
+    public function testConfirmRejectsForgedClientMagicWhenStoredObjectIsUnsafe(): void
+    {
+        $connection = $this->createConnection();
+        $inspector = new InMemoryObjectStorageInspector();
+        $service = $this->createService($connection, inspector: $inspector);
+        $intent = $service->createUploadIntent(99, 7, 'image', 'creative.png', 'image/png', 1024);
+        $this->storeObject($inspector, $intent, '<script>alert(1)</script>');
+
+        $rejected = $this->captureValidation(fn () => $service->confirmUploadedAsset(
+            99,
+            7,
+            $intent->id,
+            $intent->objectKey,
+            'image/png',
+            1024,
+        ));
+
+        self::assertSame('asset_magic_mismatch', $rejected->errorCode);
+        self::assertSame(0, (int) $connection->fetchOne('SELECT COUNT(*) FROM creative_assets'));
+    }
+
+    public function testConfirmRejectsStoredObjectMetadataMismatch(): void
+    {
+        $connection = $this->createConnection();
+        $inspector = new InMemoryObjectStorageInspector();
+        $service = $this->createService($connection, inspector: $inspector);
+        $intent = $service->createUploadIntent(99, 7, 'image', 'creative.png', 'image/png', 1024);
+
+        $this->storeObject($inspector, $intent, "\x89PNG\r\n\x1A\npayload", contentType: 'image/jpeg');
+        $contentTypeMismatch = $this->captureValidation(fn () => $service->confirmUploadedAsset(
+            99,
+            7,
+            $intent->id,
+            $intent->objectKey,
+            'image/png',
+            1024,
+        ));
+        self::assertSame('asset_uploaded_object_mismatch', $contentTypeMismatch->errorCode);
+
+        $this->storeObject($inspector, $intent, "\x89PNG\r\n\x1A\npayload", byteSize: 2048);
+        $byteSizeMismatch = $this->captureValidation(fn () => $service->confirmUploadedAsset(
+            99,
+            7,
+            $intent->id,
+            $intent->objectKey,
+            'image/png',
+            1024,
+        ));
+        self::assertSame('asset_uploaded_object_mismatch', $byteSizeMismatch->errorCode);
+
+        $this->storeObject($inspector, $intent, "\x89PNG\r\n\x1A\npayload", checksum: 'sha256:stored');
+        $checksumMismatch = $this->captureValidation(fn () => $service->confirmUploadedAsset(
+            99,
+            7,
+            $intent->id,
+            $intent->objectKey,
+            'image/png',
+            1024,
+            'sha256:client',
+        ));
+        self::assertSame('asset_uploaded_object_mismatch', $checksumMismatch->errorCode);
+        self::assertSame('Stored object checksum does not match the confirmation payload.', $checksumMismatch->getMessage());
     }
 
     public function testConfirmRejectsVideoDurationAndResolutionBoundaries(): void
     {
         $connection = $this->createConnection();
-        $service = $this->createService($connection);
+        $inspector = new InMemoryObjectStorageInspector();
+        $service = $this->createService($connection, inspector: $inspector);
         $intent = $service->createUploadIntent(99, 7, 'video', 'creative.mp4', 'video/mp4', 5_000_000);
-        $mp4Header = base64_encode("\x00\x00\x00\x18ftypmp42");
+        $mp4Header = "\x00\x00\x00\x18ftypmp42";
 
+        $this->storeObject($inspector, $intent, $mp4Header, width: 1920, height: 1080, durationSeconds: 120.1);
         $tooLong = $this->captureValidation(fn () => $service->confirmUploadedAsset(
             99,
             7,
@@ -231,14 +294,10 @@ final class AssetUploadServiceTest extends TestCase
             $intent->objectKey,
             'video/mp4',
             5_000_000,
-            1920,
-            1080,
-            120.1,
-            null,
-            $mp4Header,
         ));
         self::assertSame('asset_duration_out_of_bounds', $tooLong->errorCode);
 
+        $this->storeObject($inspector, $intent, $mp4Header, width: 3840, height: 2161, durationSeconds: 30.0);
         $tooTall = $this->captureValidation(fn () => $service->confirmUploadedAsset(
             99,
             7,
@@ -246,11 +305,6 @@ final class AssetUploadServiceTest extends TestCase
             $intent->objectKey,
             'video/mp4',
             5_000_000,
-            3840,
-            2161,
-            30.0,
-            null,
-            $mp4Header,
         ));
         self::assertSame('asset_video_resolution_out_of_bounds', $tooTall->errorCode);
     }
@@ -258,8 +312,10 @@ final class AssetUploadServiceTest extends TestCase
     public function testSuccessfulConfirmCreatesPendingReviewAssetAndSnapshotJob(): void
     {
         $connection = $this->createConnection();
-        $service = $this->createService($connection);
+        $inspector = new InMemoryObjectStorageInspector();
+        $service = $this->createService($connection, inspector: $inspector);
         $intent = $service->createUploadIntent(99, 7, 'image', 'creative.png', 'image/png', 1024);
+        $this->storeObject($inspector, $intent, "\x89PNG\r\n\x1A\npayload", checksum: 'sha256:abc');
 
         $asset = $service->confirmUploadedAsset(
             99,
@@ -268,11 +324,7 @@ final class AssetUploadServiceTest extends TestCase
             $intent->objectKey,
             'image/png',
             1024,
-            800,
-            600,
-            null,
             'sha256:abc',
-            base64_encode("\x89PNG\r\n\x1A\npayload"),
         );
 
         self::assertNotNull($asset->id);
@@ -313,11 +365,7 @@ final class AssetUploadServiceTest extends TestCase
             $intent->objectKey,
             'image/png',
             1024,
-            800,
-            600,
             null,
-            null,
-            base64_encode("\x89PNG\r\n\x1A\npayload"),
         ));
 
         self::assertSame('asset_upload_intent_expired', $expired->errorCode);
@@ -325,10 +373,11 @@ final class AssetUploadServiceTest extends TestCase
         self::assertSame(0, (int) $connection->fetchOne('SELECT COUNT(*) FROM asset_snapshot_jobs'));
     }
 
-    public function testConfirmRejectsMetadataMismatchAndInvalidBase64Magic(): void
+    public function testConfirmRejectsMetadataMismatchAndMissingStoredObject(): void
     {
         $connection = $this->createConnection();
-        $service = $this->createService($connection);
+        $inspector = new InMemoryObjectStorageInspector();
+        $service = $this->createService($connection, inspector: $inspector);
         $intent = $service->createUploadIntent(99, 7, 'image', 'creative.png', 'image/png', 1024);
 
         $metadataMismatch = $this->captureValidation(fn () => $service->confirmUploadedAsset(
@@ -338,28 +387,18 @@ final class AssetUploadServiceTest extends TestCase
             $intent->objectKey . '-wrong',
             'image/png',
             1024,
-            800,
-            600,
-            null,
-            null,
-            base64_encode("\x89PNG\r\n\x1A\npayload"),
         ));
         self::assertSame('asset_upload_metadata_mismatch', $metadataMismatch->errorCode);
 
-        $badBase64 = $this->captureValidation(fn () => $service->confirmUploadedAsset(
+        $missingObject = $this->captureValidation(fn () => $service->confirmUploadedAsset(
             99,
             7,
             $intent->id,
             $intent->objectKey,
             'image/png',
             1024,
-            800,
-            600,
-            null,
-            null,
-            'not-base64%%',
         ));
-        self::assertSame('asset_magic_mismatch', $badBase64->errorCode);
+        self::assertSame('asset_uploaded_object_not_found', $missingObject->errorCode);
     }
 
     public function testConfirmAcceptsSupportedMagicFamilies(): void
@@ -375,8 +414,10 @@ final class AssetUploadServiceTest extends TestCase
 
         foreach ($cases as [$type, $filename, $contentType, $magic, $duration]) {
             $connection = $this->createConnection();
-            $service = $this->createService($connection);
+            $inspector = new InMemoryObjectStorageInspector();
+            $service = $this->createService($connection, inspector: $inspector);
             $intent = $service->createUploadIntent(99, 7, $type, $filename, $contentType, 1024);
+            $this->storeObject($inspector, $intent, $magic, durationSeconds: $duration);
 
             $asset = $service->confirmUploadedAsset(
                 99,
@@ -385,11 +426,6 @@ final class AssetUploadServiceTest extends TestCase
                 $intent->objectKey,
                 $contentType,
                 1024,
-                800,
-                600,
-                $duration,
-                null,
-                base64_encode($magic),
             );
 
             self::assertSame($type, $asset->type->value);
@@ -400,8 +436,10 @@ final class AssetUploadServiceTest extends TestCase
     public function testConfirmAcceptsMp4MagicAndRejectsUnsupportedIntentContentType(): void
     {
         $connection = $this->createConnection();
-        $service = $this->createService($connection);
+        $inspector = new InMemoryObjectStorageInspector();
+        $service = $this->createService($connection, inspector: $inspector);
         $intent = $service->createUploadIntent(99, 7, 'video', 'creative.mp4', 'video/mp4', 1024);
+        $this->storeObject($inspector, $intent, "\x00\x00\x00\x18ftypmp42", width: 640, height: 360, durationSeconds: 30.0);
 
         $asset = $service->confirmUploadedAsset(
             99,
@@ -410,14 +448,21 @@ final class AssetUploadServiceTest extends TestCase
             $intent->objectKey,
             'video/mp4',
             1024,
-            640,
-            360,
-            30.0,
-            null,
-            base64_encode("\x00\x00\x00\x18ftypmp42"),
         );
         self::assertSame('video', $asset->type->value);
 
+        $unsupportedInspector = new InMemoryObjectStorageInspector([
+            new StoredObjectInspection(
+                objectKey: 'organizations/99/assets/creative.bin',
+                contentType: 'application/octet-stream',
+                byteSize: 10,
+                width: 1,
+                height: 1,
+                durationSeconds: null,
+                checksum: 'sha256:' . hash('sha256', 'binary'),
+                leadingBytes: 'binary',
+            ),
+        ]);
         $unsupported = new AssetUploadService(
             new class implements AssetRepositoryInterface {
                 public function createUploadIntent(AssetUploadIntent $intent): AssetUploadIntent
@@ -453,6 +498,7 @@ final class AssetUploadServiceTest extends TestCase
                 'secret_access_key' => 'secret-key',
                 'path_style_endpoint' => true,
             ]),
+            $unsupportedInspector,
         );
 
         $exception = $this->captureValidation(fn () => $unsupported->confirmUploadedAsset(
@@ -462,11 +508,6 @@ final class AssetUploadServiceTest extends TestCase
             'organizations/99/assets/creative.bin',
             'application/octet-stream',
             10,
-            1,
-            1,
-            null,
-            null,
-            base64_encode('binary'),
         ));
         self::assertSame('asset_magic_mismatch', $exception->errorCode);
     }
@@ -484,11 +525,6 @@ final class AssetUploadServiceTest extends TestCase
             $intent->objectKey,
             'image/png',
             1024,
-            800,
-            600,
-            null,
-            null,
-            base64_encode("\x89PNG\r\n\x1A\npayload"),
         ));
         self::assertSame('asset_upload_intent_not_found', $wrongOrg->errorCode);
 
@@ -499,11 +535,6 @@ final class AssetUploadServiceTest extends TestCase
             $intent->objectKey,
             'image/png',
             1024,
-            800,
-            600,
-            null,
-            null,
-            base64_encode("\x89PNG\r\n\x1A\npayload"),
         ));
         self::assertSame('asset_upload_intent_not_found', $wrongUser->errorCode);
     }
@@ -519,7 +550,11 @@ final class AssetUploadServiceTest extends TestCase
         self::fail('Expected asset validation exception.');
     }
 
-    private function createService(Connection $connection, ?AssetUploadPolicy $policy = null): AssetUploadService
+    private function createService(
+        Connection $connection,
+        ?AssetUploadPolicy $policy = null,
+        ?InMemoryObjectStorageInspector $inspector = null,
+    ): AssetUploadService
     {
         return new AssetUploadService(
             new AssetRepository($connection),
@@ -530,9 +565,33 @@ final class AssetUploadServiceTest extends TestCase
                 'secret_access_key' => 'secret-key',
                 'path_style_endpoint' => true,
             ]),
+            $inspector ?? new InMemoryObjectStorageInspector(),
             $policy ?? AssetUploadPolicy::default(),
             static fn (): string => 'fixed-token',
         );
+    }
+
+    private function storeObject(
+        InMemoryObjectStorageInspector $inspector,
+        AssetUploadIntent $intent,
+        string $leadingBytes,
+        int $width = 800,
+        int $height = 600,
+        ?float $durationSeconds = null,
+        ?string $contentType = null,
+        ?int $byteSize = null,
+        ?string $checksum = null,
+    ): void {
+        $inspector->put(new StoredObjectInspection(
+            objectKey: $intent->objectKey,
+            contentType: $contentType ?? $intent->contentType,
+            byteSize: $byteSize ?? $intent->byteSize,
+            width: $width,
+            height: $height,
+            durationSeconds: $durationSeconds,
+            checksum: $checksum ?? 'sha256:' . hash('sha256', $leadingBytes),
+            leadingBytes: $leadingBytes,
+        ));
     }
 
     private function createConnection(): Connection

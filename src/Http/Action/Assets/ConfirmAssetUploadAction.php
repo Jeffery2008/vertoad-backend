@@ -38,11 +38,7 @@ final readonly class ConfirmAssetUploadAction
                 $this->stringField($body, 'object_key'),
                 $this->stringField($body, 'content_type'),
                 $this->intField($body, 'byte_size'),
-                $this->intField($body, 'width'),
-                $this->intField($body, 'height'),
-                $this->nullableFloatField($body, 'duration_seconds'),
                 isset($body['checksum']) && is_string($body['checksum']) ? $body['checksum'] : null,
-                $this->stringField($body, 'magic_base64'),
             );
         } catch (AssetValidationException $exception) {
             return $this->json($response, ['code' => $exception->errorCode, 'message' => $exception->getMessage()], $exception->status);
@@ -75,23 +71,6 @@ final readonly class ConfirmAssetUploadAction
         }
 
         throw new AssetValidationException('invalid_request', $key . ' must be a positive integer.');
-    }
-
-    /**
-     * @param array<string, mixed> $body
-     */
-    private function nullableFloatField(array $body, string $key): ?float
-    {
-        $value = $body[$key] ?? null;
-        if ($value === null) {
-            return null;
-        }
-
-        if (is_int($value) || is_float($value)) {
-            return (float) $value;
-        }
-
-        throw new AssetValidationException('invalid_request', $key . ' must be numeric when present.');
     }
 
     /**

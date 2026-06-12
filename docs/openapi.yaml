@@ -332,6 +332,8 @@ paths:
                     error: null
                     meta: {}
                     request_id: req_0123456789abcdef
+        "503":
+          $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
   /api/v1/permissions:
@@ -1017,7 +1019,7 @@ paths:
         - Assets
       operationId: confirmAssetUpload
       summary: Confirm and validate an uploaded creative asset.
-      description: Validates upload metadata, magic bytes, dimensions, and video duration using the current `assets.upload_policy` system configuration version before creating a pending-review asset and snapshot job marker.
+      description: Validates the uploaded object by reading object storage metadata and bytes, then applying the current `assets.upload_policy` system configuration version for magic bytes, dimensions, and video duration before creating a pending-review asset and snapshot job marker.
       security:
         - BearerAuth: []
       parameters:
@@ -4946,15 +4948,12 @@ components:
       additionalProperties: false
     AssetConfirmRequest:
       type: object
-      description: Upload confirmation metadata. Width, height, magic bytes, duration, byte size, extension, and content-type validation are evaluated by asset type against the active `assets.upload_policy` version.
+      description: Upload confirmation metadata. Clients identify the upload intent and object; the backend reads object storage for authoritative content type, byte size, magic bytes, dimensions, and video duration before applying the active `assets.upload_policy` version.
       required:
         - upload_intent_id
         - object_key
         - content_type
         - byte_size
-        - width
-        - height
-        - magic_base64
       properties:
         upload_intent_id:
           type: integer
@@ -4968,29 +4967,11 @@ components:
         byte_size:
           type: integer
           minimum: 1
-        width:
-          type: integer
-          minimum: 1
-          description: Uploaded asset width in pixels when applicable; required and validated according to asset type and policy.
-        height:
-          type: integer
-          minimum: 1
-          description: Uploaded asset height in pixels when applicable; required and validated according to asset type and policy.
-        duration_seconds:
-          type:
-            - number
-            - "null"
-          exclusiveMinimum: 0
-          description: Uploaded video duration when applicable; validated according to asset type and policy.
         checksum:
           type:
             - string
             - "null"
           minLength: 1
-        magic_base64:
-          type: string
-          minLength: 1
-          description: Base64-encoded leading bytes used for magic-signature validation according to asset type and policy.
       additionalProperties: false
     CreativeAssetData:
       type: object

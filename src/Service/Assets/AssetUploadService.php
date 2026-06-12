@@ -10,6 +10,7 @@ use VertoAD\Domain\Assets\AssetType;
 use VertoAD\Domain\Assets\AssetUploadPolicy;
 use VertoAD\Domain\Assets\AssetUploadIntent;
 use VertoAD\Domain\Assets\CreativeAsset;
+use VertoAD\Infrastructure\Storage\ObjectStorageInspectorInterface;
 use VertoAD\Infrastructure\Storage\ObjectStorageUploadSignerInterface;
 use VertoAD\Infrastructure\Storage\PresignedUploadRequest;
 use VertoAD\Repository\Assets\AssetRepositoryInterface;
@@ -25,6 +26,7 @@ final class AssetUploadService
     public function __construct(
         private readonly AssetRepositoryInterface $repository,
         private readonly ObjectStorageUploadSignerInterface $signer,
+        private readonly ObjectStorageInspectorInterface $inspector,
         private readonly ?AssetUploadPolicy $policy = null,
         ?callable $tokenGenerator = null,
     ) {
@@ -84,11 +86,7 @@ final class AssetUploadService
         string $objectKey,
         string $contentType,
         int $byteSize,
-        int $width,
-        int $height,
-        ?float $durationSeconds,
-        ?string $checksum,
-        string $magicBase64,
+        ?string $checksum = null,
     ): CreativeAsset {
         $intent = $this->repository->findUploadIntentForConfirmation($uploadIntentId, $organizationId, $uploaderUserId);
         if ($intent === null) {
@@ -104,8 +102,25 @@ final class AssetUploadService
             throw new AssetValidationException('asset_upload_metadata_mismatch', 'Uploaded asset metadata does not match the upload intent.');
         }
 
-        $this->validateDimensions($intent->type, $width, $height, $durationSeconds);
-        $this->validateMagic($contentType, $magicBase64);
+        $stored = $this->inspector->inspect($intent->objectKey);
+        if ($stored === null) {
+            throw new AssetValidationException('asset_uploaded_object_not_found', 'Uploaded object was not found in object storage.', 404);
+        }
+
+        if (
+            $stored->objectKey !== $intent->objectKey
+            || $stored->contentType !== $intent->contentType
+            || $stored->byteSize !== $intent->byteSize
+        ) {
+            throw new AssetValidationException('asset_uploaded_object_mismatch', 'Stored object metadata does not match the upload intent.');
+        }
+
+        if ($checksum !== null && trim($checksum) !== '' && $stored->checksum !== null && trim($checksum) !== $stored->checksum) {
+            throw new AssetValidationException('asset_uploaded_object_mismatch', 'Stored object checksum does not match the confirmation payload.');
+        }
+
+        $this->validateDimensions($intent->type, $stored->width, $stored->height, $stored->durationSeconds);
+        $this->validateMagic($contentType, $stored->leadingBytes);
 
         return $this->repository->createAssetWithSnapshotJob(new CreativeAsset(
             id: null,
@@ -116,10 +131,10 @@ final class AssetUploadService
             objectKey: $objectKey,
             contentType: $contentType,
             byteSize: $byteSize,
-            width: $width,
-            height: $height,
-            durationSeconds: $durationSeconds,
-            checksum: $checksum === null ? null : trim($checksum),
+            width: $stored->width,
+            height: $stored->height,
+            durationSeconds: $stored->durationSeconds,
+            checksum: $stored->checksum ?? ($checksum === null ? null : trim($checksum)),
             status: AssetStatus::PendingReview,
         ));
     }
@@ -174,10 +189,9 @@ final class AssetUploadService
         }
     }
 
-    private function validateMagic(string $contentType, string $magicBase64): void
+    private function validateMagic(string $contentType, string $bytes): void
     {
-        $bytes = base64_decode($magicBase64, true);
-        if ($bytes === false || $bytes === '') {
+        if ($bytes === '') {
             throw new AssetValidationException('asset_magic_mismatch', 'Magic bytes are required.');
         }
 
