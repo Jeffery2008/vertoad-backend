@@ -181,7 +181,9 @@ final class AdServingServiceTest extends TestCase
         $srcdoc = html_entity_decode($decision->iframeHtml, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 
         self::assertTrue($decision->filled);
-        self::assertStringContainsString('sandbox="allow-popups allow-popups-to-escape-sandbox"', $decision->iframeHtml);
+        self::assertStringContainsString('sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts"', $decision->iframeHtml);
+        self::assertStringContainsString('/api/v1/ads/click?decision_id=', $srcdoc);
+        self::assertStringNotContainsString('https://advertiser.example/landing', $srcdoc);
         self::assertStringContainsString('data-vertoad-renderer="platform-controlled"', $srcdoc);
         self::assertStringContainsString('"render_mode":"fabric-json"', $srcdoc);
         self::assertStringContainsString('"fallback_object_key":"organizations\/40\/assets\/fabric-creative.json"', $srcdoc);

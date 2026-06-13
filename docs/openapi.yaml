@@ -1508,7 +1508,7 @@ paths:
         - Serving
       operationId: serveAdFrame
       summary: Return sandboxed ad iframe HTML for SDK delivery.
-      description: Browser-facing endpoint used as the SDK iframe src. It accepts the same publisher slot identity as the JSON decision API and returns platform-controlled HTML for sandboxed rendering on the ads origin.
+      description: Browser-facing endpoint used as the SDK iframe src. It accepts the same publisher slot identity as the JSON decision API and returns platform-controlled HTML for sandboxed rendering on the ads origin. Filled responses include nonce-scoped runtime JavaScript that listens for SDK viewability messages, posts accepted impressions to `/api/v1/ads/track`, and rewrites creative clicks through `/api/v1/ads/click` redirect URLs without exposing raw landing URLs in the frame document.
       security: []
       parameters:
         - name: site_id
@@ -1575,7 +1575,7 @@ paths:
             minLength: 1
       responses:
         "200":
-          description: Sandboxed ad frame HTML returned.
+          description: Sandboxed ad frame HTML returned with CSP nonce runtime for impression tracking and click redirect bridging.
           content:
             text/html:
               schema:
@@ -1963,7 +1963,7 @@ paths:
         - Serving
       operationId: redirectAdClick
       summary: Record click intent and redirect to the validated landing URL.
-      description: Valid click decisions return a 302 Location header pointing only to a validated http or https landing URL. Normal click redirects do not require Turnstile; clicks flagged with `risk`, `traffic_risk`, `abnormal`, `high_risk`, or matching risk headers are treated as abnormal traffic and must include `CF-Turnstile-Token`.
+      description: Valid click decisions return a 302 Location header pointing only to a validated http or https landing URL. SDK frames generate click `event_id` values immediately before navigation and use this endpoint as the only browser-visible destination; raw landing URLs are not embedded in creative HTML. Normal click redirects do not require Turnstile; clicks flagged with `risk`, `traffic_risk`, `abnormal`, `high_risk`, or matching risk headers are treated as abnormal traffic and must include `CF-Turnstile-Token`.
       security: []
       parameters:
         - $ref: "#/components/parameters/OptionalTurnstileToken"

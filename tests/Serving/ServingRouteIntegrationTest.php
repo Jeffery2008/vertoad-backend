@@ -107,13 +107,21 @@ final class ServingRouteIntegrationTest extends TestCase
         self::assertSame(200, $response->getStatusCode());
         self::assertStringStartsWith('text/html', $response->getHeaderLine('Content-Type'));
         self::assertSame('nosniff', $response->getHeaderLine('X-Content-Type-Options'));
-        self::assertStringContainsString('sandbox allow-popups allow-popups-to-escape-sandbox', $response->getHeaderLine('Content-Security-Policy'));
+        self::assertStringContainsString('sandbox allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts', $response->getHeaderLine('Content-Security-Policy'));
+        self::assertStringContainsString("script-src 'nonce-", $response->getHeaderLine('Content-Security-Policy'));
         $html = (string) $response->getBody();
         self::assertStringStartsWith('<!doctype html>', $html);
         self::assertStringNotContainsString('<iframe', $html);
         self::assertStringContainsString('data-vertoad-renderer="platform-controlled"', $html);
         self::assertStringContainsString('data-vertoad-fallback="snapshot"', $html);
         self::assertStringContainsString('organizations/40/assets/creative.png', $html);
+        self::assertStringContainsString('data-vertoad-runtime', $html);
+        self::assertStringContainsString('/api/v1/ads/track', $html);
+        self::assertStringContainsString('/api/v1/ads/click?decision_id=', $html);
+        self::assertStringContainsString('protocol: "vertoad"', $html);
+        self::assertStringContainsString('impression_eligible', $html);
+        self::assertStringContainsString('impression_tracked', $html);
+        self::assertStringContainsString('click_requested', $html);
 
         $invalidResponse = $this->handleRaw($app, 'GET', '/api/v1/ads/serve?site_id=0&slot_id=20&viewer_id=viewer-1');
         self::assertSame(422, $invalidResponse->getStatusCode());

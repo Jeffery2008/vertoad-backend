@@ -17,6 +17,8 @@ use VertoAD\Repository\Serving\ServingInventoryRepositoryInterface;
 
 final readonly class AdServingService
 {
+    private const FRAME_SANDBOX = 'allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts';
+
     public function __construct(
         private ServingInventoryRepositoryInterface $inventory,
         private AdCandidateRepositoryInterface $candidates,
@@ -210,7 +212,7 @@ final readonly class AdServingService
     private function filled(int $siteId, int $slotId, string $viewerId, AdCandidate $candidate, DateTimeImmutable $now): AdDecision
     {
         $decisionId = 'ad:' . hash('sha256', $siteId . '|' . $slotId . '|' . $viewerId . '|' . $candidate->adId . '|' . $now->format(DATE_ATOM));
-        $creative = htmlspecialchars($this->creativeSrcdoc($decisionId, $candidate), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $creative = htmlspecialchars($this->creativeSrcdoc($decisionId, $viewerId, $candidate), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 
         return new AdDecision(
             decisionId: $decisionId,
@@ -219,7 +221,7 @@ final readonly class AdServingService
             viewerId: $viewerId,
             filled: true,
             reason: null,
-            iframeHtml: '<iframe sandbox="allow-popups allow-popups-to-escape-sandbox" width="' . $candidate->width . '" height="' . $candidate->height . '" title="Advertisement" srcdoc="' . $creative . '"></iframe>',
+            iframeHtml: '<iframe sandbox="' . self::FRAME_SANDBOX . '" width="' . $candidate->width . '" height="' . $candidate->height . '" title="Advertisement" srcdoc="' . $creative . '"></iframe>',
             width: $candidate->width,
             height: $candidate->height,
             adId: $candidate->adId,
@@ -233,7 +235,7 @@ final readonly class AdServingService
         );
     }
 
-    private function creativeSrcdoc(string $decisionId, AdCandidate $candidate): string
+    private function creativeSrcdoc(string $decisionId, string $viewerId, AdCandidate $candidate): string
     {
         $payload = [
             'decision_id' => $decisionId,
@@ -248,16 +250,33 @@ final readonly class AdServingService
         $json = json_encode($payload, JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
         $asset = htmlspecialchars($candidate->assetObjectKey, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $type = htmlspecialchars($candidate->assetType, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $clickUrl = htmlspecialchars($this->fallbackClickUrl($decisionId, $viewerId), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $fallback = $candidate->assetObjectKey !== ''
             ? '<img alt="Advertisement" data-vertoad-fallback="snapshot" src="' . $asset . '">'
             : '<div data-vertoad-fallback="empty"></div>';
 
         return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            . '<style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}.vertoad-frame{display:grid;place-items:center;width:100%;height:100%}.vertoad-frame img{display:block;max-width:100%;max-height:100%;object-fit:contain}</style>'
+            . '<style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}.vertoad-frame{display:grid;place-items:center;width:100%;height:100%}.vertoad-click-target{display:grid;place-items:center;width:100%;height:100%;text-decoration:none;color:inherit}.vertoad-frame img{display:block;max-width:100%;max-height:100%;object-fit:contain}</style>'
             . '</head><body><div class="vertoad-frame" data-vertoad-renderer="platform-controlled" data-vertoad-asset-type="' . $type . '">'
             . '<script type="application/json" id="vertoad-render-payload">' . $json . '</script>'
+            . '<a class="vertoad-click-target" data-vertoad-click-target href="' . $clickUrl . '" target="_blank" rel="noopener noreferrer">'
             . $fallback
+            . '</a>'
             . '</div></body></html>';
+    }
+
+    private function fallbackClickUrl(string $decisionId, string $viewerId): string
+    {
+        return $this->clickBaseUrl($decisionId, $viewerId)
+            . '&event_id=' . rawurlencode('clk:fallback:' . substr(hash('sha256', $decisionId . '|' . $viewerId), 0, 32));
+    }
+
+    private function clickBaseUrl(string $decisionId, string $viewerId): string
+    {
+        return '/api/v1/ads/click?' . http_build_query([
+            'decision_id' => $decisionId,
+            'viewer_id' => $viewerId,
+        ], '', '&', PHP_QUERY_RFC3986);
     }
 
     private function budgetRejection(AdCandidate $candidate, DateTimeImmutable $now): ?SpendFailureReason
