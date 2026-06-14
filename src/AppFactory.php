@@ -83,6 +83,7 @@ use VertoAD\Repository\Operations\ConfigVersionRepositoryInterface;
 use VertoAD\Repository\Operations\DatabaseConfigVersionRepository;
 use VertoAD\Repository\Operations\DatabaseOperationErrorLogRepository;
 use VertoAD\Repository\Operations\OperationErrorLogRepositoryInterface;
+use VertoAD\Repository\OrganizationMemberManagementRepositoryInterface;
 use VertoAD\Repository\OrganizationMembershipRepository;
 use VertoAD\Repository\OrganizationMembershipRepositoryInterface;
 use VertoAD\Repository\PasswordResetTokenRepository;
@@ -204,6 +205,8 @@ final class AppFactory
                 UserIdentityRepositoryInterface::class => static fn (Connection $connection): UserIdentityRepositoryInterface =>
                     new UserIdentityRepository($connection),
                 OrganizationMembershipRepositoryInterface::class => static fn (Connection $connection): OrganizationMembershipRepositoryInterface =>
+                    new OrganizationMembershipRepository($connection),
+                OrganizationMemberManagementRepositoryInterface::class => static fn (Connection $connection): OrganizationMemberManagementRepositoryInterface =>
                     new OrganizationMembershipRepository($connection),
                 PasswordHasher::class => static fn (): PasswordHasher => new PasswordHasher(),
                 PasswordResetTokenRepositoryInterface::class => static fn (Connection $connection): PasswordResetTokenRepositoryInterface =>

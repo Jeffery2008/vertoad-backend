@@ -281,6 +281,8 @@ paths:
       description: Returns organization members with their role slugs and effective permission codes.
       security:
         - BearerAuth: []
+      x-permissions:
+        - organizations.members.read
       parameters:
         - name: organization_id
           in: path
@@ -305,6 +307,184 @@ paths:
         "401":
           $ref: "#/components/responses/Error"
         "403":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags:
+        - Organizations
+      operationId: inviteOrganizationMember
+      summary: Invite an organization member.
+      description: |
+        Invites a user into the organization and assigns one managed role. Requires
+        `organizations.members.manage` for the target organization and records an
+        audit entry for the membership change. The response is the standard success
+        envelope with `data.member`.
+
+        Documented error codes include `invalid_organization`,
+        `authentication_required`, `invalid_organization_member`,
+        `organization_member_conflict`, and `organization_member_not_found`.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - organizations.members.manage
+      parameters:
+        - name: organization_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrganizationMemberInviteRequest"
+      responses:
+        "201":
+          description: Organization member invited.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/OrganizationMemberMutationData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/organizations/{organization_id}/members/{member_id}:
+    patch:
+      tags:
+        - Organizations
+      operationId: updateOrganizationMemberRole
+      summary: Update an organization member role.
+      description: |
+        Replaces the member's managed organization role. Requires
+        `organizations.members.manage` for the target organization and records an
+        audit entry for the membership change. The response is the standard success
+        envelope with `data.member`.
+
+        Documented error codes include `invalid_organization`,
+        `authentication_required`, `invalid_organization_member`,
+        `organization_member_conflict`, and `organization_member_not_found`.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - organizations.members.manage
+      parameters:
+        - name: organization_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: member_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrganizationMemberUpdateRoleRequest"
+      responses:
+        "200":
+          description: Organization member role updated.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/OrganizationMemberMutationData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      tags:
+        - Organizations
+      operationId: removeOrganizationMember
+      summary: Remove an organization member.
+      description: |
+        Removes a member from the organization scope. Requires
+        `organizations.members.manage` for the target organization and records an
+        audit entry for the membership change. The response is the standard success
+        envelope with `data.removed` set to true.
+
+        Documented error codes include `invalid_organization`,
+        `authentication_required`, `invalid_organization_member`,
+        `organization_member_conflict`, and `organization_member_not_found`.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - organizations.members.manage
+      parameters:
+        - name: organization_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: member_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Organization member removed.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/OrganizationMemberRemoveData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
@@ -3705,6 +3885,51 @@ components:
                   message: Cron token is missing or invalid.
                 meta: {}
                 request_id: req_0123456789abcdef
+            authenticationRequired:
+              summary: User authentication is required
+              value:
+                data: null
+                error:
+                  code: authentication_required
+                  message: A user-authenticated session is required.
+                meta: {}
+                request_id: req_0123456789abcdef
+            invalidOrganization:
+              summary: Invalid organization identifier
+              value:
+                data: null
+                error:
+                  code: invalid_organization
+                  message: A positive organization_id path parameter is required.
+                meta: {}
+                request_id: req_0123456789abcdef
+            invalidOrganizationMember:
+              summary: Invalid organization member request
+              value:
+                data: null
+                error:
+                  code: invalid_organization_member
+                  message: role_id must be a non-empty string.
+                meta: {}
+                request_id: req_0123456789abcdef
+            organizationMemberConflict:
+              summary: Organization member conflict
+              value:
+                data: null
+                error:
+                  code: organization_member_conflict
+                  message: Organization member already exists.
+                meta: {}
+                request_id: req_0123456789abcdef
+            organizationMemberNotFound:
+              summary: Organization member not found
+              value:
+                data: null
+                error:
+                  code: organization_member_not_found
+                  message: Organization member was not found in this organization scope.
+                meta: {}
+                request_id: req_0123456789abcdef
   parameters:
     TurnstileToken:
       name: CF-Turnstile-Token
@@ -4401,6 +4626,55 @@ components:
           items:
             $ref: "#/components/schemas/OrganizationMember"
       additionalProperties: false
+    OrganizationMemberInviteRequest:
+      type: object
+      required:
+        - email
+        - role_id
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 3
+          maxLength: 254
+        role_id:
+          $ref: "#/components/schemas/OrganizationManagedRoleId"
+      additionalProperties: false
+    OrganizationMemberUpdateRoleRequest:
+      type: object
+      required:
+        - role_id
+      properties:
+        role_id:
+          $ref: "#/components/schemas/OrganizationManagedRoleId"
+      additionalProperties: false
+    OrganizationMemberMutationData:
+      type: object
+      required:
+        - member
+      properties:
+        member:
+          $ref: "#/components/schemas/OrganizationMember"
+      additionalProperties: false
+    OrganizationMemberRemoveData:
+      type: object
+      required:
+        - removed
+      properties:
+        removed:
+          type: boolean
+          const: true
+      additionalProperties: false
+    OrganizationManagedRoleId:
+      type: string
+      description: Managed organization role identifier accepted by member-management mutations.
+      enum:
+        - owner
+        - admin
+        - campaign_manager
+        - publisher_manager
+        - finance
+        - viewer
     OrganizationMember:
       type: object
       required:

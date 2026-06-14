@@ -29,6 +29,7 @@ use VertoAD\Repository\FeatureFlags\DatabaseFeatureFlagRepository;
 use VertoAD\Repository\FeatureFlags\FeatureFlagRepositoryInterface;
 use VertoAD\Repository\FirstPartySessionRepositoryInterface;
 use VertoAD\Repository\Fraud\DatabaseFraudRiskFeatureRepository;
+use VertoAD\Repository\OrganizationMemberManagementRepositoryInterface;
 use VertoAD\Repository\OrganizationMembershipRepositoryInterface;
 use VertoAD\Repository\Operations\DatabaseOperationErrorLogRepository;
 use VertoAD\Repository\Operations\DatabaseConfigVersionRepository;
@@ -138,6 +139,7 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(Connection::class, $container->get(Connection::class));
             self::assertInstanceOf(UserIdentityRepositoryInterface::class, $container->get(UserIdentityRepositoryInterface::class));
             self::assertInstanceOf(OrganizationMembershipRepositoryInterface::class, $container->get(OrganizationMembershipRepositoryInterface::class));
+            self::assertInstanceOf(OrganizationMemberManagementRepositoryInterface::class, $container->get(OrganizationMemberManagementRepositoryInterface::class));
             self::assertInstanceOf(PasswordHasher::class, $container->get(PasswordHasher::class));
             self::assertInstanceOf(PasswordResetTokenRepositoryInterface::class, $container->get(PasswordResetTokenRepositoryInterface::class));
             self::assertInstanceOf(FirstPartySessionRepositoryInterface::class, $container->get(FirstPartySessionRepositoryInterface::class));

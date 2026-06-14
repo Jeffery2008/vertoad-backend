@@ -5,10 +5,147 @@ declare(strict_types=1);
 namespace VertoAD\Repository;
 
 use Doctrine\DBAL\Connection;
+use Doctrine\DBAL\ParameterType;
 use VertoAD\Domain\Auth\OrganizationMembership;
 
-final class OrganizationMembershipRepository implements OrganizationMembershipRepositoryInterface
+final class OrganizationMembershipRepository implements OrganizationMembershipRepositoryInterface, OrganizationMemberManagementRepositoryInterface
 {
+    private const array MANAGED_ROLE_SLUGS = [
+        'owner',
+        'admin',
+        'campaign_manager',
+        'publisher_manager',
+        'finance',
+        'viewer',
+    ];
+
+    private const array MANAGED_ROLE_NAMES = [
+        'owner' => 'Owner',
+        'admin' => 'Admin',
+        'campaign_manager' => 'Campaign Manager',
+        'publisher_manager' => 'Publisher Manager',
+        'finance' => 'Finance',
+        'viewer' => 'Viewer',
+    ];
+
+    private const array MANAGED_ROLE_PERMISSIONS = [
+        'owner' => [
+            'organizations.members.read',
+            'organizations.members.manage',
+            'billing.ledger.read.own',
+            'billing.recharge_key.redeem.own',
+            'billing.withdrawal.request.own',
+            'billing.withdrawal.revoke.own',
+            'billing.withdrawal.resubmit.own',
+            'billing.withdrawal.proof.write.own',
+            'campaign.read.own',
+            'campaign.write.own',
+            'campaign.status.update.own',
+            'creative.read.own',
+            'creative.write.own',
+            'publisher.site.read.own',
+            'publisher.site.write.own',
+            'publisher.site.verify.own',
+            'publisher.slot.read.own',
+            'publisher.slot.write.own',
+            'sdk.integration.read.own',
+            'sdk.oauth_client.read.own',
+            'sdk.oauth_client.write.own',
+            'sdk.oauth_client.rotate_secret.own',
+            'webhook.read.own',
+            'webhook.write.own',
+            'webhook.secret.rotate.own',
+            'webhook.delivery.read.own',
+            'attribution.conversion.write.own',
+            'support.ticket.read.own',
+            'support.ticket.write.own',
+            'report.read.own',
+            'report.export.own',
+            'audit.read.own',
+        ],
+        'admin' => [
+            'organizations.members.read',
+            'organizations.members.manage',
+            'billing.ledger.read.own',
+            'campaign.read.own',
+            'campaign.write.own',
+            'creative.read.own',
+            'creative.write.own',
+            'publisher.site.read.own',
+            'publisher.site.write.own',
+            'publisher.site.verify.own',
+            'publisher.slot.read.own',
+            'publisher.slot.write.own',
+            'sdk.integration.read.own',
+            'sdk.oauth_client.read.own',
+            'webhook.read.own',
+            'webhook.write.own',
+            'support.ticket.read.own',
+            'support.ticket.write.own',
+            'report.read.own',
+            'report.export.own',
+            'audit.read.own',
+        ],
+        'campaign_manager' => [
+            'organizations.members.read',
+            'campaign.read.own',
+            'campaign.write.own',
+            'campaign.status.update.own',
+            'creative.read.own',
+            'creative.write.own',
+            'sdk.integration.read.own',
+            'sdk.oauth_client.read.own',
+            'webhook.read.own',
+            'webhook.write.own',
+            'attribution.conversion.write.own',
+            'support.ticket.read.own',
+            'support.ticket.write.own',
+            'report.read.own',
+            'report.export.own',
+        ],
+        'publisher_manager' => [
+            'organizations.members.read',
+            'publisher.site.read.own',
+            'publisher.site.write.own',
+            'publisher.site.verify.own',
+            'publisher.slot.read.own',
+            'publisher.slot.write.own',
+            'billing.withdrawal.request.own',
+            'billing.withdrawal.revoke.own',
+            'billing.withdrawal.resubmit.own',
+            'billing.withdrawal.proof.write.own',
+            'support.ticket.read.own',
+            'support.ticket.write.own',
+            'report.read.own',
+            'report.export.own',
+        ],
+        'finance' => [
+            'organizations.members.read',
+            'billing.ledger.read.own',
+            'billing.recharge_key.redeem.own',
+            'billing.withdrawal.request.own',
+            'billing.withdrawal.revoke.own',
+            'billing.withdrawal.resubmit.own',
+            'billing.withdrawal.proof.write.own',
+            'support.ticket.read.own',
+            'support.ticket.write.own',
+            'report.read.own',
+            'report.export.own',
+            'audit.read.own',
+        ],
+        'viewer' => [
+            'organizations.members.read',
+            'campaign.read.own',
+            'creative.read.own',
+            'publisher.site.read.own',
+            'publisher.slot.read.own',
+            'sdk.integration.read.own',
+            'webhook.read.own',
+            'support.ticket.read.own',
+            'report.read.own',
+        ],
+    ];
+
     public function __construct(private readonly Connection $connection)
     {
     }
@@ -110,6 +247,108 @@ final class OrganizationMembershipRepository implements OrganizationMembershipRe
         }, $members);
     }
 
+    public function inviteMember(int $organizationId, string $email, string $roleId): array
+    {
+        $organizationId = $this->requirePositiveOrganizationId($organizationId);
+        $this->requireExistingOrganization($organizationId);
+        $displayName = $this->displayNameFromEmail($email);
+        $email = $this->normalizeEmail($email);
+        $roleId = $this->normalizeManagedRoleId($roleId);
+
+        return $this->connection->transactional(function () use ($organizationId, $email, $roleId, $displayName): array {
+            $userId = $this->findUserIdByEmail($email);
+            if ($userId === null) {
+                $this->connection->insert('users', [
+                    'email' => $email,
+                    'password_hash' => 'invited:' . hash('sha256', $email . ':' . bin2hex(random_bytes(16))),
+                    'display_name' => $displayName,
+                    'status' => 'invited',
+                    'email_verified_at' => null,
+                    'last_login_at' => null,
+                ]);
+                $userId = (int) $this->connection->lastInsertId();
+            }
+
+            $existingMemberId = $this->connection->createQueryBuilder()
+                ->select('id')
+                ->from('organization_members')
+                ->where('organization_id = :organization_id')
+                ->andWhere('user_id = :user_id')
+                ->setParameter('organization_id', $organizationId)
+                ->setParameter('user_id', $userId)
+                ->fetchOne();
+            if ($existingMemberId !== false) {
+                throw new \InvalidArgumentException('Organization member already exists.');
+            }
+
+            $this->connection->insert('organization_members', [
+                'organization_id' => $organizationId,
+                'user_id' => $userId,
+                'status' => 'invited',
+                'title' => null,
+            ], [
+                'organization_id' => ParameterType::INTEGER,
+                'user_id' => ParameterType::INTEGER,
+                'status' => ParameterType::STRING,
+                'title' => ParameterType::NULL,
+            ]);
+            $memberId = (int) $this->connection->lastInsertId();
+
+            $this->replaceMemberRole($organizationId, $userId, $roleId);
+
+            return $this->findMember($organizationId, $memberId)
+                ?? throw new \RuntimeException('Invited organization member could not be loaded.');
+        });
+    }
+
+    public function updateMemberRole(int $organizationId, int $memberId, string $roleId): ?array
+    {
+        $organizationId = $this->requirePositiveOrganizationId($organizationId);
+        $memberId = $this->requirePositiveMemberId($memberId);
+        $roleId = $this->normalizeManagedRoleId($roleId);
+
+        return $this->connection->transactional(function () use ($organizationId, $memberId, $roleId): ?array {
+            $userId = $this->memberUserId($organizationId, $memberId);
+            if ($userId === null) {
+                return null;
+            }
+
+            $this->replaceMemberRole($organizationId, $userId, $roleId);
+
+            return $this->findMember($organizationId, $memberId);
+        });
+    }
+
+    public function removeMember(int $organizationId, int $memberId): bool
+    {
+        $organizationId = $this->requirePositiveOrganizationId($organizationId);
+        $memberId = $this->requirePositiveMemberId($memberId);
+
+        return $this->connection->transactional(function () use ($organizationId, $memberId): bool {
+            $userId = $this->memberUserId($organizationId, $memberId);
+            if ($userId === null) {
+                return false;
+            }
+
+            $this->connection->delete('user_roles', [
+                'user_id' => $userId,
+                'organization_id' => $organizationId,
+            ], [
+                'user_id' => ParameterType::INTEGER,
+                'organization_id' => ParameterType::INTEGER,
+            ]);
+            $deleted = $this->connection->delete('organization_members', [
+                'id' => $memberId,
+                'organization_id' => $organizationId,
+            ], [
+                'id' => ParameterType::INTEGER,
+                'organization_id' => ParameterType::INTEGER,
+            ]);
+
+            return $deleted === 1;
+        });
+    }
+
     /** @return array<int, array{roles:list<string>, permissions:list<string>}> */
     private function grantsByUserForOrganization(int $organizationId): array
     {
@@ -142,5 +381,183 @@ final class OrganizationMembershipRepository implements OrganizationMembershipRe
         }
 
         return $grants;
+    }
+
+    /** @return array<string, mixed>|null */
+    private function findMember(int $organizationId, int $memberId): ?array
+    {
+        foreach ($this->listForOrganization($organizationId) as $member) {
+            if ($member['member_id'] === $memberId) {
+                return $member;
+            }
+        }
+
+        return null;
+    }
+
+    private function replaceMemberRole(int $organizationId, int $userId, string $roleId): void
+    {
+        $roleDatabaseId = $this->roleDatabaseId($organizationId, $roleId);
+
+        $this->connection->delete('user_roles', [
+            'user_id' => $userId,
+            'organization_id' => $organizationId,
+        ], [
+            'user_id' => ParameterType::INTEGER,
+            'organization_id' => ParameterType::INTEGER,
+        ]);
+        $this->connection->insert('user_roles', [
+            'user_id' => $userId,
+            'role_id' => $roleDatabaseId,
+            'organization_id' => $organizationId,
+        ], [
+            'user_id' => ParameterType::INTEGER,
+            'role_id' => ParameterType::INTEGER,
+            'organization_id' => ParameterType::INTEGER,
+        ]);
+    }
+
+    private function roleDatabaseId(int $organizationId, string $roleId): int
+    {
+        $value = $this->connection->createQueryBuilder()
+            ->select('id')
+            ->from('roles')
+            ->where('organization_id = :organization_id')
+            ->andWhere('slug = :slug')
+            ->setParameter('organization_id', $organizationId)
+            ->setParameter('slug', $roleId)
+            ->fetchOne();
+
+        if ($value !== false) {
+            return (int) $value;
+        }
+
+        return $this->createManagedRole($organizationId, $roleId);
+    }
+
+    private function createManagedRole(int $organizationId, string $roleId): int
+    {
+        $this->connection->insert('roles', [
+            'organization_id' => $organizationId,
+            'slug' => $roleId,
+            'name' => self::MANAGED_ROLE_NAMES[$roleId],
+        ], [
+            'organization_id' => ParameterType::INTEGER,
+            'slug' => ParameterType::STRING,
+            'name' => ParameterType::STRING,
+        ]);
+        $roleDatabaseId = (int) $this->connection->lastInsertId();
+
+        foreach ($this->permissionIdsForRole($roleId) as $permissionId) {
+            $this->connection->insert('role_permissions', [
+                'role_id' => $roleDatabaseId,
+                'permission_id' => $permissionId,
+            ], [
+                'role_id' => ParameterType::INTEGER,
+                'permission_id' => ParameterType::INTEGER,
+            ]);
+        }
+
+        return $roleDatabaseId;
+    }
+
+    /** @return list<int> */
+    private function permissionIdsForRole(string $roleId): array
+    {
+        $permissions = self::MANAGED_ROLE_PERMISSIONS[$roleId];
+
+        $rows = $this->connection->createQueryBuilder()
+            ->select('id')
+            ->from('permissions')
+            ->where('slug IN (:slugs)')
+            ->setParameter('slugs', $permissions, \Doctrine\DBAL\ArrayParameterType::STRING)
+            ->fetchFirstColumn();
+
+        return array_values(array_map('intval', $rows));
+    }
+
+    private function memberUserId(int $organizationId, int $memberId): ?int
+    {
+        $value = $this->connection->createQueryBuilder()
+            ->select('user_id')
+            ->from('organization_members')
+            ->where('id = :member_id')
+            ->andWhere('organization_id = :organization_id')
+            ->setParameter('member_id', $memberId)
+            ->setParameter('organization_id', $organizationId)
+            ->fetchOne();
+
+        return $value === false ? null : (int) $value;
+    }
+
+    private function findUserIdByEmail(string $email): ?int
+    {
+        $value = $this->connection->createQueryBuilder()
+            ->select('id')
+            ->from('users')
+            ->where('email = :email')
+            ->setParameter('email', $email)
+            ->fetchOne();
+
+        return $value === false ? null : (int) $value;
+    }
+
+    private function requirePositiveOrganizationId(int $organizationId): int
+    {
+        if ($organizationId <= 0) {
+            throw new \InvalidArgumentException('organization_id must be a positive integer.');
+        }
+
+        return $organizationId;
+    }
+
+    private function requireExistingOrganization(int $organizationId): void
+    {
+        $exists = $this->connection->createQueryBuilder()
+            ->select('id')
+            ->from('organizations')
+            ->where('id = :organization_id')
+            ->setParameter('organization_id', $organizationId)
+            ->fetchOne();
+
+        if ($exists === false) {
+            throw new \InvalidArgumentException('Organization was not found.');
+        }
+    }
+
+    private function requirePositiveMemberId(int $memberId): int
+    {
+        if ($memberId <= 0) {
+            throw new \InvalidArgumentException('member_id must be a positive integer.');
+        }
+
+        return $memberId;
+    }
+
+    private function normalizeEmail(string $email): string
+    {
+        $email = strtolower(trim($email));
+        if ($email === '' || filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+            throw new \InvalidArgumentException('Valid email is required.');
+        }
+
+        return $email;
+    }
+
+    private function normalizeManagedRoleId(string $roleId): string
+    {
+        $roleId = trim($roleId);
+        if (!in_array($roleId, self::MANAGED_ROLE_SLUGS, true)) {
+            throw new \InvalidArgumentException('role_id must be one of owner, admin, campaign_manager, publisher_manager, finance, viewer.');
+        }
+
+        return $roleId;
+    }
+
+    private function displayNameFromEmail(string $email): string
+    {
+        $localPart = trim((string) strstr($email, '@', true));
+
+        return $localPart === '' ? $email : $localPart;
     }
 }

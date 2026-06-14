@@ -24,4 +24,5 @@ interface OrganizationMembershipRepositoryInterface
      * }>
      */
     public function listForOrganization(int $organizationId): array;
+
 }
