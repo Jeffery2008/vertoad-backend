@@ -76,6 +76,72 @@ final class AggregateStatisticsJobTest extends TestCase
         self::assertSame(18, $platform[0]->revenuePoints);
     }
 
+    public function testRefreshIncludesAttributedConversionsByOccurredAtWithoutBillingThem(): void
+    {
+        $connection = $this->createConnection();
+        $this->insertEvent($connection, 'impression', 'imp-attribution', '2026-06-08 10:05:00', 10, 6);
+        $this->insertEvent($connection, 'click', 'clk-attribution', '2026-06-08 10:15:00', 20, 12);
+        $this->insertConversion(
+            $connection,
+            eventId: 'server_api:40:order-1',
+            conversionId: 'conversion_order_1',
+            clickEventId: 'clk-attribution',
+            occurredAt: '2026-06-08 10:45:00',
+            createdAt: '2026-06-09 00:05:00',
+            valuePoints: 1_200,
+        );
+        $this->insertConversion(
+            $connection,
+            eventId: 'server_api:40:order-unattributed',
+            conversionId: 'conversion_unattributed',
+            clickEventId: null,
+            occurredAt: '2026-06-08 10:50:00',
+            createdAt: '2026-06-08 10:50:00',
+            valuePoints: 9_999,
+            attributed: false,
+        );
+
+        $repository = new DatabaseReportAggregateRepository($connection);
+        $metrics = $repository->refreshFromEvents(
+            new DateTimeImmutable('2026-06-08T00:00:00+00:00'),
+            new DateTimeImmutable('2026-06-09T00:00:00+00:00'),
+        );
+
+        self::assertSame(['day_rows' => 3, 'hour_rows' => 3], $metrics);
+
+        $advertiser = $repository->query([
+            'portal' => 'advertiser',
+            'organization_id' => 40,
+            'campaign_id' => 30,
+            'from' => new DateTimeImmutable('2026-06-08T00:00:00+00:00'),
+            'to' => new DateTimeImmutable('2026-06-09T00:00:00+00:00'),
+        ]);
+        $publisher = $repository->query([
+            'portal' => 'publisher',
+            'organization_id' => 50,
+            'campaign_id' => 30,
+        ]);
+        $nextDay = $repository->query([
+            'portal' => 'advertiser',
+            'organization_id' => 40,
+            'from' => new DateTimeImmutable('2026-06-09T00:00:00+00:00'),
+            'to' => new DateTimeImmutable('2026-06-10T00:00:00+00:00'),
+        ]);
+
+        self::assertCount(1, $advertiser);
+        self::assertSame(1, $advertiser[0]->conversions);
+        self::assertSame(1_200, $advertiser[0]->conversionValuePoints);
+        self::assertSame(30, $advertiser[0]->spendPoints);
+        self::assertSame(0, $advertiser[0]->revenuePoints);
+
+        self::assertCount(1, $publisher);
+        self::assertSame(1, $publisher[0]->conversions);
+        self::assertSame(1_200, $publisher[0]->conversionValuePoints);
+        self::assertSame(0, $publisher[0]->spendPoints);
+        self::assertSame(18, $publisher[0]->revenuePoints);
+        self::assertSame([], $nextDay);
+    }
+
     public function testRejectsInvalidAggregationWindow(): void
     {
         $this->expectException(\InvalidArgumentException::class);
@@ -136,6 +202,52 @@ final class AggregateStatisticsJobTest extends TestCase
             new DateTimeImmutable('2026-06-08T00:00:00+00:00'),
             new DateTimeImmutable('2026-06-09T00:00:00+00:00'),
         );
+    }
+
+    public function testRawEventFallbackIncludesAttributedConversionsWhenAggregateTableIsMissing(): void
+    {
+        $connection = $this->createRawReportingConnection();
+        $this->insertEvent($connection, 'impression', 'imp-raw-attribution', '2026-06-08 10:05:00', 10, 6);
+        $this->insertEvent($connection, 'click', 'clk-raw-attribution', '2026-06-08 10:15:00', 20, 12);
+        $this->insertConversion(
+            $connection,
+            eventId: 'server_api:40:raw-order-1',
+            conversionId: 'conversion_raw_order_1',
+            clickEventId: 'clk-raw-attribution',
+            occurredAt: '2026-06-08 11:45:00',
+            createdAt: '2026-06-09 00:05:00',
+            valuePoints: 1_500,
+        );
+
+        $rows = (new DatabaseReportAggregateRepository($connection))->query([
+            'portal' => 'advertiser',
+            'organization_id' => 40,
+            'campaign_id' => 30,
+            'from' => new DateTimeImmutable('2026-06-08T00:00:00+00:00'),
+            'to' => new DateTimeImmutable('2026-06-09T00:00:00+00:00'),
+        ]);
+
+        self::assertCount(1, $rows);
+        self::assertSame('2026-06-08', $rows[0]->date);
+        self::assertSame(1, $rows[0]->impressions);
+        self::assertSame(1, $rows[0]->clicks);
+        self::assertSame(30, $rows[0]->spendPoints);
+        self::assertSame(0, $rows[0]->revenuePoints);
+        self::assertSame(1, $rows[0]->conversions);
+        self::assertSame(1_500, $rows[0]->conversionValuePoints);
+
+        $adminOrganizationRows = (new DatabaseReportAggregateRepository($connection))->query([
+            'portal' => 'admin',
+            'organization_id' => 40,
+            'campaign_id' => 30,
+            'from' => new DateTimeImmutable('2026-06-08T00:00:00+00:00'),
+            'to' => new DateTimeImmutable('2026-06-09T00:00:00+00:00'),
+        ]);
+
+        self::assertCount(1, $adminOrganizationRows);
+        self::assertSame(40, $adminOrganizationRows[0]->organizationId);
+        self::assertSame(1, $adminOrganizationRows[0]->conversions);
+        self::assertSame(1_500, $adminOrganizationRows[0]->conversionValuePoints);
     }
 
     public function testNonAlignedRefreshWindowRebuildsWholeBucketsIdempotently(): void
@@ -269,8 +381,83 @@ final class AggregateStatisticsJobTest extends TestCase
                 clicks INTEGER NOT NULL,
                 spend_points INTEGER NOT NULL,
                 revenue_points INTEGER NOT NULL,
+                conversions INTEGER NOT NULL DEFAULT 0,
+                conversion_value_points INTEGER NOT NULL DEFAULT 0,
                 refreshed_at DATETIME NOT NULL,
                 UNIQUE (granularity, bucket_start, dimension_key)
+            )',
+        );
+        $connection->executeStatement(
+            'CREATE TABLE attribution_conversions (
+                event_id VARCHAR(160) PRIMARY KEY,
+                conversion_id VARCHAR(160) NOT NULL,
+                organization_id INTEGER NULL,
+                oauth_client_id INTEGER NULL,
+                recorded_by_user_id INTEGER NULL,
+                attributed INTEGER NOT NULL,
+                click_event_id VARCHAR(160) NULL,
+                decision_id VARCHAR(160) NULL,
+                campaign_id INTEGER NULL,
+                window_seconds INTEGER NOT NULL,
+                source VARCHAR(64) NOT NULL,
+                conversion_name VARCHAR(160) NOT NULL,
+                value_points INTEGER NOT NULL,
+                occurred_at DATETIME NOT NULL,
+                created_at DATETIME NOT NULL
+            )',
+        );
+
+        return $connection;
+    }
+
+    private function createRawReportingConnection(): Connection
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        $connection->executeStatement(
+            'CREATE TABLE ad_serving_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type VARCHAR(32) NOT NULL,
+                event_id VARCHAR(160) NOT NULL,
+                decision_id VARCHAR(160) NOT NULL,
+                site_id INTEGER NOT NULL,
+                slot_id INTEGER NOT NULL,
+                viewer_id VARCHAR(160) NOT NULL,
+                ad_id VARCHAR(160) NULL,
+                campaign_id INTEGER NULL,
+                advertiser_organization_id INTEGER NULL,
+                publisher_organization_id INTEGER NULL,
+                cost_points INTEGER NULL,
+                occurred_at DATETIME NOT NULL,
+                valid INTEGER NOT NULL,
+                reason VARCHAR(120) NULL,
+                visible_ratio NUMERIC NULL,
+                visible_ms INTEGER NULL,
+                billing_status VARCHAR(32) NOT NULL DEFAULT "pending",
+                billed_points INTEGER NOT NULL DEFAULT 0,
+                publisher_earning_points INTEGER NOT NULL DEFAULT 0,
+                billing_reason VARCHAR(120) NULL,
+                billing_processed_at DATETIME NULL,
+                processed_at DATETIME NULL,
+                UNIQUE (event_type, event_id)
+            )',
+        );
+        $connection->executeStatement(
+            'CREATE TABLE attribution_conversions (
+                event_id VARCHAR(160) PRIMARY KEY,
+                conversion_id VARCHAR(160) NOT NULL,
+                organization_id INTEGER NULL,
+                oauth_client_id INTEGER NULL,
+                recorded_by_user_id INTEGER NULL,
+                attributed INTEGER NOT NULL,
+                click_event_id VARCHAR(160) NULL,
+                decision_id VARCHAR(160) NULL,
+                campaign_id INTEGER NULL,
+                window_seconds INTEGER NOT NULL,
+                source VARCHAR(64) NOT NULL,
+                conversion_name VARCHAR(160) NOT NULL,
+                value_points INTEGER NOT NULL,
+                occurred_at DATETIME NOT NULL,
+                created_at DATETIME NOT NULL
             )',
         );
 
@@ -310,6 +497,35 @@ final class AggregateStatisticsJobTest extends TestCase
             'billing_reason' => $billingStatus === 'billed' ? null : $billingStatus,
             'billing_processed_at' => $billingStatus === 'billed' ? $occurredAt : null,
             'processed_at' => null,
+        ]);
+    }
+
+    private function insertConversion(
+        Connection $connection,
+        string $eventId,
+        string $conversionId,
+        ?string $clickEventId,
+        string $occurredAt,
+        string $createdAt,
+        int $valuePoints,
+        bool $attributed = true,
+    ): void {
+        $connection->insert('attribution_conversions', [
+            'event_id' => $eventId,
+            'conversion_id' => $conversionId,
+            'organization_id' => 40,
+            'oauth_client_id' => 501,
+            'recorded_by_user_id' => null,
+            'attributed' => $attributed ? 1 : 0,
+            'click_event_id' => $clickEventId,
+            'decision_id' => 'decision-1',
+            'campaign_id' => 30,
+            'window_seconds' => 604800,
+            'source' => 'server_api',
+            'conversion_name' => 'purchase',
+            'value_points' => $valuePoints,
+            'occurred_at' => $occurredAt,
+            'created_at' => $createdAt,
         ]);
     }
 }

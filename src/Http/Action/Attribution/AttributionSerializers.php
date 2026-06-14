@@ -21,6 +21,7 @@ final readonly class AttributionSerializers
             'source' => $result->source,
             'conversion_name' => $result->conversionName,
             'value_points' => $result->valuePoints,
+            'occurred_at' => $result->occurredAt->format(DATE_ATOM),
             'attribution' => [
                 'model' => 'last_click',
                 'attributed' => $result->attributed,

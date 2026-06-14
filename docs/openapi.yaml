@@ -5723,6 +5723,7 @@ components:
         - source
         - conversion_name
         - value_points
+        - occurred_at
         - attribution
       properties:
         conversion_id:
@@ -5757,6 +5758,10 @@ components:
         value_points:
           type: integer
           minimum: 0
+        occurred_at:
+          type: string
+          format: date-time
+          description: Business occurrence time used for ROI and CVR reporting buckets.
         attribution:
           $ref: "#/components/schemas/AttributionData"
       additionalProperties: false
@@ -7063,6 +7068,10 @@ components:
         - ctr
         - spend_points
         - revenue_points
+        - conversions
+        - conversion_value_points
+        - cvr
+        - roi
       properties:
         impressions:
           type: integer
@@ -7079,6 +7088,21 @@ components:
         revenue_points:
           type: integer
           minimum: 0
+        conversions:
+          type: integer
+          minimum: 0
+          description: Last-click attributed conversions. CPA is not billed.
+        conversion_value_points:
+          type: integer
+          minimum: 0
+          description: Sum of attributed conversion value in platform points.
+        cvr:
+          type: number
+          minimum: 0
+          description: Conversion rate percentage, conversions divided by clicks.
+        roi:
+          type: number
+          description: Return on ad spend percentage, calculated as (conversion_value_points - spend_points) / spend_points * 100.
       additionalProperties: false
     ReportSeriesPoint:
       type: object
@@ -7089,6 +7113,10 @@ components:
         - ctr
         - spend_points
         - revenue_points
+        - conversions
+        - conversion_value_points
+        - cvr
+        - roi
       properties:
         date:
           description: Day granularity uses YYYY-MM-DD; hour granularity uses an RFC3339 date-time at the hour bucket start.
@@ -7114,6 +7142,17 @@ components:
         revenue_points:
           type: integer
           minimum: 0
+        conversions:
+          type: integer
+          minimum: 0
+        conversion_value_points:
+          type: integer
+          minimum: 0
+        cvr:
+          type: number
+          minimum: 0
+        roi:
+          type: number
       additionalProperties: false
     ReportDimensions:
       type: object

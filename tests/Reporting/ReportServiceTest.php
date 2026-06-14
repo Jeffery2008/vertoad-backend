@@ -15,8 +15,8 @@ final class ReportServiceTest extends TestCase
     public function testReturnsDashboardSummarySeriesAndExtensionDimensions(): void
     {
         $service = new ReportQueryService(new StaticReportAggregateRepository([
-            new ReportAggregateRow('2026-06-08', 99, 123, 5, 10, 'cn-sh', 'desktop', 'chrome', '1920x1080', 'low', 100, 25, 1_000, 600),
-            new ReportAggregateRow('2026-06-09', 99, 123, 5, 10, 'cn-sh', 'mobile', 'safari', '390x844', 'medium', 0, 2, 80, 50),
+            new ReportAggregateRow('2026-06-08', 99, 123, 5, 10, 'cn-sh', 'desktop', 'chrome', '1920x1080', 'low', 100, 25, 1_000, 600, 5, 2_500),
+            new ReportAggregateRow('2026-06-09', 99, 123, 5, 10, 'cn-sh', 'mobile', 'safari', '390x844', 'medium', 0, 2, 80, 50, 1, 250),
         ]));
 
         $report = $service->dashboard([
@@ -37,9 +37,17 @@ final class ReportServiceTest extends TestCase
         self::assertSame(27.0, $report['totals']['ctr']);
         self::assertSame(1_080, $report['totals']['spend_points']);
         self::assertSame(650, $report['totals']['revenue_points']);
+        self::assertSame(6, $report['totals']['conversions']);
+        self::assertSame(2_750, $report['totals']['conversion_value_points']);
+        self::assertEqualsWithDelta(22.2222, $report['totals']['cvr'], 0.0001);
+        self::assertEqualsWithDelta(154.6296, $report['totals']['roi'], 0.0001);
         self::assertCount(2, $report['series']);
         self::assertSame('2026-06-08', $report['series'][0]['date']);
         self::assertSame(25.0, $report['series'][0]['ctr']);
+        self::assertSame(5, $report['series'][0]['conversions']);
+        self::assertSame(2_500, $report['series'][0]['conversion_value_points']);
+        self::assertSame(20.0, $report['series'][0]['cvr']);
+        self::assertSame(150.0, $report['series'][0]['roi']);
         self::assertSame('Cn Sh', $report['dimensions']['geo'][0]['label']);
         self::assertSame(100, $report['dimensions']['geo'][0]['impressions']);
         self::assertSame(27.0, $report['dimensions']['geo'][0]['ctr']);
@@ -50,8 +58,8 @@ final class ReportServiceTest extends TestCase
     public function testMapsHighAndUnknownRiskBuckets(): void
     {
         $service = new ReportQueryService(new StaticReportAggregateRepository([
-            new ReportAggregateRow('2026-06-08', 99, 123, 5, 10, null, null, null, null, 'high', 10, 1, 100, 50),
-            new ReportAggregateRow('2026-06-09', 99, 123, 5, 10, null, null, null, null, 'review', 10, 1, 100, 50),
+            new ReportAggregateRow('2026-06-08', 99, 123, 5, 10, null, null, null, null, 'high', 10, 1, 100, 50, 0, 0),
+            new ReportAggregateRow('2026-06-09', 99, 123, 5, 10, null, null, null, null, 'review', 10, 1, 100, 50, 0, 0),
         ]));
 
         $report = $service->dashboard([]);
@@ -63,9 +71,9 @@ final class ReportServiceTest extends TestCase
     public function testSeriesAggregatesMultipleDimensionRowsIntoOnePointPerBucket(): void
     {
         $service = new ReportQueryService(new StaticReportAggregateRepository([
-            new ReportAggregateRow('2026-06-08', 99, 123, 5, 10, 'cn-sh', 'desktop', null, null, 'low', 10, 1, 100, 60),
-            new ReportAggregateRow('2026-06-08', 99, 123, 5, 10, 'cn-bj', 'mobile', null, null, 'medium', 20, 3, 300, 180),
-            new ReportAggregateRow('2026-06-09', 99, 123, 5, 10, 'cn-sh', 'desktop', null, null, 'low', 5, 1, 40, 24),
+            new ReportAggregateRow('2026-06-08', 99, 123, 5, 10, 'cn-sh', 'desktop', null, null, 'low', 10, 1, 100, 60, 1, 400),
+            new ReportAggregateRow('2026-06-08', 99, 123, 5, 10, 'cn-bj', 'mobile', null, null, 'medium', 20, 3, 300, 180, 2, 900),
+            new ReportAggregateRow('2026-06-09', 99, 123, 5, 10, 'cn-sh', 'desktop', null, null, 'low', 5, 1, 40, 24, 0, 0),
         ]));
 
         $report = $service->dashboard(['granularity' => 'day']);
@@ -76,6 +84,10 @@ final class ReportServiceTest extends TestCase
         self::assertSame(4, $report['series'][0]['clicks']);
         self::assertSame(400, $report['series'][0]['spend_points']);
         self::assertSame(240, $report['series'][0]['revenue_points']);
+        self::assertSame(3, $report['series'][0]['conversions']);
+        self::assertSame(1_300, $report['series'][0]['conversion_value_points']);
+        self::assertSame(75.0, $report['series'][0]['cvr']);
+        self::assertSame(225.0, $report['series'][0]['roi']);
         self::assertEqualsWithDelta(13.3333, $report['series'][0]['ctr'], 0.0001);
     }
 
@@ -100,8 +112,8 @@ final class ReportServiceTest extends TestCase
     public function testDefaultsRangeFromRowsAsRfc3339DateTimes(): void
     {
         $service = new ReportQueryService(new StaticReportAggregateRepository([
-            new ReportAggregateRow('2026-06-08', null, null, 5, 10, null, null, null, null, null, 100, 25, 1_000, 600),
-            new ReportAggregateRow('2026-06-09', null, null, 5, 10, null, null, null, null, null, 40, 8, 300, 180),
+            new ReportAggregateRow('2026-06-08', null, null, 5, 10, null, null, null, null, null, 100, 25, 1_000, 600, 0, 0),
+            new ReportAggregateRow('2026-06-09', null, null, 5, 10, null, null, null, null, null, 40, 8, 300, 180, 0, 0),
         ]));
 
         $report = $service->dashboard(['granularity' => 'day']);
@@ -113,8 +125,8 @@ final class ReportServiceTest extends TestCase
     public function testDefaultsHourlyRangeFromRowsAsRfc3339DateTimes(): void
     {
         $service = new ReportQueryService(new StaticReportAggregateRepository([
-            new ReportAggregateRow('2026-06-08T10:00:00+00:00', null, null, 5, 10, null, null, null, null, null, 100, 25, 1_000, 600),
-            new ReportAggregateRow('2026-06-08T11:00:00+00:00', null, null, 5, 10, null, null, null, null, null, 40, 8, 300, 180),
+            new ReportAggregateRow('2026-06-08T10:00:00+00:00', null, null, 5, 10, null, null, null, null, null, 100, 25, 1_000, 600, 0, 0),
+            new ReportAggregateRow('2026-06-08T11:00:00+00:00', null, null, 5, 10, null, null, null, null, null, 40, 8, 300, 180, 0, 0),
         ]));
 
         $report = $service->dashboard(['granularity' => 'hour']);

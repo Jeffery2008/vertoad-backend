@@ -43,6 +43,8 @@ final class ReportAggregateRepositoryTest extends TestCase
         self::assertSame(1, $rows[0]->clicks);
         self::assertSame(40, $rows[0]->spendPoints);
         self::assertSame(80, $rows[0]->revenuePoints);
+        self::assertSame(0, $rows[0]->conversions);
+        self::assertSame(0, $rows[0]->conversionValuePoints);
         self::assertNull($rows[0]->geo);
         self::assertNull($rows[0]->device);
         self::assertNull($rows[0]->browser);
@@ -125,9 +127,9 @@ final class ReportAggregateRepositoryTest extends TestCase
     public function testAggregateRowRejectsNegativeMetrics(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('revenue_points cannot be negative.');
+        $this->expectExceptionMessage('conversion_value_points cannot be negative.');
 
-        new ReportAggregateRow('2026-06-08', null, null, null, null, null, null, null, null, null, 0, 0, 0, -1);
+        new ReportAggregateRow('2026-06-08', null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, -1);
     }
 
     private function event(

@@ -64,6 +64,8 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
                 'clicks',
                 'spend_points',
                 'revenue_points',
+                'conversions',
+                'conversion_value_points',
             )
             ->from('report_aggregates')
             ->where('granularity = :granularity')
@@ -152,6 +154,9 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
         foreach ($query->fetchAllAssociative() as $row) {
             $this->addEventBuckets($buckets, $row, $filters);
         }
+        foreach ($this->conversionRows($filters) as $row) {
+            $this->addConversionBuckets($buckets, $row, $filters);
+        }
 
         ksort($buckets);
 
@@ -171,6 +176,8 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
                 clicks: $bucket['clicks'],
                 spendPoints: $bucket['spend_points'],
                 revenuePoints: $bucket['revenue_points'],
+                conversions: $bucket['conversions'],
+                conversionValuePoints: $bucket['conversion_value_points'],
             ),
             array_values($buckets),
         );
@@ -220,6 +227,14 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
         foreach ($events as $event) {
             $this->addEventBuckets($buckets, $event, ['granularity' => $granularity, 'include_all_roles' => true]);
         }
+        foreach ($this->conversionRows([
+            'granularity' => $granularity,
+            'include_all_roles' => true,
+            'from' => $bucketFrom,
+            'to' => $bucketTo,
+        ]) as $conversion) {
+            $this->addConversionBuckets($buckets, $conversion, ['granularity' => $granularity, 'include_all_roles' => true]);
+        }
 
         ksort($buckets);
         $refreshedAt = $this->formatDate(new \DateTimeImmutable());
@@ -242,6 +257,8 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
                 'clicks' => $bucket['clicks'],
                 'spend_points' => $bucket['spend_points'],
                 'revenue_points' => $bucket['revenue_points'],
+                'conversions' => $bucket['conversions'],
+                'conversion_value_points' => $bucket['conversion_value_points'],
                 'refreshed_at' => $refreshedAt,
             ]);
         }
@@ -271,6 +288,8 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
             clicks: (int) $row['clicks'],
             spendPoints: (int) $row['spend_points'],
             revenuePoints: (int) $row['revenue_points'],
+            conversions: (int) $row['conversions'],
+            conversionValuePoints: (int) $row['conversion_value_points'],
         );
     }
 
@@ -354,6 +373,8 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
                 'clicks' => 0,
                 'spend_points' => 0,
                 'revenue_points' => 0,
+                'conversions' => 0,
+                'conversion_value_points' => 0,
             ];
 
             if ($event['event_type'] === 'impression') {
@@ -363,6 +384,117 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
             }
             $buckets[$key]['spend_points'] += $fact['spend_points'];
             $buckets[$key]['revenue_points'] += $fact['revenue_points'];
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return list<array<string, mixed>>
+     */
+    private function conversionRows(array $filters): array
+    {
+        $query = $this->connection->createQueryBuilder()
+            ->select(
+                'c.campaign_id',
+                'c.value_points',
+                'c.occurred_at',
+                'e.site_id',
+                'e.slot_id',
+                'e.advertiser_organization_id',
+                'e.publisher_organization_id',
+            )
+            ->from('attribution_conversions', 'c')
+            ->innerJoin('c', 'ad_serving_events', 'e', 'e.event_type = :click_type AND e.event_id = c.click_event_id')
+            ->where('c.attributed = :attributed')
+            ->andWhere('c.click_event_id IS NOT NULL')
+            ->setParameter('click_type', 'click')
+            ->setParameter('attributed', 1);
+
+        if (isset($filters['organization_id'])) {
+            $query->andWhere('(e.advertiser_organization_id = :organization_id OR e.publisher_organization_id = :organization_id)')
+                ->setParameter('organization_id', (int) $filters['organization_id']);
+        }
+
+        foreach (['campaign_id', 'site_id', 'slot_id'] as $filter) {
+            if (isset($filters[$filter])) {
+                $query->andWhere(($filter === 'campaign_id' ? 'c.' : 'e.') . $filter . ' = :' . $filter)
+                    ->setParameter($filter, (int) $filters[$filter]);
+            }
+        }
+
+        if (isset($filters['from'])) {
+            $query->andWhere('c.occurred_at >= :from_time')
+                ->setParameter('from_time', $this->formatDate($filters['from']));
+        }
+
+        if (isset($filters['to'])) {
+            $query->andWhere('c.occurred_at < :to_time')
+                ->setParameter('to_time', $this->formatDate($filters['to']));
+        }
+
+        return $query->fetchAllAssociative();
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $buckets
+     * @param array<string, mixed> $conversion
+     * @param array<string, mixed> $filters
+     */
+    private function addConversionBuckets(array &$buckets, array $conversion, array $filters): void
+    {
+        $occurredAt = new \DateTimeImmutable((string) $conversion['occurred_at'], new \DateTimeZone('UTC'));
+        $granularity = ($filters['granularity'] ?? 'day') === 'hour' ? 'hour' : 'day';
+        $bucketStart = $granularity === 'hour'
+            ? $occurredAt->format('Y-m-d H:00:00')
+            : $occurredAt->format('Y-m-d 00:00:00');
+        $date = $granularity === 'hour'
+            ? $occurredAt->format('Y-m-d\TH:00:00P')
+            : $occurredAt->format('Y-m-d');
+        $roleFilter = $this->roleFilter($filters);
+        $organizationFilter = isset($filters['organization_id']) ? (int) $filters['organization_id'] : null;
+        $event = [
+            'campaign_id' => $conversion['campaign_id'],
+            'site_id' => $conversion['site_id'],
+            'slot_id' => $conversion['slot_id'],
+        ];
+
+        foreach ($this->conversionFacts($conversion) as $fact) {
+            if ($roleFilter !== null && $fact['organization_role'] !== $roleFilter) {
+                continue;
+            }
+
+            if ($organizationFilter !== null && $fact['organization_id'] !== $organizationFilter) {
+                continue;
+            }
+
+            $key = implode('|', [
+                $bucketStart,
+                $fact['organization_role'],
+                (string) ($fact['organization_id'] ?? ''),
+                (string) ($conversion['campaign_id'] ?? ''),
+                (string) $conversion['site_id'],
+                (string) $conversion['slot_id'],
+            ]);
+
+            $buckets[$key] ??= [
+                'date' => $date,
+                'bucket_start' => $bucketStart,
+                'dimension_key' => $this->dimensionKey($fact['organization_role'], $fact['organization_id'], $event),
+                'organization_role' => $fact['organization_role'],
+                'organization_id' => $fact['organization_id'],
+                'campaign_id' => $conversion['campaign_id'] === null ? null : (int) $conversion['campaign_id'],
+                'site_id' => (int) $conversion['site_id'],
+                'slot_id' => (int) $conversion['slot_id'],
+                'impressions' => 0,
+                'clicks' => 0,
+                'spend_points' => 0,
+                'revenue_points' => 0,
+                'conversions' => 0,
+                'conversion_value_points' => 0,
+            ];
+
+            ++$buckets[$key]['conversions'];
+            $buckets[$key]['conversion_value_points'] += $fact['conversion_value_points'];
         }
     }
 
@@ -396,6 +528,38 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
                 'organization_id' => (int) $event['publisher_organization_id'],
                 'spend_points' => 0,
                 'revenue_points' => $publisherPoints,
+            ];
+        }
+
+        return $facts;
+    }
+
+    /**
+     * @param array<string, mixed> $conversion
+     * @return list<array{organization_role:string, organization_id:?int, conversion_value_points:int}>
+     */
+    private function conversionFacts(array $conversion): array
+    {
+        $valuePoints = max(0, (int) ($conversion['value_points'] ?? 0));
+        $facts = [[
+            'organization_role' => 'platform',
+            'organization_id' => null,
+            'conversion_value_points' => $valuePoints,
+        ]];
+
+        if ($conversion['advertiser_organization_id'] !== null) {
+            $facts[] = [
+                'organization_role' => 'advertiser',
+                'organization_id' => (int) $conversion['advertiser_organization_id'],
+                'conversion_value_points' => $valuePoints,
+            ];
+        }
+
+        if ($conversion['publisher_organization_id'] !== null) {
+            $facts[] = [
+                'organization_role' => 'publisher',
+                'organization_id' => (int) $conversion['publisher_organization_id'],
+                'conversion_value_points' => $valuePoints,
             ];
         }
 

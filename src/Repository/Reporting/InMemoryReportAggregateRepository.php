@@ -51,6 +51,8 @@ final readonly class InMemoryReportAggregateRepository implements ReportAggregat
                 'clicks' => 0,
                 'spend_points' => 0,
                 'revenue_points' => 0,
+                'conversions' => 0,
+                'conversion_value_points' => 0,
             ];
 
             if ($event->eventType === 'impression') {
@@ -80,6 +82,8 @@ final readonly class InMemoryReportAggregateRepository implements ReportAggregat
                 clicks: $bucket['clicks'],
                 spendPoints: $bucket['spend_points'],
                 revenuePoints: $bucket['revenue_points'],
+                conversions: $bucket['conversions'],
+                conversionValuePoints: $bucket['conversion_value_points'],
             ),
             array_values($buckets),
         );

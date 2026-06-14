@@ -45,6 +45,8 @@ final class ServingBillingReportSchemaMigrationTest extends TestCase
             "organization_role varchar(16) not null default 'platform'",
             'unique key uq_report_aggregates_bucket (granularity, bucket_start, dimension_key)',
             'key idx_report_aggregates_org_time (organization_id, organization_role, granularity, bucket_start)',
+            'conversions bigint unsigned not null default 0',
+            'conversion_value_points bigint unsigned not null default 0',
         ] as $fragment) {
             self::assertStringContainsString($fragment, $this->aggregateSql);
         }

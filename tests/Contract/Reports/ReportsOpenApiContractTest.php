@@ -28,6 +28,12 @@ final class ReportsOpenApiContractTest extends TestCase
         self::assertStringContainsString('- totals', $openApi);
         self::assertStringContainsString('- dimensions', $openApi);
         self::assertStringContainsString('risk_score:', $openApi);
+        foreach (['conversions', 'conversion_value_points', 'cvr', 'roi'] as $field) {
+            self::assertStringContainsString('- ' . $field, $reportTotals);
+            self::assertStringContainsString($field . ':', $reportSeriesPoint);
+        }
+        self::assertStringContainsString('Last-click attributed conversions. CPA is not billed.', $reportTotals);
+        self::assertStringContainsString('Return on ad spend percentage', $reportTotals);
         self::assertMatchesRegularExpression('/name: portal\s+in: query\s+required: false\s+schema:\s+type: string\s+enum:\s+- admin\s+- advertiser\s+- publisher/s', $dashboardPath);
         self::assertMatchesRegularExpression('/name: from\s+in: query\s+required: false\s+schema:\s+type: string\s+format: date-time\s+pattern: /s', $dashboardPath);
         self::assertMatchesRegularExpression('/name: to\s+in: query\s+required: false\s+schema:\s+type: string\s+format: date-time\s+pattern: /s', $dashboardPath);

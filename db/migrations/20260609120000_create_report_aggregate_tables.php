@@ -28,6 +28,8 @@ CREATE TABLE report_aggregates (
     clicks BIGINT UNSIGNED NOT NULL DEFAULT 0,
     spend_points BIGINT UNSIGNED NOT NULL DEFAULT 0,
     revenue_points BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    conversions BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    conversion_value_points BIGINT UNSIGNED NOT NULL DEFAULT 0,
     refreshed_at DATETIME NOT NULL,
     PRIMARY KEY (id),
     UNIQUE KEY uq_report_aggregates_bucket (granularity, bucket_start, dimension_key),

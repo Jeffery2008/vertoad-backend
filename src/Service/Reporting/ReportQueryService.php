@@ -31,6 +31,8 @@ final readonly class ReportQueryService
             'clicks' => 0,
             'spendPoints' => 0,
             'revenuePoints' => 0,
+            'conversions' => 0,
+            'conversionValuePoints' => 0,
         ];
 
         foreach ($rows as $row) {
@@ -38,13 +40,22 @@ final readonly class ReportQueryService
             $totals['clicks'] += $row->clicks;
             $totals['spendPoints'] += $row->spendPoints;
             $totals['revenuePoints'] += $row->revenuePoints;
+            $totals['conversions'] += $row->conversions;
+            $totals['conversionValuePoints'] += $row->conversionValuePoints;
         }
 
         return [
             'portal' => $filters['portal'] ?? 'admin',
             'organization_id' => $filters['organization_id'] ?? null,
             'range' => $this->range($filters, $rows),
-            'totals' => $this->totals($totals['impressions'], $totals['clicks'], $totals['spendPoints'], $totals['revenuePoints']),
+            'totals' => $this->totals(
+                $totals['impressions'],
+                $totals['clicks'],
+                $totals['spendPoints'],
+                $totals['revenuePoints'],
+                $totals['conversions'],
+                $totals['conversionValuePoints'],
+            ),
             'series' => $this->series($rows),
             'dimensions' => $this->dimensions($rows),
         ];
@@ -64,11 +75,15 @@ final readonly class ReportQueryService
                 'clicks' => 0,
                 'spendPoints' => 0,
                 'revenuePoints' => 0,
+                'conversions' => 0,
+                'conversionValuePoints' => 0,
             ];
             $buckets[$row->date]['impressions'] += $row->impressions;
             $buckets[$row->date]['clicks'] += $row->clicks;
             $buckets[$row->date]['spendPoints'] += $row->spendPoints;
             $buckets[$row->date]['revenuePoints'] += $row->revenuePoints;
+            $buckets[$row->date]['conversions'] += $row->conversions;
+            $buckets[$row->date]['conversionValuePoints'] += $row->conversionValuePoints;
         }
 
         ksort($buckets);
@@ -81,6 +96,8 @@ final readonly class ReportQueryService
                     $bucket['clicks'],
                     $bucket['spendPoints'],
                     $bucket['revenuePoints'],
+                    $bucket['conversions'],
+                    $bucket['conversionValuePoints'],
                 ),
             ],
             array_values($buckets),
@@ -145,9 +162,16 @@ final readonly class ReportQueryService
     }
 
     /**
-     * @return array{impressions:int,clicks:int,ctr:float,spend_points:int,revenue_points:int}
+     * @return array{impressions:int,clicks:int,ctr:float,spend_points:int,revenue_points:int,conversions:int,conversion_value_points:int,cvr:float,roi:float}
      */
-    private function totals(int $impressions, int $clicks, int $spendPoints, int $revenuePoints): array
+    private function totals(
+        int $impressions,
+        int $clicks,
+        int $spendPoints,
+        int $revenuePoints,
+        int $conversions,
+        int $conversionValuePoints,
+    ): array
     {
         return [
             'impressions' => $impressions,
@@ -155,6 +179,10 @@ final readonly class ReportQueryService
             'ctr' => $this->ctr($clicks, $impressions),
             'spend_points' => $spendPoints,
             'revenue_points' => $revenuePoints,
+            'conversions' => $conversions,
+            'conversion_value_points' => $conversionValuePoints,
+            'cvr' => $this->rate($conversions, $clicks),
+            'roi' => $this->roi($conversionValuePoints, $spendPoints),
         ];
     }
 
@@ -211,11 +239,25 @@ final readonly class ReportQueryService
 
     private function ctr(int $clicks, int $impressions): float
     {
-        if ($impressions === 0) {
+        return $this->rate($clicks, $impressions);
+    }
+
+    private function rate(int $numerator, int $denominator): float
+    {
+        if ($denominator === 0) {
             return 0.0;
         }
 
-        return round(($clicks / $impressions) * 100, 4);
+        return round(($numerator / $denominator) * 100, 4);
+    }
+
+    private function roi(int $conversionValuePoints, int $spendPoints): float
+    {
+        if ($spendPoints === 0) {
+            return 0.0;
+        }
+
+        return round((($conversionValuePoints - $spendPoints) / $spendPoints) * 100, 4);
     }
 
     private function dimensionLabel(string $value): string

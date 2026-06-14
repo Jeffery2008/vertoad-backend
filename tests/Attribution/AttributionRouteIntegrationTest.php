@@ -111,6 +111,7 @@ final class AttributionRouteIntegrationTest extends TestCase
         self::assertSame(99, $response['body']['data']['organization_id']);
         self::assertSame(501, $response['body']['data']['oauth_client_id']);
         self::assertNull($response['body']['data']['recorded_by_user_id']);
+        self::assertSame('2026-06-08T11:00:00+00:00', $response['body']['data']['occurred_at']);
         self::assertTrue($response['body']['data']['attribution']['attributed']);
         self::assertSame('click-1', $response['body']['data']['attribution']['click_event_id']);
     }

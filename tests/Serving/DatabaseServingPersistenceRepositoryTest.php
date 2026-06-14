@@ -181,6 +181,8 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
         self::assertSame(1, $rows[0]->clicks);
         self::assertSame(30, $rows[0]->spendPoints);
         self::assertSame(0, $rows[0]->revenuePoints);
+        self::assertSame(0, $rows[0]->conversions);
+        self::assertSame(0, $rows[0]->conversionValuePoints);
     }
 
     public function testCronFailMarksDatabaseEventProcessedWithoutRemovingReportHistory(): void
@@ -237,11 +239,15 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
         self::assertSame(0, $rows[0]->clicks);
         self::assertSame(0, $rows[0]->spendPoints);
         self::assertSame(6, $rows[0]->revenuePoints);
+        self::assertSame(0, $rows[0]->conversions);
+        self::assertSame(0, $rows[0]->conversionValuePoints);
         self::assertSame('2026-06-08T11:00:00+00:00', $rows[1]->date);
         self::assertSame(0, $rows[1]->impressions);
         self::assertSame(1, $rows[1]->clicks);
         self::assertSame(0, $rows[1]->spendPoints);
         self::assertSame(12, $rows[1]->revenuePoints);
+        self::assertSame(0, $rows[1]->conversions);
+        self::assertSame(0, $rows[1]->conversionValuePoints);
     }
 
     public function testRejectsInvalidCronLeaseLimit(): void
@@ -327,6 +333,25 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
                 user_agent VARCHAR(512) NULL,
                 payload_json TEXT NOT NULL,
                 processed_at DATETIME NULL
+            )',
+        );
+        $connection->executeStatement(
+            'CREATE TABLE attribution_conversions (
+                event_id VARCHAR(160) PRIMARY KEY,
+                conversion_id VARCHAR(160) NOT NULL,
+                organization_id INTEGER NULL,
+                oauth_client_id INTEGER NULL,
+                recorded_by_user_id INTEGER NULL,
+                attributed INTEGER NOT NULL,
+                click_event_id VARCHAR(160) NULL,
+                decision_id VARCHAR(160) NULL,
+                campaign_id INTEGER NULL,
+                window_seconds INTEGER NOT NULL,
+                source VARCHAR(64) NOT NULL,
+                conversion_name VARCHAR(160) NOT NULL,
+                value_points INTEGER NOT NULL,
+                occurred_at DATETIME NOT NULL,
+                created_at DATETIME NOT NULL
             )',
         );
     }

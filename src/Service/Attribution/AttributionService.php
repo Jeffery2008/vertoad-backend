@@ -68,6 +68,7 @@ final readonly class AttributionService
                 source: $stored->source,
                 conversionName: $stored->conversionName,
                 valuePoints: $stored->valuePoints,
+                occurredAt: $stored->occurredAt,
             );
         }
 
@@ -98,6 +99,7 @@ final readonly class AttributionService
             source: $source,
             conversionName: $conversionName,
             valuePoints: $valuePoints,
+            occurredAt: $occurredAt,
         ));
     }
 

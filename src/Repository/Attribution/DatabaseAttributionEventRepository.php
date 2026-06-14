@@ -94,6 +94,7 @@ final readonly class DatabaseAttributionEventRepository implements AttributionEv
                 'source',
                 'conversion_name',
                 'value_points',
+                'occurred_at',
             )
             ->from('attribution_conversions')
             ->where('event_id = :event_id')
@@ -120,6 +121,7 @@ final readonly class DatabaseAttributionEventRepository implements AttributionEv
                 'source' => $result->source,
                 'conversion_name' => $result->conversionName,
                 'value_points' => $result->valuePoints,
+                'occurred_at' => $this->formatDate($result->occurredAt),
                 'created_at' => $this->formatDate(new DateTimeImmutable()),
             ]);
 
@@ -174,6 +176,7 @@ final readonly class DatabaseAttributionEventRepository implements AttributionEv
             source: (string) $row['source'],
             conversionName: (string) $row['conversion_name'],
             valuePoints: (int) $row['value_points'],
+            occurredAt: new DateTimeImmutable((string) $row['occurred_at'], new DateTimeZone('UTC')),
         );
     }
 

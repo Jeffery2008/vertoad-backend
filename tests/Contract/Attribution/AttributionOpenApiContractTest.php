@@ -34,6 +34,8 @@ final class AttributionOpenApiContractTest extends TestCase
         self::assertStringContainsString('organization_id:', $this->schemaBlock($openApi, 'ConversionData'));
         self::assertStringContainsString('oauth_client_id:', $this->schemaBlock($openApi, 'ConversionData'));
         self::assertStringContainsString('recorded_by_user_id:', $this->schemaBlock($openApi, 'ConversionData'));
+        self::assertStringContainsString('occurred_at:', $this->schemaBlock($openApi, 'ConversionData'));
+        self::assertStringContainsString('Business occurrence time used for ROI and CVR reporting buckets.', $this->schemaBlock($openApi, 'ConversionData'));
     }
 
     private function pathBlock(string $openApi, string $path): string

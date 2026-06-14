@@ -21,6 +21,8 @@ final readonly class ReportAggregateRow
         public int $clicks,
         public int $spendPoints,
         public int $revenuePoints,
+        public int $conversions = 0,
+        public int $conversionValuePoints = 0,
     ) {
         if ($date === '') {
             throw new \InvalidArgumentException('Report aggregate date is required.');
@@ -42,6 +44,8 @@ final readonly class ReportAggregateRow
             'clicks' => $clicks,
             'spend_points' => $spendPoints,
             'revenue_points' => $revenuePoints,
+            'conversions' => $conversions,
+            'conversion_value_points' => $conversionValuePoints,
         ] as $name => $value) {
             if ($value < 0) {
                 throw new \InvalidArgumentException($name . ' cannot be negative.');

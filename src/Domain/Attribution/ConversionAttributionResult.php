@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace VertoAD\Domain\Attribution;
 
+use DateTimeImmutable;
+
 final readonly class ConversionAttributionResult
 {
     public function __construct(
@@ -20,6 +22,7 @@ final readonly class ConversionAttributionResult
         public string $source,
         public string $conversionName,
         public int $valuePoints,
+        public DateTimeImmutable $occurredAt,
     ) {
     }
 }

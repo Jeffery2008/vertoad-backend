@@ -105,6 +105,7 @@ final class DatabaseAttributionEventRepositoryTest extends TestCase
             source: 'server_api',
             conversionName: 'purchase',
             valuePoints: 1200,
+            occurredAt: new DateTimeImmutable('2026-06-08T12:00:00+00:00'),
         );
 
         $stored = $repository->recordConversion('conv-1', $result);
@@ -122,6 +123,7 @@ final class DatabaseAttributionEventRepositoryTest extends TestCase
             source: 'browser_pixel',
             conversionName: 'other',
             valuePoints: 0,
+            occurredAt: new DateTimeImmutable('2026-06-09T12:00:00+00:00'),
         ));
         $loaded = (new DatabaseAttributionEventRepository($connection))->findConversion('conv-1');
 
@@ -140,6 +142,7 @@ final class DatabaseAttributionEventRepositoryTest extends TestCase
         self::assertSame('server_api', $loaded->source);
         self::assertSame('purchase', $loaded->conversionName);
         self::assertSame(1200, $loaded->valuePoints);
+        self::assertSame('2026-06-08T12:00:00+00:00', $loaded->occurredAt->format(DATE_ATOM));
     }
 
     public function testAttributionServiceUsesPersistedServingClicksWithoutInMemorySeed(): void
@@ -185,24 +188,6 @@ final class DatabaseAttributionEventRepositoryTest extends TestCase
     {
         $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
         DatabaseServingPersistenceRepositoryTest::createSchema($connection);
-        $connection->executeStatement(
-            'CREATE TABLE attribution_conversions (
-                event_id VARCHAR(160) PRIMARY KEY,
-                conversion_id VARCHAR(160) NOT NULL,
-                organization_id INTEGER NULL,
-                oauth_client_id INTEGER NULL,
-                recorded_by_user_id INTEGER NULL,
-                attributed INTEGER NOT NULL,
-                click_event_id VARCHAR(160) NULL,
-                decision_id VARCHAR(160) NULL,
-                campaign_id INTEGER NULL,
-                window_seconds INTEGER NOT NULL,
-                source VARCHAR(64) NOT NULL,
-                conversion_name VARCHAR(160) NOT NULL,
-                value_points INTEGER NOT NULL,
-                created_at DATETIME NOT NULL
-            )',
-        );
 
         return $connection;
     }

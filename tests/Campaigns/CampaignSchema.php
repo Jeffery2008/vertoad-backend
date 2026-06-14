@@ -71,6 +71,8 @@ final class CampaignSchema
                 clicks INTEGER NOT NULL,
                 spend_points INTEGER NOT NULL,
                 revenue_points INTEGER NOT NULL,
+                conversions INTEGER NOT NULL DEFAULT 0,
+                conversion_value_points INTEGER NOT NULL DEFAULT 0,
                 refreshed_at DATETIME NOT NULL,
                 UNIQUE (granularity, bucket_start, dimension_key)
             )',
