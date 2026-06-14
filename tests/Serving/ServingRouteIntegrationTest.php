@@ -44,7 +44,11 @@ final class ServingRouteIntegrationTest extends TestCase
 
         self::assertTrue($decoded['data']['filled']);
         self::assertSame('ad-1', $decoded['data']['ad']['id']);
-        self::assertSame('https://advertiser.example/landing', $decoded['data']['ad']['landing_url']);
+        self::assertArrayNotHasKey('landing_url', $decoded['data']['ad']);
+        self::assertSame(
+            '/api/v1/ads/click?decision_id=' . rawurlencode((string) $decoded['data']['decision_id']) . '&viewer_id=viewer-1&event_id={event_id}',
+            $decoded['data']['ad']['click_url'],
+        );
         self::assertStringContainsString('sandbox=', $decoded['data']['iframe']['html']);
         self::assertSame(300, $decoded['data']['iframe']['width']);
         self::assertSame(250, $decoded['data']['iframe']['height']);

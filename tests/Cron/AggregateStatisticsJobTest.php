@@ -17,9 +17,10 @@ final class AggregateStatisticsJobTest extends TestCase
     public function testRefreshesDailyAndHourlyReportAggregatesIdempotently(): void
     {
         $connection = $this->createConnection();
-        $this->insertEvent($connection, 'impression', 'imp-1', '2026-06-08 10:05:00', 10);
-        $this->insertEvent($connection, 'click', 'clk-1', '2026-06-08 10:15:00', 20);
-        $this->insertEvent($connection, 'click', 'clk-invalid', '2026-06-08 10:20:00', 20, valid: false);
+        $this->insertEvent($connection, 'impression', 'imp-1', '2026-06-08 10:05:00', 10, 6);
+        $this->insertEvent($connection, 'click', 'clk-1', '2026-06-08 10:15:00', 20, 12);
+        $this->insertEvent($connection, 'click', 'clk-invalid', '2026-06-08 10:20:00', 20, 12, valid: false);
+        $this->insertEvent($connection, 'click', 'clk-skipped', '2026-06-08 10:25:00', 20, 0, billingStatus: 'skipped');
 
         $job = new AggregateStatisticsJob(
             new DatabaseReportAggregateRepository($connection),
@@ -32,8 +33,8 @@ final class AggregateStatisticsJobTest extends TestCase
 
         self::assertSame('aggregate-statistics', $first->jobName);
         self::assertSame('completed', $first->status);
-        self::assertSame(['day_rows' => 2, 'hour_rows' => 2], $first->metrics);
-        self::assertSame(['day_rows' => 2, 'hour_rows' => 2], $second->metrics);
+        self::assertSame(['day_rows' => 3, 'hour_rows' => 3], $first->metrics);
+        self::assertSame(['day_rows' => 3, 'hour_rows' => 3], $second->metrics);
 
         $repository = new DatabaseReportAggregateRepository($connection);
         $daily = $repository->query([
@@ -45,21 +46,34 @@ final class AggregateStatisticsJobTest extends TestCase
             'to' => new DateTimeImmutable('2026-06-09T00:00:00+00:00'),
         ]);
         $hourly = $repository->query([
+            'portal' => 'publisher',
             'organization_id' => 50,
             'granularity' => 'hour',
+        ]);
+        $platform = $repository->query([
+            'portal' => 'admin',
+            'from' => new DateTimeImmutable('2026-06-08T00:00:00+00:00'),
+            'to' => new DateTimeImmutable('2026-06-09T00:00:00+00:00'),
         ]);
 
         self::assertCount(1, $daily);
         self::assertSame('2026-06-08', $daily[0]->date);
         self::assertSame(1, $daily[0]->impressions);
         self::assertSame(1, $daily[0]->clicks);
-        self::assertSame(10, $daily[0]->spendPoints);
-        self::assertSame(20, $daily[0]->revenuePoints);
+        self::assertSame(30, $daily[0]->spendPoints);
+        self::assertSame(0, $daily[0]->revenuePoints);
 
         self::assertCount(1, $hourly);
         self::assertSame('2026-06-08T10:00:00+00:00', $hourly[0]->date);
         self::assertSame(1, $hourly[0]->impressions);
         self::assertSame(1, $hourly[0]->clicks);
+        self::assertSame(0, $hourly[0]->spendPoints);
+        self::assertSame(18, $hourly[0]->revenuePoints);
+
+        self::assertCount(1, $platform);
+        self::assertNull($platform[0]->organizationId);
+        self::assertSame(30, $platform[0]->spendPoints);
+        self::assertSame(18, $platform[0]->revenuePoints);
     }
 
     public function testRejectsInvalidAggregationWindow(): void
@@ -107,6 +121,11 @@ final class AggregateStatisticsJobTest extends TestCase
                 reason VARCHAR(120) NULL,
                 visible_ratio NUMERIC NULL,
                 visible_ms INTEGER NULL,
+                billing_status VARCHAR(32) NOT NULL DEFAULT "pending",
+                billed_points INTEGER NOT NULL DEFAULT 0,
+                publisher_earning_points INTEGER NOT NULL DEFAULT 0,
+                billing_reason VARCHAR(120) NULL,
+                billing_processed_at DATETIME NULL,
                 processed_at DATETIME NULL
             )',
         );
@@ -117,6 +136,86 @@ final class AggregateStatisticsJobTest extends TestCase
             new DateTimeImmutable('2026-06-08T00:00:00+00:00'),
             new DateTimeImmutable('2026-06-09T00:00:00+00:00'),
         );
+    }
+
+    public function testNonAlignedRefreshWindowRebuildsWholeBucketsIdempotently(): void
+    {
+        $connection = $this->createConnection();
+        $this->insertEvent($connection, 'impression', 'imp-start-hour', '2026-06-08 10:05:00', 10, 6);
+        $this->insertEvent($connection, 'click', 'clk-end-hour', '2026-06-08 11:50:00', 20, 12);
+
+        $repository = new DatabaseReportAggregateRepository($connection);
+        $repository->refreshFromEvents(
+            new DateTimeImmutable('2026-06-08T10:30:00+00:00'),
+            new DateTimeImmutable('2026-06-08T11:15:00+00:00'),
+        );
+        $repository->refreshFromEvents(
+            new DateTimeImmutable('2026-06-08T10:30:00+00:00'),
+            new DateTimeImmutable('2026-06-08T11:15:00+00:00'),
+        );
+
+        self::assertSame(9, (int) $connection->fetchOne('SELECT COUNT(*) FROM report_aggregates'));
+        $platformDaily = $repository->query([
+            'portal' => 'admin',
+            'from' => new DateTimeImmutable('2026-06-08T00:00:00+00:00'),
+            'to' => new DateTimeImmutable('2026-06-09T00:00:00+00:00'),
+        ]);
+        $advertiserHourly = $repository->query([
+            'portal' => 'advertiser',
+            'organization_id' => 40,
+            'granularity' => 'hour',
+        ]);
+
+        self::assertCount(1, $platformDaily);
+        self::assertSame(1, $platformDaily[0]->impressions);
+        self::assertSame(1, $platformDaily[0]->clicks);
+        self::assertSame(30, $platformDaily[0]->spendPoints);
+        self::assertSame(18, $platformDaily[0]->revenuePoints);
+        self::assertCount(2, $advertiserHourly);
+        self::assertSame('2026-06-08T10:00:00+00:00', $advertiserHourly[0]->date);
+        self::assertSame('2026-06-08T11:00:00+00:00', $advertiserHourly[1]->date);
+    }
+
+    public function testAggregateDimensionKeyPreventsDuplicateRowsWhenNullableDimensionsAreNull(): void
+    {
+        $connection = $this->createConnection();
+        $this->insertEvent($connection, 'impression', 'imp-null-dimensions', '2026-06-08 10:05:00', 10, 6);
+
+        $repository = new DatabaseReportAggregateRepository($connection);
+        $repository->refreshFromEvents(
+            new DateTimeImmutable('2026-06-08T10:00:00+00:00'),
+            new DateTimeImmutable('2026-06-08T11:00:00+00:00'),
+        );
+
+        $platform = $connection->fetchAssociative(
+            "SELECT granularity, bucket_start, dimension_key, organization_role, organization_id, campaign_id
+            FROM report_aggregates
+            WHERE granularity = 'day' AND organization_role = 'platform'",
+        );
+        self::assertIsArray($platform);
+
+        $this->expectException(\Doctrine\DBAL\Exception\UniqueConstraintViolationException::class);
+
+        $connection->insert('report_aggregates', [
+            'granularity' => $platform['granularity'],
+            'bucket_start' => $platform['bucket_start'],
+            'dimension_key' => $platform['dimension_key'],
+            'organization_role' => $platform['organization_role'],
+            'organization_id' => $platform['organization_id'],
+            'campaign_id' => $platform['campaign_id'],
+            'site_id' => 10,
+            'slot_id' => 20,
+            'geo' => null,
+            'device' => null,
+            'browser' => null,
+            'resolution' => null,
+            'risk_bucket' => null,
+            'impressions' => 1,
+            'clicks' => 0,
+            'spend_points' => 10,
+            'revenue_points' => 6,
+            'refreshed_at' => '2026-06-08 11:00:00',
+        ]);
     }
 
     private function createConnection(): Connection
@@ -141,6 +240,11 @@ final class AggregateStatisticsJobTest extends TestCase
                 reason VARCHAR(120) NULL,
                 visible_ratio NUMERIC NULL,
                 visible_ms INTEGER NULL,
+                billing_status VARCHAR(32) NOT NULL DEFAULT "pending",
+                billed_points INTEGER NOT NULL DEFAULT 0,
+                publisher_earning_points INTEGER NOT NULL DEFAULT 0,
+                billing_reason VARCHAR(120) NULL,
+                billing_processed_at DATETIME NULL,
                 processed_at DATETIME NULL,
                 UNIQUE (event_type, event_id)
             )',
@@ -150,6 +254,8 @@ final class AggregateStatisticsJobTest extends TestCase
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 granularity VARCHAR(12) NOT NULL,
                 bucket_start DATETIME NOT NULL,
+                dimension_key VARCHAR(64) NOT NULL,
+                organization_role VARCHAR(16) NOT NULL DEFAULT "platform",
                 organization_id INTEGER NULL,
                 campaign_id INTEGER NULL,
                 site_id INTEGER NOT NULL,
@@ -163,7 +269,8 @@ final class AggregateStatisticsJobTest extends TestCase
                 clicks INTEGER NOT NULL,
                 spend_points INTEGER NOT NULL,
                 revenue_points INTEGER NOT NULL,
-                refreshed_at DATETIME NOT NULL
+                refreshed_at DATETIME NOT NULL,
+                UNIQUE (granularity, bucket_start, dimension_key)
             )',
         );
 
@@ -175,8 +282,10 @@ final class AggregateStatisticsJobTest extends TestCase
         string $eventType,
         string $eventId,
         string $occurredAt,
-        int $costPoints,
+        int $billedPoints,
+        int $publisherEarningPoints,
         bool $valid = true,
+        string $billingStatus = 'billed',
     ): void {
         $connection->insert('ad_serving_events', [
             'event_type' => $eventType,
@@ -189,12 +298,17 @@ final class AggregateStatisticsJobTest extends TestCase
             'campaign_id' => 30,
             'advertiser_organization_id' => 40,
             'publisher_organization_id' => 50,
-            'cost_points' => $costPoints,
+            'cost_points' => $billedPoints,
             'occurred_at' => $occurredAt,
             'valid' => $valid ? 1 : 0,
             'reason' => $valid ? null : 'repeat_click_window',
             'visible_ratio' => null,
             'visible_ms' => null,
+            'billing_status' => $billingStatus,
+            'billed_points' => $billingStatus === 'billed' ? $billedPoints : 0,
+            'publisher_earning_points' => $billingStatus === 'billed' ? $publisherEarningPoints : 0,
+            'billing_reason' => $billingStatus === 'billed' ? null : $billingStatus,
+            'billing_processed_at' => $billingStatus === 'billed' ? $occurredAt : null,
             'processed_at' => null,
         ]);
     }

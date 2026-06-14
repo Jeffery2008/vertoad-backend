@@ -5330,7 +5330,7 @@ components:
           required:
             - id
             - campaign_id
-            - landing_url
+            - click_url
           properties:
             id:
               type: string
@@ -5338,9 +5338,10 @@ components:
             campaign_id:
               type: integer
               minimum: 1
-            landing_url:
+            click_url:
               type: string
-              format: uri
+              description: Platform click redirect URL template. Replace `{event_id}` with a freshly generated click event id before navigation; raw advertiser landing URLs are intentionally not exposed by the JSON decision API.
+              pattern: "^/api/v1/ads/click\\?"
           additionalProperties: false
         debug:
           type: object

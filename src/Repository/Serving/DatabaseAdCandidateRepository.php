@@ -45,7 +45,7 @@ final readonly class DatabaseAdCandidateRepository implements AdCandidateReposit
             ->from('campaigns', 'c')
             ->innerJoin('c', 'creative_assets', 'a', 'a.id = c.creative_asset_id AND a.organization_id = c.organization_id')
             ->innerJoin('c', 'creative_reviews', 'r', 'r.asset_id = c.creative_asset_id AND r.organization_id = c.organization_id')
-            ->leftJoin('c', 'report_aggregates', 'ra', "ra.campaign_id = c.id AND ra.organization_id = c.organization_id AND ra.granularity = 'day'")
+            ->leftJoin('c', 'report_aggregates', 'ra', "ra.campaign_id = c.id AND ra.organization_id = c.organization_id AND ra.organization_role = 'advertiser' AND ra.granularity = 'day'")
             ->leftJoin('c', 'campaign_serving_frequency_caps', 'fc', 'fc.campaign_id = c.id AND fc.organization_id = c.organization_id')
             ->where('c.status = :campaign_status')
             ->andWhere("a.status IN ('pending_review', 'confirmed')")

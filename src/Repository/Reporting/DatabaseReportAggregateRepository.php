@@ -50,6 +50,7 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
         $query = $this->connection->createQueryBuilder()
             ->select(
                 'bucket_start',
+                'organization_role',
                 'organization_id',
                 'campaign_id',
                 'site_id',
@@ -68,6 +69,12 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
             ->where('granularity = :granularity')
             ->setParameter('granularity', $granularity);
 
+        $role = $this->roleFilter($filters);
+        if ($role !== null) {
+            $query->andWhere('organization_role = :organization_role')
+                ->setParameter('organization_role', $role);
+        }
+
         foreach (['organization_id', 'campaign_id', 'site_id', 'slot_id'] as $filter) {
             if (isset($filters[$filter])) {
                 $query->andWhere($filter . ' = :' . $filter)->setParameter($filter, (int) $filters[$filter]);
@@ -85,6 +92,7 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
         }
 
         $query->orderBy('bucket_start', 'ASC')
+            ->addOrderBy('organization_role', 'ASC')
             ->addOrderBy('organization_id', 'ASC')
             ->addOrderBy('campaign_id', 'ASC')
             ->addOrderBy('site_id', 'ASC')
@@ -106,13 +114,16 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
                 'campaign_id',
                 'advertiser_organization_id',
                 'publisher_organization_id',
-                'cost_points',
+                'billed_points',
+                'publisher_earning_points',
                 'occurred_at',
             )
             ->from('ad_serving_events')
             ->where('valid = :valid')
+            ->andWhere('billing_status = :billing_status')
             ->andWhere('event_type IN (:impression, :click)')
             ->setParameter('valid', 1)
+            ->setParameter('billing_status', 'billed')
             ->setParameter('impression', 'impression')
             ->setParameter('click', 'click');
 
@@ -139,38 +150,7 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
 
         $buckets = [];
         foreach ($query->fetchAllAssociative() as $row) {
-            $occurredAt = new \DateTimeImmutable((string) $row['occurred_at'], new \DateTimeZone('UTC'));
-            $organizationId = $filters['organization_id'] ?? $row['advertiser_organization_id'] ?? $row['publisher_organization_id'];
-            $dateBucket = ($filters['granularity'] ?? 'day') === 'hour'
-                ? $occurredAt->format('Y-m-d\TH:00:00P')
-                : $occurredAt->format('Y-m-d');
-            $key = implode('|', [
-                $dateBucket,
-                (string) ($organizationId ?? ''),
-                (string) ($row['campaign_id'] ?? ''),
-                (string) $row['site_id'],
-                (string) $row['slot_id'],
-            ]);
-
-            $buckets[$key] ??= [
-                'date' => $dateBucket,
-                'organization_id' => $organizationId === null ? null : (int) $organizationId,
-                'campaign_id' => $row['campaign_id'] === null ? null : (int) $row['campaign_id'],
-                'site_id' => (int) $row['site_id'],
-                'slot_id' => (int) $row['slot_id'],
-                'impressions' => 0,
-                'clicks' => 0,
-                'spend_points' => 0,
-                'revenue_points' => 0,
-            ];
-
-            if ($row['event_type'] === 'impression') {
-                ++$buckets[$key]['impressions'];
-                $buckets[$key]['spend_points'] += max(0, (int) ($row['cost_points'] ?? 0));
-            } elseif ($row['event_type'] === 'click') {
-                ++$buckets[$key]['clicks'];
-                $buckets[$key]['revenue_points'] += max(0, (int) ($row['cost_points'] ?? 0));
-            }
+            $this->addEventBuckets($buckets, $row, $filters);
         }
 
         ksort($buckets);
@@ -198,14 +178,16 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
 
     private function refreshGranularity(string $granularity, \DateTimeImmutable $from, \DateTimeImmutable $to): int
     {
+        [$bucketFrom, $bucketTo] = $this->refreshBucketWindow($granularity, $from, $to);
+
         $this->connection->createQueryBuilder()
             ->delete('report_aggregates')
             ->where('granularity = :granularity')
             ->andWhere('bucket_start >= :from_time')
             ->andWhere('bucket_start < :to_time')
             ->setParameter('granularity', $granularity)
-            ->setParameter('from_time', $this->formatDate($from))
-            ->setParameter('to_time', $this->formatDate($to))
+            ->setParameter('from_time', $this->formatDate($bucketFrom))
+            ->setParameter('to_time', $this->formatDate($bucketTo))
             ->executeStatement();
 
         $events = $this->connection->createQueryBuilder()
@@ -216,56 +198,27 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
                 'campaign_id',
                 'advertiser_organization_id',
                 'publisher_organization_id',
-                'cost_points',
+                'billed_points',
+                'publisher_earning_points',
                 'occurred_at',
             )
             ->from('ad_serving_events')
             ->where('valid = :valid')
+            ->andWhere('billing_status = :billing_status')
             ->andWhere('event_type IN (:impression, :click)')
             ->andWhere('occurred_at >= :from_time')
             ->andWhere('occurred_at < :to_time')
             ->setParameter('valid', 1)
+            ->setParameter('billing_status', 'billed')
             ->setParameter('impression', 'impression')
             ->setParameter('click', 'click')
-            ->setParameter('from_time', $this->formatDate($from))
-            ->setParameter('to_time', $this->formatDate($to))
+            ->setParameter('from_time', $this->formatDate($bucketFrom))
+            ->setParameter('to_time', $this->formatDate($bucketTo))
             ->fetchAllAssociative();
 
         $buckets = [];
         foreach ($events as $event) {
-            foreach ($this->organizationIds($event) as $organizationId) {
-                $occurredAt = new \DateTimeImmutable((string) $event['occurred_at'], new \DateTimeZone('UTC'));
-                $bucketStart = $granularity === 'hour'
-                    ? $occurredAt->format('Y-m-d H:00:00')
-                    : $occurredAt->format('Y-m-d 00:00:00');
-                $key = implode('|', [
-                    $bucketStart,
-                    (string) $organizationId,
-                    (string) ($event['campaign_id'] ?? ''),
-                    (string) $event['site_id'],
-                    (string) $event['slot_id'],
-                ]);
-
-                $buckets[$key] ??= [
-                    'bucket_start' => $bucketStart,
-                    'organization_id' => $organizationId,
-                    'campaign_id' => $event['campaign_id'] === null ? null : (int) $event['campaign_id'],
-                    'site_id' => (int) $event['site_id'],
-                    'slot_id' => (int) $event['slot_id'],
-                    'impressions' => 0,
-                    'clicks' => 0,
-                    'spend_points' => 0,
-                    'revenue_points' => 0,
-                ];
-
-                if ($event['event_type'] === 'impression') {
-                    ++$buckets[$key]['impressions'];
-                    $buckets[$key]['spend_points'] += max(0, (int) ($event['cost_points'] ?? 0));
-                } elseif ($event['event_type'] === 'click') {
-                    ++$buckets[$key]['clicks'];
-                    $buckets[$key]['revenue_points'] += max(0, (int) ($event['cost_points'] ?? 0));
-                }
-            }
+            $this->addEventBuckets($buckets, $event, ['granularity' => $granularity, 'include_all_roles' => true]);
         }
 
         ksort($buckets);
@@ -274,6 +227,8 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
             $this->connection->insert('report_aggregates', [
                 'granularity' => $granularity,
                 'bucket_start' => $bucket['bucket_start'],
+                'dimension_key' => $bucket['dimension_key'],
+                'organization_role' => $bucket['organization_role'],
                 'organization_id' => $bucket['organization_id'],
                 'campaign_id' => $bucket['campaign_id'],
                 'site_id' => $bucket['site_id'],
@@ -292,22 +247,6 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
         }
 
         return count($buckets);
-    }
-
-    /**
-     * @param array<string, mixed> $event
-     * @return list<int>
-     */
-    private function organizationIds(array $event): array
-    {
-        $ids = [];
-        foreach (['advertiser_organization_id', 'publisher_organization_id'] as $column) {
-            if ($event[$column] !== null) {
-                $ids[(int) $event[$column]] = (int) $event[$column];
-            }
-        }
-
-        return array_values($ids);
     }
 
     /**
@@ -338,5 +277,168 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
     private function formatDate(\DateTimeImmutable $date): string
     {
         return $date->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+    }
+
+    /**
+     * @return array{0:\DateTimeImmutable,1:\DateTimeImmutable}
+     */
+    private function refreshBucketWindow(string $granularity, \DateTimeImmutable $from, \DateTimeImmutable $to): array
+    {
+        $fromUtc = $from->setTimezone(new \DateTimeZone('UTC'));
+        $toUtc = $to->setTimezone(new \DateTimeZone('UTC'));
+        if ($granularity === 'hour') {
+            $bucketFrom = $fromUtc->setTime((int) $fromUtc->format('H'), 0, 0);
+            $bucketTo = $toUtc->setTime((int) $toUtc->format('H'), 0, 0);
+            if ($bucketTo < $toUtc) {
+                $bucketTo = $bucketTo->modify('+1 hour');
+            }
+
+            return [$bucketFrom, $bucketTo];
+        }
+
+        $bucketFrom = $fromUtc->setTime(0, 0, 0);
+        $bucketTo = $toUtc->setTime(0, 0, 0);
+        if ($bucketTo < $toUtc) {
+            $bucketTo = $bucketTo->modify('+1 day');
+        }
+
+        return [$bucketFrom, $bucketTo];
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $buckets
+     * @param array<string, mixed> $event
+     * @param array<string, mixed> $filters
+     */
+    private function addEventBuckets(array &$buckets, array $event, array $filters): void
+    {
+        $occurredAt = new \DateTimeImmutable((string) $event['occurred_at'], new \DateTimeZone('UTC'));
+        $granularity = ($filters['granularity'] ?? 'day') === 'hour' ? 'hour' : 'day';
+        $bucketStart = $granularity === 'hour'
+            ? $occurredAt->format('Y-m-d H:00:00')
+            : $occurredAt->format('Y-m-d 00:00:00');
+        $date = $granularity === 'hour'
+            ? $occurredAt->format('Y-m-d\TH:00:00P')
+            : $occurredAt->format('Y-m-d');
+        $roleFilter = $this->roleFilter($filters);
+        $organizationFilter = isset($filters['organization_id']) ? (int) $filters['organization_id'] : null;
+
+        foreach ($this->eventFacts($event) as $fact) {
+            if ($roleFilter !== null && $fact['organization_role'] !== $roleFilter) {
+                continue;
+            }
+
+            if ($organizationFilter !== null && $fact['organization_id'] !== $organizationFilter) {
+                continue;
+            }
+
+            $key = implode('|', [
+                $bucketStart,
+                $fact['organization_role'],
+                (string) ($fact['organization_id'] ?? ''),
+                (string) ($event['campaign_id'] ?? ''),
+                (string) $event['site_id'],
+                (string) $event['slot_id'],
+            ]);
+
+            $buckets[$key] ??= [
+                'date' => $date,
+                'bucket_start' => $bucketStart,
+                'dimension_key' => $this->dimensionKey($fact['organization_role'], $fact['organization_id'], $event),
+                'organization_role' => $fact['organization_role'],
+                'organization_id' => $fact['organization_id'],
+                'campaign_id' => $event['campaign_id'] === null ? null : (int) $event['campaign_id'],
+                'site_id' => (int) $event['site_id'],
+                'slot_id' => (int) $event['slot_id'],
+                'impressions' => 0,
+                'clicks' => 0,
+                'spend_points' => 0,
+                'revenue_points' => 0,
+            ];
+
+            if ($event['event_type'] === 'impression') {
+                ++$buckets[$key]['impressions'];
+            } elseif ($event['event_type'] === 'click') {
+                ++$buckets[$key]['clicks'];
+            }
+            $buckets[$key]['spend_points'] += $fact['spend_points'];
+            $buckets[$key]['revenue_points'] += $fact['revenue_points'];
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $event
+     * @return list<array{organization_role:string, organization_id:?int, spend_points:int, revenue_points:int}>
+     */
+    private function eventFacts(array $event): array
+    {
+        $billedPoints = max(0, (int) ($event['billed_points'] ?? 0));
+        $publisherPoints = max(0, (int) ($event['publisher_earning_points'] ?? 0));
+        $facts = [[
+            'organization_role' => 'platform',
+            'organization_id' => null,
+            'spend_points' => $billedPoints,
+            'revenue_points' => $publisherPoints,
+        ]];
+
+        if ($event['advertiser_organization_id'] !== null) {
+            $facts[] = [
+                'organization_role' => 'advertiser',
+                'organization_id' => (int) $event['advertiser_organization_id'],
+                'spend_points' => $billedPoints,
+                'revenue_points' => 0,
+            ];
+        }
+
+        if ($event['publisher_organization_id'] !== null) {
+            $facts[] = [
+                'organization_role' => 'publisher',
+                'organization_id' => (int) $event['publisher_organization_id'],
+                'spend_points' => 0,
+                'revenue_points' => $publisherPoints,
+            ];
+        }
+
+        return $facts;
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     */
+    private function roleFilter(array $filters): ?string
+    {
+        if (($filters['include_all_roles'] ?? false) === true) {
+            return null;
+        }
+
+        $portal = (string) ($filters['portal'] ?? 'admin');
+        if (isset($filters['organization_id']) && $portal === 'admin') {
+            return null;
+        }
+
+        return match ($portal) {
+            'advertiser' => 'advertiser',
+            'publisher' => 'publisher',
+            default => 'platform',
+        };
+    }
+
+    /**
+     * @param array<string, mixed> $event
+     */
+    private function dimensionKey(string $organizationRole, ?int $organizationId, array $event): string
+    {
+        return hash('sha256', json_encode([
+            'organization_role' => $organizationRole,
+            'organization_id' => $organizationId,
+            'campaign_id' => $event['campaign_id'] === null ? null : (int) $event['campaign_id'],
+            'site_id' => (int) $event['site_id'],
+            'slot_id' => (int) $event['slot_id'],
+            'geo' => null,
+            'device' => null,
+            'browser' => null,
+            'resolution' => null,
+            'risk_bucket' => null,
+        ], JSON_THROW_ON_ERROR));
     }
 }

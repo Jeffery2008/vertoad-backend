@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace VertoAD\Service\Cron;
 
+use DateTimeImmutable;
 use VertoAD\Domain\Cron\CronJobResult;
 use VertoAD\Repository\Cron\ServingEventBufferInterface;
 use VertoAD\Repository\Cron\ServingEventPersistenceInterface;
@@ -39,6 +40,7 @@ final readonly class EventConsumptionJob implements CronJobInterface
                 $this->persistence->persist($event);
 
                 $result = $this->billing->billServingEvent($event);
+                $this->persistence->recordBillingResult($event, $result, new DateTimeImmutable());
                 if ($result->billed) {
                     ++$billed;
                     if ($result->duplicate) {
@@ -52,6 +54,10 @@ final readonly class EventConsumptionJob implements CronJobInterface
                 $this->events->acknowledge($event);
             } catch (\Throwable $exception) {
                 ++$failed;
+                try {
+                    $this->persistence->recordFailure($event, $exception);
+                } catch (\Throwable) {
+                }
                 $this->events->fail($event, $exception);
             }
         }

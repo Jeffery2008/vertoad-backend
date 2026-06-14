@@ -59,12 +59,18 @@ CREATE TABLE ad_serving_events (
     reason VARCHAR(120) NULL,
     visible_ratio DECIMAL(6, 5) NULL,
     visible_ms INT UNSIGNED NULL,
+    billing_status VARCHAR(32) NOT NULL DEFAULT 'pending',
+    billed_points BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    publisher_earning_points BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    billing_reason VARCHAR(120) NULL,
+    billing_processed_at DATETIME NULL,
     processed_at DATETIME NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     UNIQUE KEY uq_ad_serving_events_type_event (event_type, event_id),
     KEY idx_ad_serving_events_decision_viewer (decision_id, viewer_id, event_type, valid),
     KEY idx_ad_serving_events_processing (processed_at, occurred_at, id),
+    KEY idx_ad_serving_events_billing_report (billing_status, event_type, occurred_at),
     KEY idx_ad_serving_events_report_advertiser (advertiser_organization_id, event_type, occurred_at),
     KEY idx_ad_serving_events_report_publisher (publisher_organization_id, event_type, occurred_at),
     KEY idx_ad_serving_events_campaign_time (campaign_id, event_type, occurred_at),
@@ -73,7 +79,8 @@ CREATE TABLE ad_serving_events (
     CONSTRAINT fk_ad_serving_events_slot FOREIGN KEY (slot_id) REFERENCES ad_slots (id) ON DELETE CASCADE,
     CONSTRAINT fk_ad_serving_events_campaign FOREIGN KEY (campaign_id) REFERENCES campaigns (id) ON DELETE SET NULL,
     CONSTRAINT fk_ad_serving_events_advertiser_org FOREIGN KEY (advertiser_organization_id) REFERENCES organizations (id) ON DELETE SET NULL,
-    CONSTRAINT fk_ad_serving_events_publisher_org FOREIGN KEY (publisher_organization_id) REFERENCES organizations (id) ON DELETE SET NULL
+    CONSTRAINT fk_ad_serving_events_publisher_org FOREIGN KEY (publisher_organization_id) REFERENCES organizations (id) ON DELETE SET NULL,
+    CONSTRAINT chk_ad_serving_events_billing_status CHECK (billing_status IN ('pending', 'billed', 'skipped', 'failed'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 SQL);
     }

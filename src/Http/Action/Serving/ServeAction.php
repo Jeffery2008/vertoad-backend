@@ -127,7 +127,7 @@ final readonly class ServeAction
             'ad' => $decision->filled ? [
                 'id' => $decision->adId,
                 'campaign_id' => $decision->campaignId,
-                'landing_url' => $decision->landingUrl,
+                'click_url' => $this->clickUrl($decision),
             ] : null,
         ];
 
@@ -138,6 +138,13 @@ final readonly class ServeAction
         }
 
         return $payload;
+    }
+
+    private function clickUrl(AdDecision $decision): string
+    {
+        return '/api/v1/ads/click?decision_id=' . rawurlencode($decision->decisionId)
+            . '&viewer_id=' . rawurlencode($decision->viewerId)
+            . '&event_id={event_id}';
     }
 
     /**

@@ -60,6 +60,25 @@ final class ReportServiceTest extends TestCase
         self::assertSame(0, $report['dimensions']['risk'][1]['risk_score']);
     }
 
+    public function testSeriesAggregatesMultipleDimensionRowsIntoOnePointPerBucket(): void
+    {
+        $service = new ReportQueryService(new StaticReportAggregateRepository([
+            new ReportAggregateRow('2026-06-08', 99, 123, 5, 10, 'cn-sh', 'desktop', null, null, 'low', 10, 1, 100, 60),
+            new ReportAggregateRow('2026-06-08', 99, 123, 5, 10, 'cn-bj', 'mobile', null, null, 'medium', 20, 3, 300, 180),
+            new ReportAggregateRow('2026-06-09', 99, 123, 5, 10, 'cn-sh', 'desktop', null, null, 'low', 5, 1, 40, 24),
+        ]));
+
+        $report = $service->dashboard(['granularity' => 'day']);
+
+        self::assertCount(2, $report['series']);
+        self::assertSame('2026-06-08', $report['series'][0]['date']);
+        self::assertSame(30, $report['series'][0]['impressions']);
+        self::assertSame(4, $report['series'][0]['clicks']);
+        self::assertSame(400, $report['series'][0]['spend_points']);
+        self::assertSame(240, $report['series'][0]['revenue_points']);
+        self::assertEqualsWithDelta(13.3333, $report['series'][0]['ctr'], 0.0001);
+    }
+
     public function testDefaultsRangeWhenFiltersAndRowsAreAbsent(): void
     {
         $service = new ReportQueryService(

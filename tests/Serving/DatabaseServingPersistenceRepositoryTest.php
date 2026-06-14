@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\DriverManager;
 use PHPUnit\Framework\TestCase;
+use VertoAD\Domain\Billing\AdEventBillingResult;
 use VertoAD\Domain\Serving\AdDecision;
 use VertoAD\Repository\Reporting\DatabaseReportAggregateRepository;
 use VertoAD\Repository\Serving\DatabaseAdDecisionRepository;
@@ -160,6 +161,8 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
         self::assertSame(['imp-1', 'clk-1'], array_map(static fn ($event): string => $event->eventId, $leased));
 
         $events->acknowledge($leased[0]);
+        $events->recordBillingResult($leased[0], AdEventBillingResult::billed(10, 6), new DateTimeImmutable('2026-06-08T10:01:00+00:00'));
+        $events->recordBillingResult($leased[1], AdEventBillingResult::billed(20, 12), new DateTimeImmutable('2026-06-08T10:21:00+00:00'));
 
         self::assertSame(['clk-1'], array_map(static fn ($event): string => $event->eventId, $events->lease(10)));
         self::assertTrue($events->hasEvent('impression', 'imp-1'));
@@ -176,8 +179,8 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
         self::assertCount(1, $rows);
         self::assertSame(1, $rows[0]->impressions);
         self::assertSame(1, $rows[0]->clicks);
-        self::assertSame(10, $rows[0]->spendPoints);
-        self::assertSame(20, $rows[0]->revenuePoints);
+        self::assertSame(30, $rows[0]->spendPoints);
+        self::assertSame(0, $rows[0]->revenuePoints);
     }
 
     public function testCronFailMarksDatabaseEventProcessedWithoutRemovingReportHistory(): void
@@ -206,8 +209,24 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
         $events->recordImpression($decision, 'imp-1', 0.75, 1500, new DateTimeImmutable('2026-06-08T10:05:00+00:00'));
         $events->recordClick($decision, 'clk-1', new DateTimeImmutable('2026-06-08T11:05:00+00:00'));
         $events->recordInvalidClick($decision, 'clk-invalid', new DateTimeImmutable('2026-06-08T11:10:00+00:00'), 'repeat_click_window');
+        $events->recordBillingResult(
+            $events->findEvent('impression', 'imp-1') ?? throw new \RuntimeException('missing impression'),
+            AdEventBillingResult::billed(10, 6),
+            new DateTimeImmutable('2026-06-08T10:06:00+00:00'),
+        );
+        $events->recordBillingResult(
+            $events->findEvent('click', 'clk-1') ?? throw new \RuntimeException('missing click'),
+            AdEventBillingResult::billed(20, 12),
+            new DateTimeImmutable('2026-06-08T11:06:00+00:00'),
+        );
+        $events->recordBillingResult(
+            $events->findEvent('click', 'clk-invalid') ?? throw new \RuntimeException('missing invalid click'),
+            AdEventBillingResult::skipped('repeat_click_window'),
+            new DateTimeImmutable('2026-06-08T11:11:00+00:00'),
+        );
 
         $rows = (new DatabaseReportAggregateRepository($connection))->query([
+            'portal' => 'publisher',
             'organization_id' => 50,
             'granularity' => 'hour',
         ]);
@@ -216,9 +235,13 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
         self::assertSame('2026-06-08T10:00:00+00:00', $rows[0]->date);
         self::assertSame(1, $rows[0]->impressions);
         self::assertSame(0, $rows[0]->clicks);
+        self::assertSame(0, $rows[0]->spendPoints);
+        self::assertSame(6, $rows[0]->revenuePoints);
         self::assertSame('2026-06-08T11:00:00+00:00', $rows[1]->date);
         self::assertSame(0, $rows[1]->impressions);
         self::assertSame(1, $rows[1]->clicks);
+        self::assertSame(0, $rows[1]->spendPoints);
+        self::assertSame(12, $rows[1]->revenuePoints);
     }
 
     public function testRejectsInvalidCronLeaseLimit(): void
@@ -279,6 +302,11 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
                 reason VARCHAR(120) NULL,
                 visible_ratio NUMERIC NULL,
                 visible_ms INTEGER NULL,
+                billing_status VARCHAR(32) NOT NULL DEFAULT "pending",
+                billed_points INTEGER NOT NULL DEFAULT 0,
+                publisher_earning_points INTEGER NOT NULL DEFAULT 0,
+                billing_reason VARCHAR(120) NULL,
+                billing_processed_at DATETIME NULL,
                 processed_at DATETIME NULL,
                 UNIQUE (event_type, event_id)
             )',

@@ -60,6 +60,8 @@ final class ServingRepositoryTest extends TestCase
         $connection->insert('report_aggregates', [
             'granularity' => 'day',
             'bucket_start' => '2026-06-08 00:00:00',
+            'dimension_key' => hash('sha256', 'serving-quality-ctr'),
+            'organization_role' => 'advertiser',
             'organization_id' => 99,
             'campaign_id' => 100,
             'site_id' => 10,

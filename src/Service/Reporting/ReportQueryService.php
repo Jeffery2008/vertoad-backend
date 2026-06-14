@@ -45,20 +45,46 @@ final readonly class ReportQueryService
             'organization_id' => $filters['organization_id'] ?? null,
             'range' => $this->range($filters, $rows),
             'totals' => $this->totals($totals['impressions'], $totals['clicks'], $totals['spendPoints'], $totals['revenuePoints']),
-            'series' => array_map(fn (ReportAggregateRow $row): array => $this->row($row), $rows),
+            'series' => $this->series($rows),
             'dimensions' => $this->dimensions($rows),
         ];
     }
 
     /**
-     * @return array<string, mixed>
+     * @param list<ReportAggregateRow> $rows
+     * @return list<array<string, int|float|string>>
      */
-    private function row(ReportAggregateRow $row): array
+    private function series(array $rows): array
     {
-        return [
-            'date' => $row->date,
-            ...$this->totals($row->impressions, $row->clicks, $row->spendPoints, $row->revenuePoints),
-        ];
+        $buckets = [];
+        foreach ($rows as $row) {
+            $buckets[$row->date] ??= [
+                'date' => $row->date,
+                'impressions' => 0,
+                'clicks' => 0,
+                'spendPoints' => 0,
+                'revenuePoints' => 0,
+            ];
+            $buckets[$row->date]['impressions'] += $row->impressions;
+            $buckets[$row->date]['clicks'] += $row->clicks;
+            $buckets[$row->date]['spendPoints'] += $row->spendPoints;
+            $buckets[$row->date]['revenuePoints'] += $row->revenuePoints;
+        }
+
+        ksort($buckets);
+
+        return array_map(
+            fn (array $bucket): array => [
+                'date' => $bucket['date'],
+                ...$this->totals(
+                    $bucket['impressions'],
+                    $bucket['clicks'],
+                    $bucket['spendPoints'],
+                    $bucket['revenuePoints'],
+                ),
+            ],
+            array_values($buckets),
+        );
     }
 
     /**

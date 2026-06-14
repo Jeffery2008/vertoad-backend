@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\DriverManager;
 use PHPUnit\Framework\TestCase;
+use VertoAD\Domain\Billing\AdEventBillingResult;
 use VertoAD\Domain\Serving\AdEvent;
 use VertoAD\Repository\Archive\DatabaseArchiveRepository;
 use VertoAD\Repository\Billing\RevenueShareRepository;
@@ -50,6 +51,15 @@ final class EventConsumptionJobTest extends TestCase
         self::assertSame(960, $ledgerRepository->balanceForOrganization(99));
         self::assertSame(20, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
         self::assertNotNull((new DatabaseAdEventRepository($connection))->findEvent('impression', 'imp-1'));
+        self::assertSame('billed', $this->billingStatus($connection, 'impression', 'imp-1'));
+        self::assertSame('skipped', $this->billingStatus($connection, 'click', 'clk-invalid'));
+        self::assertSame('skipped', $this->billingStatus($connection, 'click', 'clk-missing-metadata'));
+        self::assertSame(40, (int) $connection->fetchOne(
+            "SELECT billed_points FROM ad_serving_events WHERE event_type = 'impression' AND event_id = 'imp-1'",
+        ));
+        self::assertSame(20, (int) $connection->fetchOne(
+            "SELECT publisher_earning_points FROM ad_serving_events WHERE event_type = 'impression' AND event_id = 'imp-1'",
+        ));
         self::assertSame(
             ['click:clk-invalid', 'click:clk-missing-metadata', 'impression:imp-1'],
             array_map(static fn ($event): string => $event->eventId, (new DatabaseArchiveRepository($connection))->pendingEvents()),
@@ -75,6 +85,10 @@ final class EventConsumptionJobTest extends TestCase
         self::assertSame([], $buffer->pending());
         self::assertSame(1_000, $ledgerRepository->balanceForOrganization(99));
         self::assertSame(0, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+        self::assertSame('skipped', $this->billingStatus($connection, 'impression', 'imp-no-share-rule'));
+        self::assertSame('missing_revenue_share_rule', $connection->fetchOne(
+            "SELECT billing_reason FROM ad_serving_events WHERE event_type = 'impression' AND event_id = 'imp-no-share-rule'",
+        ));
     }
 
     public function testRepeatingConsumptionWindowDoesNotDoubleBillAckedEvents(): void
@@ -208,6 +222,69 @@ final class EventConsumptionJobTest extends TestCase
         self::assertSame(960, $ledgerRepository->balanceForOrganization(99));
     }
 
+    public function testBillingResultWriteFailureMarksPersistedEventFailed(): void
+    {
+        $connection = $this->createConnection();
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        (new PointsLedgerService($ledgerRepository))->credit(99, 'advertiser_balance', null, 1_000, 'recharge:advertiser');
+        (new RevenueShareRepository($connection))->createRule('global', null, null, null, 5000, null, new DateTimeImmutable('2026-06-08 09:00:00'));
+        $buffer = new FailingAwareBuffer([$this->event('impression', 'imp-result-fails', true, 40)]);
+        $job = new EventConsumptionJob(
+            $buffer,
+            new BillingResultFailingPersistence(new DatabaseAdEventRepository($connection)),
+            $this->billingService($connection),
+            100,
+        );
+
+        $result = $job->run();
+
+        self::assertSame(1, $result->metrics['failed'] ?? null);
+        self::assertSame(['impression:imp-result-fails'], $buffer->failedKeys());
+        self::assertSame('failed', $this->billingStatus($connection, 'impression', 'imp-result-fails'));
+        self::assertSame('simulated billing result write failure', $connection->fetchOne(
+            "SELECT billing_reason FROM ad_serving_events WHERE event_type = 'impression' AND event_id = 'imp-result-fails'",
+        ));
+    }
+
+    public function testRetryAfterBillingResultWriteFailureRepairsEventStatusWithoutDoubleBilling(): void
+    {
+        $connection = $this->createConnection();
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        (new PointsLedgerService($ledgerRepository))->credit(99, 'advertiser_balance', null, 1_000, 'recharge:advertiser');
+        (new RevenueShareRepository($connection))->createRule('global', null, null, null, 5000, null, new DateTimeImmutable('2026-06-08 09:00:00'));
+        $buffer = new StickyFailingBuffer([$this->event('impression', 'imp-retry-result', true, 40)]);
+
+        $first = new EventConsumptionJob(
+            $buffer,
+            new BillingResultFailingPersistence(new DatabaseAdEventRepository($connection)),
+            $this->billingService($connection),
+            100,
+        );
+        $second = new EventConsumptionJob(
+            $buffer,
+            new DatabaseAdEventRepository($connection),
+            $this->billingService($connection),
+            100,
+        );
+
+        $firstResult = $first->run();
+        $secondResult = $second->run();
+
+        self::assertSame(1, $firstResult->metrics['failed'] ?? null);
+        self::assertSame(1, $secondResult->metrics['billed'] ?? null);
+        self::assertSame(1, $secondResult->metrics['duplicates'] ?? null);
+        self::assertSame('billed', $this->billingStatus($connection, 'impression', 'imp-retry-result'));
+        self::assertSame(960, $ledgerRepository->balanceForOrganization(99));
+        self::assertSame(20, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+        self::assertSame([], $buffer->pending());
+        self::assertSame(40, (int) $connection->fetchOne(
+            "SELECT billed_points FROM ad_serving_events WHERE event_type = 'impression' AND event_id = 'imp-retry-result'",
+        ));
+        self::assertSame(20, (int) $connection->fetchOne(
+            "SELECT publisher_earning_points FROM ad_serving_events WHERE event_type = 'impression' AND event_id = 'imp-retry-result'",
+        ));
+    }
+
     private function billingService(Connection $connection): AdEventBillingService
     {
         $ledgerRepository = new PointsLedgerRepository($connection);
@@ -217,6 +294,14 @@ final class EventConsumptionJobTest extends TestCase
             new CampaignBudgetService(new CampaignBudgetRepository($connection), $ledger, $ledgerRepository),
             new RevenueShareService(new RevenueShareRepository($connection), $ledger),
             $connection,
+        );
+    }
+
+    private function billingStatus(Connection $connection, string $eventType, string $eventId): string
+    {
+        return (string) $connection->fetchOne(
+            'SELECT billing_status FROM ad_serving_events WHERE event_type = ? AND event_id = ?',
+            [$eventType, $eventId],
         );
     }
 
@@ -274,6 +359,11 @@ CREATE TABLE ad_serving_events (
     reason VARCHAR(120) NULL,
     visible_ratio NUMERIC NULL,
     visible_ms INTEGER NULL,
+    billing_status VARCHAR(32) NOT NULL DEFAULT 'pending',
+    billed_points INTEGER NOT NULL DEFAULT 0,
+    publisher_earning_points INTEGER NOT NULL DEFAULT 0,
+    billing_reason VARCHAR(120) NULL,
+    billing_processed_at DATETIME NULL,
     processed_at DATETIME NULL,
     UNIQUE (event_type, event_id)
 )
@@ -419,8 +509,90 @@ final readonly class ThrowingAdEventPersistence implements ServingEventPersisten
         $this->inner->persist($event);
     }
 
+    public function recordBillingResult(AdEvent $event, AdEventBillingResult $result, \DateTimeImmutable $processedAt): void
+    {
+        $this->inner->recordBillingResult($event, $result, $processedAt);
+    }
+
     public function acknowledge(AdEvent $event): void
     {
         $this->inner->acknowledge($event);
+    }
+
+    public function recordFailure(AdEvent $event, \Throwable $reason): void
+    {
+        $this->inner->recordFailure($event, $reason);
+    }
+}
+
+final readonly class BillingResultFailingPersistence implements ServingEventPersistenceInterface
+{
+    public function __construct(private DatabaseAdEventRepository $inner)
+    {
+    }
+
+    public function persist(AdEvent $event): void
+    {
+        $this->inner->persist($event);
+    }
+
+    public function recordBillingResult(AdEvent $event, AdEventBillingResult $result, \DateTimeImmutable $processedAt): void
+    {
+        throw new \RuntimeException('simulated billing result write failure');
+    }
+
+    public function acknowledge(AdEvent $event): void
+    {
+        $this->inner->acknowledge($event);
+    }
+
+    public function recordFailure(AdEvent $event, \Throwable $reason): void
+    {
+        $this->inner->recordFailure($event, $reason);
+    }
+}
+
+final class StickyFailingBuffer implements ServingEventBufferInterface
+{
+    /** @var list<AdEvent> */
+    private array $events;
+
+    /** @param list<AdEvent> $events */
+    public function __construct(array $events)
+    {
+        $this->events = array_values($events);
+    }
+
+    public function lease(int $limit): array
+    {
+        if ($limit <= 0) {
+            throw new \InvalidArgumentException('Cron event consume batch size must be positive.');
+        }
+
+        return array_slice($this->events, 0, $limit);
+    }
+
+    public function acknowledge(AdEvent $event): void
+    {
+        $this->remove($event);
+    }
+
+    public function fail(AdEvent $event, \Throwable $reason): void
+    {
+    }
+
+    /** @return list<AdEvent> */
+    public function pending(): array
+    {
+        return $this->events;
+    }
+
+    private function remove(AdEvent $event): void
+    {
+        $key = $event->eventType . ':' . $event->eventId;
+        $this->events = array_values(array_filter(
+            $this->events,
+            static fn (AdEvent $pending): bool => $pending->eventType . ':' . $pending->eventId !== $key,
+        ));
     }
 }

@@ -56,6 +56,8 @@ final class CampaignSchema
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 granularity VARCHAR(12) NOT NULL,
                 bucket_start DATETIME NOT NULL,
+                dimension_key VARCHAR(64) NOT NULL,
+                organization_role VARCHAR(16) NOT NULL DEFAULT "platform",
                 organization_id INTEGER NULL,
                 campaign_id INTEGER NULL,
                 site_id INTEGER NOT NULL,
@@ -69,7 +71,8 @@ final class CampaignSchema
                 clicks INTEGER NOT NULL,
                 spend_points INTEGER NOT NULL,
                 revenue_points INTEGER NOT NULL,
-                refreshed_at DATETIME NOT NULL
+                refreshed_at DATETIME NOT NULL,
+                UNIQUE (granularity, bucket_start, dimension_key)
             )',
         );
         $connection->executeStatement(

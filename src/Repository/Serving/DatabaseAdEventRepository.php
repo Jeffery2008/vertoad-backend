@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use DateTimeZone;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
+use VertoAD\Domain\Billing\AdEventBillingResult;
 use VertoAD\Domain\Serving\AdDecision;
 use VertoAD\Domain\Serving\AdEvent;
 use VertoAD\Repository\Cron\ServingEventBufferInterface;
@@ -107,12 +108,32 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
                 'reason' => $event->reason,
                 'visible_ratio' => $event->visibleRatio,
                 'visible_ms' => $event->visibleMs,
+                'billing_status' => 'pending',
+                'billed_points' => 0,
+                'publisher_earning_points' => 0,
+                'billing_reason' => null,
+                'billing_processed_at' => null,
                 'processed_at' => null,
             ]);
         } catch (UniqueConstraintViolationException) {
         }
 
         $this->persistRawEvent($event);
+    }
+
+    public function recordBillingResult(AdEvent $event, AdEventBillingResult $result, DateTimeImmutable $processedAt): void
+    {
+        $this->connection->update(
+            'ad_serving_events',
+            [
+                'billing_status' => $result->billed ? 'billed' : 'skipped',
+                'billed_points' => $result->grossPoints,
+                'publisher_earning_points' => $result->publisherPoints,
+                'billing_reason' => $result->reason,
+                'billing_processed_at' => $this->formatDate($processedAt),
+            ],
+            ['event_type' => $event->eventType, 'event_id' => $event->eventId],
+        );
     }
 
     public function lease(int $limit): array
@@ -144,7 +165,21 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
 
     public function fail(AdEvent $event, \Throwable $reason): void
     {
+        $this->recordFailure($event, $reason);
         $this->acknowledge($event);
+    }
+
+    public function recordFailure(AdEvent $event, \Throwable $reason): void
+    {
+        $this->connection->update(
+            'ad_serving_events',
+            [
+                'billing_status' => 'failed',
+                'billing_reason' => substr($reason->getMessage(), 0, 120),
+                'billing_processed_at' => $this->formatDate(new DateTimeImmutable()),
+            ],
+            ['event_type' => $event->eventType, 'event_id' => $event->eventId],
+        );
     }
 
     /**
