@@ -98,8 +98,10 @@ use VertoAD\Repository\RechargeKeyRepositoryInterface;
 use VertoAD\Repository\Review\ReviewRepository;
 use VertoAD\Repository\Review\ReviewRepositoryInterface;
 use VertoAD\Repository\Reporting\DatabaseReportAggregateRepository;
+use VertoAD\Repository\Reporting\DatabaseConversionPathRepository;
 use VertoAD\Repository\Reporting\InMemoryReportAggregateRepository;
 use VertoAD\Repository\Reporting\ReportAggregateRepositoryInterface;
+use VertoAD\Repository\Reporting\ConversionPathRepositoryInterface;
 use VertoAD\Repository\SystemConfigRepository;
 use VertoAD\Repository\SystemConfigRepositoryInterface;
 use VertoAD\Repository\Support\DatabaseSupportTicketRepository;
@@ -173,6 +175,7 @@ use VertoAD\Service\Review\CreativeReviewProviderInterface;
 use VertoAD\Service\Review\DeterministicCreativeReviewProvider;
 use VertoAD\Service\Review\OpenAiCompatibleCreativeReviewProvider;
 use VertoAD\Service\Reporting\ReportQueryService;
+use VertoAD\Service\Reporting\ConversionPathReportService;
 use VertoAD\Service\ReviewService;
 use VertoAD\Service\RuntimeConfigHealthCheck;
 use VertoAD\Service\SystemConfigService;
@@ -317,6 +320,8 @@ final class AppFactory
                     $repository,
                 ReportAggregateRepositoryInterface::class => static fn (Connection $connection): ReportAggregateRepositoryInterface =>
                     new DatabaseReportAggregateRepository($connection),
+                ConversionPathRepositoryInterface::class => static fn (Connection $connection): ConversionPathRepositoryInterface =>
+                    new DatabaseConversionPathRepository($connection),
                 DatabaseFraudRiskFeatureRepository::class => static fn (Connection $connection): DatabaseFraudRiskFeatureRepository =>
                     new DatabaseFraudRiskFeatureRepository($connection),
                 ServingFrequencyCapStoreInterface::class => static fn (): ServingFrequencyCapStoreInterface =>
@@ -331,6 +336,9 @@ final class AppFactory
                 ReportQueryService::class => static fn (
                     ReportAggregateRepositoryInterface $aggregates,
                 ): ReportQueryService => new ReportQueryService($aggregates),
+                ConversionPathReportService::class => static fn (
+                    ConversionPathRepositoryInterface $paths,
+                ): ConversionPathReportService => new ConversionPathReportService($paths),
                 AttributionEventRepositoryInterface::class => static fn (Connection $connection): AttributionEventRepositoryInterface =>
                     new DatabaseAttributionEventRepository($connection),
                 AttributionService::class => static fn (

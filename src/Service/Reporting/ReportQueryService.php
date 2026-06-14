@@ -239,7 +239,11 @@ final readonly class ReportQueryService
 
     private function ctr(int $clicks, int $impressions): float
     {
-        return $this->rate($clicks, $impressions);
+        if ($impressions === 0) {
+            return 0.0;
+        }
+
+        return round(($clicks / $impressions) * 100, 4);
     }
 
     private function rate(int $numerator, int $denominator): float
@@ -248,7 +252,7 @@ final readonly class ReportQueryService
             return 0.0;
         }
 
-        return round(($numerator / $denominator) * 100, 4);
+        return round($numerator / $denominator, 4);
     }
 
     private function roi(int $conversionValuePoints, int $spendPoints): float
@@ -257,7 +261,7 @@ final readonly class ReportQueryService
             return 0.0;
         }
 
-        return round((($conversionValuePoints - $spendPoints) / $spendPoints) * 100, 4);
+        return round($conversionValuePoints / $spendPoints, 4);
     }
 
     private function dimensionLabel(string $value): string

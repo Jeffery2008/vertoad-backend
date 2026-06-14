@@ -65,6 +65,7 @@ use VertoAD\Http\Action\Review\GetReviewStatusAction;
 use VertoAD\Http\Action\Review\ListReviewQueueAction;
 use VertoAD\Http\Action\Review\RejectReviewAction;
 use VertoAD\Http\Action\Review\StartAiReviewAction;
+use VertoAD\Http\Action\Reporting\ConversionPathReportAction;
 use VertoAD\Http\Action\Reporting\ReportDashboardAction;
 use VertoAD\Http\Action\Serving\ClickAction;
 use VertoAD\Http\Action\Serving\ServeAction;
@@ -227,6 +228,9 @@ return static function (App $app): void {
         ->add($permission('publisher.slot.write.own'))
         ->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/reports/dashboard', ReportDashboardAction::class)
+        ->add($permission('report.read.own'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->get('/api/v1/reports/conversion-paths', ConversionPathReportAction::class)
         ->add($permission('report.read.own'))
         ->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/oauth/clients', ListOAuthClientsAction::class)

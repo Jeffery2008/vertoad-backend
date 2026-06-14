@@ -39,15 +39,15 @@ final class ReportServiceTest extends TestCase
         self::assertSame(650, $report['totals']['revenue_points']);
         self::assertSame(6, $report['totals']['conversions']);
         self::assertSame(2_750, $report['totals']['conversion_value_points']);
-        self::assertEqualsWithDelta(22.2222, $report['totals']['cvr'], 0.0001);
-        self::assertEqualsWithDelta(154.6296, $report['totals']['roi'], 0.0001);
+        self::assertEqualsWithDelta(0.2222, $report['totals']['cvr'], 0.0001);
+        self::assertEqualsWithDelta(2.5463, $report['totals']['roi'], 0.0001);
         self::assertCount(2, $report['series']);
         self::assertSame('2026-06-08', $report['series'][0]['date']);
         self::assertSame(25.0, $report['series'][0]['ctr']);
         self::assertSame(5, $report['series'][0]['conversions']);
         self::assertSame(2_500, $report['series'][0]['conversion_value_points']);
-        self::assertSame(20.0, $report['series'][0]['cvr']);
-        self::assertSame(150.0, $report['series'][0]['roi']);
+        self::assertSame(0.2, $report['series'][0]['cvr']);
+        self::assertSame(2.5, $report['series'][0]['roi']);
         self::assertSame('Cn Sh', $report['dimensions']['geo'][0]['label']);
         self::assertSame(100, $report['dimensions']['geo'][0]['impressions']);
         self::assertSame(27.0, $report['dimensions']['geo'][0]['ctr']);
@@ -86,8 +86,8 @@ final class ReportServiceTest extends TestCase
         self::assertSame(240, $report['series'][0]['revenue_points']);
         self::assertSame(3, $report['series'][0]['conversions']);
         self::assertSame(1_300, $report['series'][0]['conversion_value_points']);
-        self::assertSame(75.0, $report['series'][0]['cvr']);
-        self::assertSame(225.0, $report['series'][0]['roi']);
+        self::assertSame(0.75, $report['series'][0]['cvr']);
+        self::assertSame(3.25, $report['series'][0]['roi']);
         self::assertEqualsWithDelta(13.3333, $report['series'][0]['ctr'], 0.0001);
     }
 

@@ -2095,6 +2095,108 @@ paths:
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/reports/conversion-paths:
+    get:
+      tags:
+        - Reports
+      operationId: getReportConversionPaths
+      summary: Return attributed conversion path analysis.
+      description: |
+        Last-click attributed conversion journeys from hot MySQL events. The
+        endpoint groups valid impression/click touchpoints seen by the same
+        viewer inside the attribution window before each conversion. CPA is
+        not billed; these paths are for ROI, CVR, and journey analysis only.
+        Campaign, site, and slot filters select the conversion cohort through
+        the attributed last-click event, while returned touchpoints keep the
+        full same-organization journey inside the window instead of trimming
+        earlier cross-campaign or cross-inventory touches.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - report.read.own
+      parameters:
+        - name: portal
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - advertiser
+              - publisher
+        - name: organization_id
+          in: query
+          required: false
+          description: Optional organization filter. First-party console sessions must send it; organization-scoped OAuth report tokens may omit it and will use the token organization. When provided with any organization-scoped token, this value must match that scope.
+          schema:
+            type: integer
+            minimum: 1
+        - name: campaign_id
+          in: query
+          required: false
+          description: Selects conversions whose attributed last-click event belongs to this campaign; returned touchpoints may include earlier same-organization campaign touches in the attribution window.
+          schema:
+            type: integer
+            minimum: 1
+        - name: site_id
+          in: query
+          required: false
+          description: Selects conversions whose attributed last-click event belongs to this publisher site; returned touchpoints may include earlier same-organization site touches in the attribution window.
+          schema:
+            type: integer
+            minimum: 1
+        - name: slot_id
+          in: query
+          required: false
+          description: Selects conversions whose attributed last-click event belongs to this ad slot; returned touchpoints may include earlier same-organization slot touches in the attribution window.
+          schema:
+            type: integer
+            minimum: 1
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+            pattern: '^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d{1,6})?(Z|[+-]([01]\d|2[0-3]):[0-5]\d)$'
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+            pattern: '^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d{1,6})?(Z|[+-]([01]\d|2[0-3]):[0-5]\d)$'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: max_touchpoints
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 25
+            default: 10
+      responses:
+        "200":
+          description: Attributed conversion path report.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ConversionPathReportData"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/oauth/clients:
     get:
       tags:
@@ -7039,6 +7141,151 @@ components:
         dimensions:
           $ref: "#/components/schemas/ReportDimensions"
       additionalProperties: false
+    ConversionPathReportData:
+      type: object
+      required:
+        - portal
+        - organization_id
+        - range
+        - summary
+        - paths
+      properties:
+        portal:
+          type: string
+          enum:
+            - advertiser
+            - publisher
+        organization_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        range:
+          $ref: "#/components/schemas/ConversionPathRange"
+        summary:
+          $ref: "#/components/schemas/ConversionPathSummary"
+        paths:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConversionPathBucket"
+      additionalProperties: false
+    ConversionPathRange:
+      type: object
+      required:
+        - from
+        - to
+        - granularity
+      properties:
+        from:
+          type: string
+          format: date-time
+          pattern: '^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d{1,6})?(Z|[+-]([01]\d|2[0-3]):[0-5]\d)$'
+        to:
+          type: string
+          format: date-time
+          pattern: '^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d{1,6})?(Z|[+-]([01]\d|2[0-3]):[0-5]\d)$'
+        granularity:
+          type: string
+          enum:
+            - conversion
+      additionalProperties: false
+    ConversionPathSummary:
+      type: object
+      required:
+        - conversions
+        - attributed_conversions
+        - conversion_value_points
+        - avg_touchpoints
+        - avg_time_to_convert_seconds
+      properties:
+        conversions:
+          type: integer
+          minimum: 0
+          description: Number of last-click attributed conversions in the selected range.
+        attributed_conversions:
+          type: integer
+          minimum: 0
+          description: Number of conversions with a matched click. Matches conversions for this attributed-only report.
+        conversion_value_points:
+          type: integer
+          minimum: 0
+        avg_touchpoints:
+          type: number
+          minimum: 0
+        avg_time_to_convert_seconds:
+          type: number
+          minimum: 0
+      additionalProperties: false
+    ConversionPathBucket:
+      type: object
+      required:
+        - path_key
+        - conversions
+        - conversion_value_points
+        - avg_touchpoints
+        - avg_time_to_convert_seconds
+        - touchpoints
+      properties:
+        path_key:
+          type: string
+          description: Stable sequence key, grouped by event type, campaign, site, and slot.
+        conversions:
+          type: integer
+          minimum: 0
+        conversion_value_points:
+          type: integer
+          minimum: 0
+        avg_touchpoints:
+          type: number
+          minimum: 0
+        avg_time_to_convert_seconds:
+          type: number
+          minimum: 0
+        touchpoints:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConversionPathTouchpoint"
+      additionalProperties: false
+    ConversionPathTouchpoint:
+      type: object
+      required:
+        - position
+        - event_type
+        - event_id
+        - decision_id
+        - occurred_at
+        - campaign_id
+        - site_id
+        - slot_id
+      properties:
+        position:
+          type: integer
+          minimum: 1
+        event_type:
+          type: string
+          enum:
+            - impression
+            - click
+        event_id:
+          type: string
+        decision_id:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+          pattern: '^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d{1,6})?(Z|[+-]([01]\d|2[0-3]):[0-5]\d)$'
+        campaign_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        site_id:
+          type: integer
+          minimum: 1
+        slot_id:
+          type: integer
+          minimum: 1
+      additionalProperties: false
     ReportRange:
       type: object
       required:
@@ -7099,10 +7346,11 @@ components:
         cvr:
           type: number
           minimum: 0
-          description: Conversion rate percentage, conversions divided by clicks.
+          description: Conversion rate ratio, calculated as conversions / clicks.
         roi:
           type: number
-          description: Return on ad spend percentage, calculated as (conversion_value_points - spend_points) / spend_points * 100.
+          minimum: 0
+          description: Return on ad spend ratio, calculated as conversion_value_points / spend_points.
       additionalProperties: false
     ReportSeriesPoint:
       type: object
@@ -7151,8 +7399,11 @@ components:
         cvr:
           type: number
           minimum: 0
+          description: Conversion rate ratio, calculated as conversions / clicks.
         roi:
           type: number
+          minimum: 0
+          description: Return on ad spend ratio, calculated as conversion_value_points / spend_points.
       additionalProperties: false
     ReportDimensions:
       type: object

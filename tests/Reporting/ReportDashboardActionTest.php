@@ -39,6 +39,10 @@ final class ReportDashboardActionTest extends TestCase
         self::assertSame(1, $decoded['data']['totals']['impressions']);
         self::assertSame(1, $decoded['data']['totals']['clicks']);
         self::assertEqualsWithDelta(100.0, $decoded['data']['totals']['ctr'], 0.0001);
+        self::assertSame(1, $decoded['data']['totals']['conversions']);
+        self::assertSame(120, $decoded['data']['totals']['conversion_value_points']);
+        self::assertEqualsWithDelta(1.0, $decoded['data']['totals']['cvr'], 0.0001);
+        self::assertEqualsWithDelta(3.0, $decoded['data']['totals']['roi'], 0.0001);
     }
 
     public function testDashboardRouteRejectsInvalidFilters(): void
@@ -124,7 +128,7 @@ final class ReportDashboardActionTest extends TestCase
         $container = (new ContainerBuilder())->addDefinitions([
             ReportQueryService::class => static fn (): ReportQueryService => new ReportQueryService(
                 new StaticReportAggregateRepository([
-                    new ReportAggregateRow('2026-06-08', 99, 123, 5, 10, null, null, null, null, null, 1, 1, 40, 24),
+                    new ReportAggregateRow('2026-06-08', 99, 123, 5, 10, null, null, null, null, null, 1, 1, 40, 24, 1, 120),
                 ]),
             ),
         ])->build();
