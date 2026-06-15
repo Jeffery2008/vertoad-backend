@@ -8,7 +8,7 @@ use PHPUnit\Framework\TestCase;
 
 final class OpenApiCheckScriptTest extends TestCase
 {
-    public function testCheckerReportsStrongFallbackWhenYamlExtensionIsUnavailable(): void
+    public function testCheckerUsesFullYamlParserWhenYamlExtensionIsUnavailable(): void
     {
         $workspace = sys_get_temp_dir() . '/vertoad-openapi-check-' . bin2hex(random_bytes(8));
         self::assertTrue(mkdir($workspace));
@@ -74,7 +74,54 @@ PHP);
         self::assertSame(0, $exitCode, implode(PHP_EOL, $output));
         self::assertStringContainsString('OpenAPI contract check passed', implode(PHP_EOL, $output));
         self::assertStringContainsString('parser=', implode(PHP_EOL, $output));
+        self::assertStringNotContainsString('parser=structural-fallback', implode(PHP_EOL, $output));
         self::assertStringNotContainsString('unavailable', implode(PHP_EOL, $output));
+    }
+
+    public function testCheckerFailsMalformedYamlThatLooksStructurallyComplete(): void
+    {
+        $result = self::runChecker(<<<'YAML'
+openapi: 3.1.0
+paths:
+  /api/v1/health:
+    get:
+      tags: [Health
+      operationId: getHealth
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  responses:
+    Error:
+      description: error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    SuccessEnvelope:
+      type: object
+    ErrorEnvelope:
+      type: object
+YAML, <<<'PHP'
+<?php
+
+$app->get('/api/v1/health', HealthAction::class);
+PHP);
+
+        self::assertSame(1, $result['exitCode'], $result['output']);
+        self::assertStringContainsString('OpenAPI YAML could not be parsed.', $result['output']);
     }
 
     public function testCheckerFailsWhenImplementedApiV1RouteIsMissingFromOpenApiContract(): void
@@ -1561,6 +1608,63 @@ PHP);
 
         self::assertSame(1, $result['exitCode'], $result['output']);
         self::assertStringContainsString('OpenAPI components.schemas contain duplicate key: DuplicateSchema', $result['output']);
+    }
+
+    public function testCheckerFailsWhenSchemaRequiredFieldIsMissingFromProperties(): void
+    {
+        $result = self::runChecker(<<<'YAML'
+openapi: 3.1.0
+paths:
+  /api/v1/health:
+    get:
+      tags:
+        - Health
+      operationId: getHealth
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  responses:
+    Error:
+      description: error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    SuccessEnvelope:
+      type: object
+    ErrorEnvelope:
+      type: object
+    BrokenSchema:
+      type: object
+      required:
+        - missing_field
+      properties:
+        present_field:
+          type: string
+YAML, <<<'PHP'
+<?php
+
+$app->get('/api/v1/health', HealthAction::class);
+PHP);
+
+        self::assertSame(1, $result['exitCode'], $result['output']);
+        self::assertStringContainsString(
+            'OpenAPI schema BrokenSchema required fields are missing from properties: missing_field',
+            $result['output'],
+        );
     }
 
     /**

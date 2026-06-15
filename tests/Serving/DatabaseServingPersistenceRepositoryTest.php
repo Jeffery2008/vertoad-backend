@@ -91,6 +91,25 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
         self::assertSame($decision->clickCostPoints, $invalid->costPoints);
     }
 
+    public function testPendingDuplicateLookupDistinguishesProcessedAndMissingEvents(): void
+    {
+        $connection = $this->createConnection();
+        $decision = $this->decision();
+        (new DatabaseAdDecisionRepository($connection))->save($decision);
+
+        $events = new DatabaseAdEventRepository($connection);
+        $events->recordClick($decision, 'clk-pending', new DateTimeImmutable('2026-06-08T10:00:20+00:00'));
+
+        $pending = $events->findPendingDuplicate($this->adEvent('click', 'clk-pending', new DateTimeImmutable('2026-06-08T10:00:20+00:00')));
+        self::assertNotNull($pending);
+        self::assertSame('clk-pending', $pending->eventId);
+        self::assertSame('click', $pending->eventType);
+
+        $events->acknowledge($pending);
+        self::assertNull($events->findPendingDuplicate($this->adEvent('click', 'clk-pending', new DateTimeImmutable('2026-06-08T10:00:20+00:00'))));
+        self::assertNull($events->findPendingDuplicate($this->adEvent('click', 'clk-missing', new DateTimeImmutable('2026-06-08T10:00:20+00:00'))));
+    }
+
     public function testServingEventsAreMirroredToRawEventsForPermanentArchive(): void
     {
         $connection = $this->createConnection();
@@ -123,6 +142,47 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
         self::assertTrue($payload['valid']);
         self::assertSame(0.75, $payload['visible_ratio']);
         self::assertSame(1500, $payload['visible_ms']);
+    }
+
+    public function testDedupTablesKeepServingAndRawEventIdentityGlobalAcrossOccurredAtPartitions(): void
+    {
+        $connection = $this->createConnection();
+        $decision = $this->decision();
+        (new DatabaseAdDecisionRepository($connection))->save($decision);
+
+        $events = new DatabaseAdEventRepository($connection);
+        $events->recordImpression($decision, 'imp-cross-partition', 0.75, 1500, new DateTimeImmutable('2026-06-08T10:00:00+00:00'));
+        $events->recordImpression($decision, 'imp-cross-partition', 0.80, 2000, new DateTimeImmutable('2026-07-08T10:00:00+00:00'));
+
+        self::assertSame(1, (int) $connection->fetchOne(
+            "SELECT COUNT(*) FROM ad_serving_events WHERE event_type = 'impression' AND event_id = 'imp-cross-partition'",
+        ));
+        self::assertSame(1, (int) $connection->fetchOne(
+            "SELECT COUNT(*) FROM raw_events WHERE event_uuid = 'impression:imp-cross-partition'",
+        ));
+        self::assertSame('2026-06-08 10:00:00', (string) $connection->fetchOne(
+            "SELECT occurred_at FROM ad_serving_event_dedup WHERE event_type = 'impression' AND event_id = 'imp-cross-partition'",
+        ));
+        self::assertSame('2026-06-08 10:00:00', (string) $connection->fetchOne(
+            "SELECT occurred_at FROM raw_event_dedup WHERE event_uuid = 'impression:imp-cross-partition'",
+        ));
+    }
+
+    public function testPersistReturnsFalseForDuplicateEventsAcrossOccurredAtPartitions(): void
+    {
+        $connection = $this->createConnection();
+        $event = $this->adEvent('click', 'clk-cross-partition', new DateTimeImmutable('2026-06-08T10:00:00+00:00'));
+        $duplicate = $this->adEvent('click', 'clk-cross-partition', new DateTimeImmutable('2026-07-08T10:00:00+00:00'));
+        $events = new DatabaseAdEventRepository($connection);
+
+        self::assertTrue($events->persist($event));
+        self::assertFalse($events->persist($duplicate));
+        self::assertSame(1, (int) $connection->fetchOne(
+            "SELECT COUNT(*) FROM ad_serving_events WHERE event_type = 'click' AND event_id = 'clk-cross-partition'",
+        ));
+        self::assertSame(1, (int) $connection->fetchOne(
+            "SELECT COUNT(*) FROM raw_events WHERE event_uuid = 'click:clk-cross-partition'",
+        ));
     }
 
     public function testRawEventArchiveIdentityIncludesEventTypeWhenServingEventIdsOverlap(): void
@@ -183,6 +243,64 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
         self::assertSame(0, $rows[0]->revenuePoints);
         self::assertSame(0, $rows[0]->conversions);
         self::assertSame(0, $rows[0]->conversionValuePoints);
+    }
+
+    public function testCronResultUpdatesAreScopedToOccurredAtPartitionKey(): void
+    {
+        $connection = $this->createConnection();
+        $decision = $this->decision();
+        (new DatabaseAdDecisionRepository($connection))->save($decision);
+        $events = new DatabaseAdEventRepository($connection);
+        $event = $this->adEvent('click', 'clk-repair-import', new DateTimeImmutable('2026-06-08T10:00:00+00:00'));
+        $importedSameId = $this->adEvent('click', 'clk-repair-import', new DateTimeImmutable('2026-07-08T10:00:00+00:00'));
+        $events->persist($event);
+
+        $connection->insert('ad_serving_events', [
+            'event_type' => $importedSameId->eventType,
+            'event_id' => $importedSameId->eventId,
+            'decision_id' => $importedSameId->decisionId,
+            'site_id' => $importedSameId->siteId,
+            'slot_id' => $importedSameId->slotId,
+            'viewer_id' => $importedSameId->viewerId,
+            'ad_id' => $importedSameId->adId,
+            'campaign_id' => $importedSameId->campaignId,
+            'advertiser_organization_id' => $importedSameId->advertiserOrganizationId,
+            'publisher_organization_id' => $importedSameId->publisherOrganizationId,
+            'cost_points' => $importedSameId->costPoints,
+            'occurred_at' => '2026-07-08 10:00:00',
+            'valid' => 1,
+            'reason' => null,
+            'visible_ratio' => null,
+            'visible_ms' => null,
+            'billing_status' => 'pending',
+            'billed_points' => 0,
+            'publisher_earning_points' => 0,
+            'billing_reason' => null,
+            'billing_processed_at' => null,
+            'processed_at' => null,
+        ]);
+
+        $events->recordBillingResult($event, AdEventBillingResult::billed(20, 12), new DateTimeImmutable('2026-06-08T10:01:00+00:00'));
+        $events->acknowledge($event);
+        $events->recordFailure($importedSameId, new \RuntimeException('repair import failed'));
+
+        $rows = $connection->fetchAllAssociative(
+            "SELECT occurred_at, billing_status, billed_points, processed_at, billing_reason
+             FROM ad_serving_events
+             WHERE event_type = 'click' AND event_id = 'clk-repair-import'
+             ORDER BY occurred_at",
+        );
+
+        self::assertCount(2, $rows);
+        self::assertSame('2026-06-08 10:00:00', $rows[0]['occurred_at']);
+        self::assertSame('billed', $rows[0]['billing_status']);
+        self::assertSame(20, (int) $rows[0]['billed_points']);
+        self::assertNotNull($rows[0]['processed_at']);
+        self::assertSame('2026-07-08 10:00:00', $rows[1]['occurred_at']);
+        self::assertSame('failed', $rows[1]['billing_status']);
+        self::assertSame(0, (int) $rows[1]['billed_points']);
+        self::assertNull($rows[1]['processed_at']);
+        self::assertSame('repair import failed', $rows[1]['billing_reason']);
     }
 
     public function testCronFailMarksDatabaseEventProcessedWithoutRemovingReportHistory(): void
@@ -314,13 +432,22 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
                 billing_reason VARCHAR(120) NULL,
                 billing_processed_at DATETIME NULL,
                 processed_at DATETIME NULL,
-                UNIQUE (event_type, event_id)
+                UNIQUE (event_type, event_id, occurred_at)
+            )',
+        );
+        $connection->executeStatement(
+            'CREATE TABLE ad_serving_event_dedup (
+                event_type VARCHAR(32) NOT NULL,
+                event_id VARCHAR(160) NOT NULL,
+                occurred_at DATETIME NOT NULL,
+                created_at DATETIME NOT NULL,
+                PRIMARY KEY (event_type, event_id)
             )',
         );
         $connection->executeStatement(
             'CREATE TABLE raw_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                event_uuid VARCHAR(255) NOT NULL UNIQUE,
+                event_uuid VARCHAR(255) NOT NULL,
                 organization_id INTEGER NULL,
                 site_id INTEGER NULL,
                 ad_slot_id INTEGER NULL,
@@ -332,7 +459,15 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
                 request_ip BLOB NULL,
                 user_agent VARCHAR(512) NULL,
                 payload_json TEXT NOT NULL,
-                processed_at DATETIME NULL
+                processed_at DATETIME NULL,
+                UNIQUE (event_uuid, occurred_at)
+            )',
+        );
+        $connection->executeStatement(
+            'CREATE TABLE raw_event_dedup (
+                event_uuid VARCHAR(255) NOT NULL PRIMARY KEY,
+                occurred_at DATETIME NOT NULL,
+                created_at DATETIME NOT NULL
             )',
         );
         $connection->executeStatement(
@@ -376,6 +511,26 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
             clickCostPoints: 20,
             landingUrl: 'https://advertiser.example/landing',
             decidedAt: new DateTimeImmutable('2026-06-08T09:59:00+00:00'),
+        );
+    }
+
+    private function adEvent(string $type, string $id, DateTimeImmutable $occurredAt): \VertoAD\Domain\Serving\AdEvent
+    {
+        return new \VertoAD\Domain\Serving\AdEvent(
+            eventType: $type,
+            eventId: $id,
+            decisionId: 'ad:decision-1',
+            siteId: 10,
+            slotId: 20,
+            viewerId: 'viewer-1',
+            adId: 'ad-1',
+            campaignId: 30,
+            advertiserOrganizationId: 40,
+            publisherOrganizationId: 50,
+            costPoints: $type === 'impression' ? 10 : 20,
+            occurredAt: $occurredAt,
+            valid: true,
+            reason: null,
         );
     }
 }

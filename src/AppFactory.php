@@ -149,6 +149,7 @@ use VertoAD\Service\Cron\ExpiredTokenCleanupJob;
 use VertoAD\Service\Cron\FraudFeatureComputeJob;
 use VertoAD\Service\Cron\InMemoryCronLockStore;
 use VertoAD\Service\Cron\NoOpCronJob;
+use VertoAD\Service\Cron\PartitionMaintenanceJob;
 use VertoAD\Service\Cron\RedisCronLockStore;
 use VertoAD\Service\DefuseRechargeKeyPlaintextCipher;
 use VertoAD\Service\FeatureFlags\FeatureFlagService;
@@ -157,6 +158,7 @@ use VertoAD\Service\OAuthTokenService;
 use VertoAD\Service\Operations\ConfigVersionService;
 use VertoAD\Service\Operations\OperationErrorCaptureService;
 use VertoAD\Service\Operations\OperationsSummaryService;
+use VertoAD\Service\Partition\EventTablePartitionMaintainer;
 use VertoAD\Service\Serving\AdServingService;
 use VertoAD\Service\Serving\AdSelectionPolicyInterface;
 use VertoAD\Service\Serving\CampaignSpendEligibilityInterface;
@@ -590,6 +592,14 @@ final class AppFactory
                     new DuckDbColdQueryJob($queries),
                 BackupCheckJob::class => static fn (OperationsSummaryService $operations): BackupCheckJob =>
                     new BackupCheckJob($operations),
+                EventTablePartitionMaintainer::class => static fn (Connection $connection): EventTablePartitionMaintainer =>
+                    new EventTablePartitionMaintainer(
+                        $connection,
+                        (int) ($settings['cron']['partition_maintenance_lookahead_months'] ?? 3),
+                    ),
+                PartitionMaintenanceJob::class => static fn (
+                    EventTablePartitionMaintainer $maintainer,
+                ): PartitionMaintenanceJob => new PartitionMaintenanceJob($maintainer),
                 CronJobRegistry::class => static function (
                     EventConsumptionJob $eventConsumption,
                     WebhookDeliveryJob $webhookDelivery,
@@ -601,6 +611,7 @@ final class AppFactory
                     ArchiveParquetJob $archiveParquet,
                     DuckDbColdQueryJob $duckDbColdQuery,
                     BackupCheckJob $backupCheck,
+                    PartitionMaintenanceJob $partitionMaintenance,
                 ) use ($settings): CronJobRegistry {
                     $jobs = [
                         $eventConsumption,
@@ -613,6 +624,7 @@ final class AppFactory
                         $archiveParquet,
                         $duckDbColdQuery,
                         $backupCheck,
+                        $partitionMaintenance,
                     ];
                     $registeredNames = array_fill_keys(array_map(
                         static fn (CronJobInterface $job): string => $job->name(),

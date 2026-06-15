@@ -10,7 +10,9 @@ use VertoAD\Domain\Serving\AdEvent;
 
 interface ServingEventPersistenceInterface
 {
-    public function persist(AdEvent $event): void;
+    public function persist(AdEvent $event): bool;
+
+    public function findPendingDuplicate(AdEvent $event): ?AdEvent;
 
     public function recordBillingResult(AdEvent $event, AdEventBillingResult $result, DateTimeImmutable $processedAt): void;
 

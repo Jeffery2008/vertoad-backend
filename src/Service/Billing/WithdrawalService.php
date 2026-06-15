@@ -18,6 +18,7 @@ use VertoAD\Service\PointsLedgerService;
 final class WithdrawalService
 {
     private const int IDEMPOTENCY_KEY_MAX_LENGTH = 160;
+    private const int POINTS_PER_CNY = 100;
 
     public function __construct(
         private readonly WithdrawalRepository $repository,
@@ -83,6 +84,8 @@ final class WithdrawalService
                 organizationId: $organizationId,
                 requestedByUserId: $requestedByUserId,
                 pointsAmount: $pointsAmount,
+                amountCny: $this->amountCny($pointsAmount),
+                pointsPerCny: self::POINTS_PER_CNY,
                 idempotencyKey: $idempotencyKey,
                 payoutMethod: $payoutMethod,
                 payoutAccount: $payoutAccount,
@@ -110,6 +113,18 @@ final class WithdrawalService
         );
     }
 
+    /**
+     * @return list<WithdrawalRequest>
+     */
+    public function listQueue(?WithdrawalStatus $status, ?int $publisherOrganizationId, int $limit): array
+    {
+        if ($publisherOrganizationId !== null && $publisherOrganizationId <= 0) {
+            throw new InvalidArgumentException('publisher_organization_id must be a positive integer when provided.');
+        }
+
+        return $this->repository->listRequests($status, $publisherOrganizationId, $limit);
+    }
+
     public function reject(int $withdrawalRequestId, int $actorUserId, ?string $notes, DateTimeImmutable $now): WithdrawalRequest
     {
         return $this->transitionFromRequested(
@@ -124,8 +139,13 @@ final class WithdrawalService
         );
     }
 
-    public function revoke(int $withdrawalRequestId, int $actorUserId, ?string $notes, DateTimeImmutable $now): WithdrawalRequest
-    {
+    public function revoke(
+        int $withdrawalRequestId,
+        int $actorUserId,
+        ?string $notes,
+        DateTimeImmutable $now,
+        ?int $organizationId = null,
+    ): WithdrawalRequest {
         return $this->transitionFromRequested(
             withdrawalRequestId: $withdrawalRequestId,
             actorUserId: $actorUserId,
@@ -135,6 +155,7 @@ final class WithdrawalService
             action: 'revoked',
             reviewerUserId: null,
             restoreHeldPoints: true,
+            expectedOrganizationId: $organizationId,
         );
     }
 
@@ -147,6 +168,7 @@ final class WithdrawalService
         array $payoutAccount,
         ?string $notes,
         DateTimeImmutable $now,
+        ?int $organizationId = null,
     ): WithdrawalRequest {
         return $this->repository->transactional(function () use (
             $withdrawalRequestId,
@@ -154,9 +176,15 @@ final class WithdrawalService
             $payoutAccount,
             $notes,
             $now,
+            $organizationId,
         ): WithdrawalRequest {
-            $request = $this->repository->findRequest($withdrawalRequestId);
-            if ($request === null || $request->status !== WithdrawalStatus::Revoked) {
+            $request = $organizationId === null
+                ? $this->repository->findRequest($withdrawalRequestId)
+                : $this->requireRequestForOrganization($withdrawalRequestId, $organizationId);
+            if ($request === null) {
+                throw new RuntimeException('withdrawal_transition_not_allowed');
+            }
+            if ($request->status !== WithdrawalStatus::Revoked) {
                 throw new RuntimeException('withdrawal_transition_not_allowed');
             }
 
@@ -208,6 +236,7 @@ final class WithdrawalService
         string $action,
         ?int $reviewerUserId,
         bool $restoreHeldPoints,
+        ?int $expectedOrganizationId = null,
     ): WithdrawalRequest {
         return $this->repository->transactional(function () use (
             $withdrawalRequestId,
@@ -218,8 +247,11 @@ final class WithdrawalService
             $action,
             $reviewerUserId,
             $restoreHeldPoints,
+            $expectedOrganizationId,
         ): WithdrawalRequest {
-            $request = $this->repository->findRequest($withdrawalRequestId);
+            $request = $expectedOrganizationId === null
+                ? $this->repository->findRequest($withdrawalRequestId)
+                : $this->requireRequestForOrganization($withdrawalRequestId, $expectedOrganizationId);
             if ($request === null) {
                 throw new RuntimeException('withdrawal_transition_not_allowed');
             }
@@ -261,6 +293,20 @@ final class WithdrawalService
         });
     }
 
+    private function requireRequestForOrganization(int $withdrawalRequestId, ?int $organizationId): WithdrawalRequest
+    {
+        $request = $this->repository->findRequest($withdrawalRequestId);
+        if ($request === null) {
+            throw new RuntimeException('withdrawal_not_found');
+        }
+
+        if ($organizationId !== null && $request->organizationId !== $organizationId) {
+            throw new RuntimeException('withdrawal_not_found');
+        }
+
+        return $request;
+    }
+
     /**
      * @param array<string, mixed> $metadata
      */
@@ -300,6 +346,14 @@ final class WithdrawalService
         if ($organizationId <= 0 || $requestedByUserId <= 0 || $pointsAmount <= 0 || trim($payoutMethod) === '') {
             throw new InvalidArgumentException('Withdrawal request is invalid.');
         }
+    }
+
+    private function amountCny(int $pointsAmount): string
+    {
+        $yuan = intdiv($pointsAmount, self::POINTS_PER_CNY);
+        $fen = $pointsAmount % self::POINTS_PER_CNY;
+
+        return sprintf('%d.%02d', $yuan, $fen);
     }
 
     /**

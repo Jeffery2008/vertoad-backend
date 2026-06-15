@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "c39a504b41f26b79399f2c4abe58afec",
+    "content-hash": "28aa7653f32714bf8117bf397d1ebbf2",
     "packages": [
         {
             "name": "aws/aws-crt-php",
@@ -3519,6 +3519,58 @@
             ],
             "support": {
                 "source": "https://github.com/symfony/string/tree/v8.1.0"
+            },
+            "time": "2026-05-29T05:06:50+00:00"
+        },
+        {
+            "name": "symfony/yaml",
+            "version": "v8.1.0",
+            "dist": {
+                "type": "zip",
+                "url": "https://mirrors.tencent.com/repository/composer/symfony/yaml/v8.1.0/symfony-yaml-v8.1.0.zip",
+                "reference": "efb42bd2c6f4f3ccfd4683583449938b5fc146b0",
+                "shasum": ""
+            },
+            "require": {
+                "php": ">=8.4.1",
+                "symfony/polyfill-ctype": "^1.8"
+            },
+            "conflict": {
+                "symfony/console": "<7.4"
+            },
+            "require-dev": {
+                "symfony/console": "^7.4|^8.0",
+                "yaml/yaml-test-suite": "*"
+            },
+            "bin": [
+                "Resources/bin/yaml-lint"
+            ],
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "Symfony\\Component\\Yaml\\": ""
+                },
+                "exclude-from-classmap": [
+                    "/Tests/"
+                ]
+            },
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Fabien Potencier",
+                    "email": "fabien@symfony.com"
+                },
+                {
+                    "name": "Symfony Community",
+                    "homepage": "https://symfony.com/contributors"
+                }
+            ],
+            "description": "Loads and dumps YAML files",
+            "homepage": "https://symfony.com",
+            "support": {
+                "source": "https://github.com/symfony/yaml/tree/v8.1.0"
             },
             "time": "2026-05-29T05:06:50+00:00"
         },

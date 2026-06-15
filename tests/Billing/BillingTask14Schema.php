@@ -67,6 +67,77 @@ SQL
         );
         $connection->executeStatement(
             <<<'SQL'
+CREATE TABLE ad_serving_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type VARCHAR(32) NOT NULL,
+    event_id VARCHAR(160) NOT NULL,
+    decision_id VARCHAR(160) NOT NULL,
+    site_id INTEGER NOT NULL,
+    slot_id INTEGER NOT NULL,
+    viewer_id VARCHAR(160) NOT NULL,
+    ad_id VARCHAR(160) NULL,
+    campaign_id INTEGER NULL,
+    advertiser_organization_id INTEGER NULL,
+    publisher_organization_id INTEGER NULL,
+    cost_points INTEGER NULL,
+    occurred_at DATETIME NOT NULL,
+    valid INTEGER NOT NULL,
+    reason VARCHAR(120) NULL,
+    visible_ratio NUMERIC NULL,
+    visible_ms INTEGER NULL,
+    billing_status VARCHAR(32) NOT NULL DEFAULT 'pending',
+    billed_points INTEGER NOT NULL DEFAULT 0,
+    publisher_earning_points INTEGER NOT NULL DEFAULT 0,
+    billing_reason VARCHAR(120) NULL,
+    billing_processed_at DATETIME NULL,
+    processed_at DATETIME NULL,
+    UNIQUE (event_type, event_id, occurred_at)
+)
+SQL
+        );
+        $connection->executeStatement(
+            <<<'SQL'
+CREATE TABLE ad_serving_event_dedup (
+    event_type VARCHAR(32) NOT NULL,
+    event_id VARCHAR(160) NOT NULL,
+    occurred_at DATETIME NOT NULL,
+    created_at DATETIME NOT NULL,
+    PRIMARY KEY (event_type, event_id)
+)
+SQL
+        );
+        $connection->executeStatement(
+            <<<'SQL'
+CREATE TABLE raw_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_uuid VARCHAR(255) NOT NULL,
+    organization_id INTEGER NULL,
+    site_id INTEGER NULL,
+    ad_slot_id INTEGER NULL,
+    campaign_id INTEGER NULL,
+    creative_id INTEGER NULL,
+    event_type VARCHAR(64) NOT NULL,
+    occurred_at DATETIME NOT NULL,
+    received_at DATETIME NOT NULL,
+    request_ip BLOB NULL,
+    user_agent VARCHAR(512) NULL,
+    payload_json TEXT NOT NULL,
+    processed_at DATETIME NULL,
+    UNIQUE (event_uuid, occurred_at)
+)
+SQL
+        );
+        $connection->executeStatement(
+            <<<'SQL'
+CREATE TABLE raw_event_dedup (
+    event_uuid VARCHAR(255) NOT NULL PRIMARY KEY,
+    occurred_at DATETIME NOT NULL,
+    created_at DATETIME NOT NULL
+)
+SQL
+        );
+        $connection->executeStatement(
+            <<<'SQL'
 CREATE TABLE revenue_share_rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     scope VARCHAR(32) NOT NULL,
@@ -123,6 +194,8 @@ CREATE TABLE withdrawal_requests (
     organization_id INTEGER NOT NULL,
     requested_by_user_id INTEGER NOT NULL,
     points_amount INTEGER NOT NULL,
+    amount_cny TEXT NOT NULL,
+    points_per_cny INTEGER NOT NULL,
     idempotency_key VARCHAR(160) NOT NULL,
     status VARCHAR(32) NOT NULL,
     payout_method VARCHAR(64) NOT NULL,
@@ -141,6 +214,7 @@ CREATE TABLE withdrawal_requests (
     UNIQUE (ledger_entry_id),
     FOREIGN KEY (ledger_entry_id) REFERENCES ledger_entries (id) ON DELETE RESTRICT,
     CHECK (points_amount > 0),
+    CHECK (points_per_cny > 0),
     CHECK (status IN ('requested', 'paid', 'rejected', 'revoked'))
 )
 SQL

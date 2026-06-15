@@ -88,37 +88,59 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
         $this->record('click', $decision, $eventId, $occurredAt, false, trim($reason));
     }
 
-    public function persist(AdEvent $event): void
+    public function persist(AdEvent $event): bool
     {
         try {
-            $this->connection->insert('ad_serving_events', [
-                'event_type' => trim($event->eventType),
-                'event_id' => trim($event->eventId),
-                'decision_id' => $event->decisionId,
-                'site_id' => $event->siteId,
-                'slot_id' => $event->slotId,
-                'viewer_id' => $event->viewerId,
-                'ad_id' => $event->adId,
-                'campaign_id' => $event->campaignId,
-                'advertiser_organization_id' => $event->advertiserOrganizationId,
-                'publisher_organization_id' => $event->publisherOrganizationId,
-                'cost_points' => $event->costPoints,
-                'occurred_at' => $this->formatDate($event->occurredAt),
-                'valid' => $event->valid ? 1 : 0,
-                'reason' => $event->reason,
-                'visible_ratio' => $event->visibleRatio,
-                'visible_ms' => $event->visibleMs,
-                'billing_status' => 'pending',
-                'billed_points' => 0,
-                'publisher_earning_points' => 0,
-                'billing_reason' => null,
-                'billing_processed_at' => null,
-                'processed_at' => null,
-            ]);
-        } catch (UniqueConstraintViolationException) {
-        }
+            return $this->connection->transactional(function () use ($event): bool {
+                $this->claimEvent($event);
 
-        $this->persistRawEvent($event);
+                $this->connection->insert('ad_serving_events', [
+                    'event_type' => trim($event->eventType),
+                    'event_id' => trim($event->eventId),
+                    'decision_id' => $event->decisionId,
+                    'site_id' => $event->siteId,
+                    'slot_id' => $event->slotId,
+                    'viewer_id' => $event->viewerId,
+                    'ad_id' => $event->adId,
+                    'campaign_id' => $event->campaignId,
+                    'advertiser_organization_id' => $event->advertiserOrganizationId,
+                    'publisher_organization_id' => $event->publisherOrganizationId,
+                    'cost_points' => $event->costPoints,
+                    'occurred_at' => $this->formatDate($event->occurredAt),
+                    'valid' => $event->valid ? 1 : 0,
+                    'reason' => $event->reason,
+                    'visible_ratio' => $event->visibleRatio,
+                    'visible_ms' => $event->visibleMs,
+                    'billing_status' => 'pending',
+                    'billed_points' => 0,
+                    'publisher_earning_points' => 0,
+                    'billing_reason' => null,
+                    'billing_processed_at' => null,
+                    'processed_at' => null,
+                ]);
+
+                $this->persistRawEvent($event);
+
+                return true;
+            });
+        } catch (UniqueConstraintViolationException) {
+            return false;
+        }
+    }
+
+    public function findPendingDuplicate(AdEvent $event): ?AdEvent
+    {
+        $row = $this->connection->createQueryBuilder()
+            ->select(...$this->columns())
+            ->from('ad_serving_events')
+            ->where('event_type = :event_type')
+            ->andWhere('event_id = :event_id')
+            ->andWhere('processed_at IS NULL')
+            ->setParameter('event_type', trim($event->eventType))
+            ->setParameter('event_id', trim($event->eventId))
+            ->fetchAssociative();
+
+        return $row === false ? null : $this->hydrate($row);
     }
 
     public function recordBillingResult(AdEvent $event, AdEventBillingResult $result, DateTimeImmutable $processedAt): void
@@ -132,7 +154,7 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
                 'billing_reason' => $result->reason,
                 'billing_processed_at' => $this->formatDate($processedAt),
             ],
-            ['event_type' => $event->eventType, 'event_id' => $event->eventId],
+            $this->eventIdentity($event),
         );
     }
 
@@ -159,7 +181,7 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
         $this->connection->update(
             'ad_serving_events',
             ['processed_at' => $this->formatDate(new DateTimeImmutable())],
-            ['event_type' => $event->eventType, 'event_id' => $event->eventId],
+            $this->eventIdentity($event),
         );
     }
 
@@ -178,7 +200,7 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
                 'billing_reason' => substr($reason->getMessage(), 0, 120),
                 'billing_processed_at' => $this->formatDate(new DateTimeImmutable()),
             ],
-            ['event_type' => $event->eventType, 'event_id' => $event->eventId],
+            $this->eventIdentity($event),
         );
     }
 
@@ -229,29 +251,57 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
 
     private function persistRawEvent(AdEvent $event): void
     {
-        try {
-            $this->connection->insert('raw_events', [
-                'event_uuid' => $this->rawEventUuid($event),
-                'organization_id' => $event->advertiserOrganizationId ?? $event->publisherOrganizationId,
-                'site_id' => $event->siteId,
-                'ad_slot_id' => $event->slotId,
-                'campaign_id' => $event->campaignId,
-                'creative_id' => null,
-                'event_type' => trim($event->eventType),
-                'occurred_at' => $this->formatDate($event->occurredAt),
-                'received_at' => $this->formatDate(new DateTimeImmutable()),
-                'request_ip' => null,
-                'user_agent' => null,
-                'payload_json' => json_encode($this->rawPayload($event), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
-                'processed_at' => null,
-            ]);
-        } catch (UniqueConstraintViolationException) {
-        }
+        $this->connection->insert('raw_events', [
+            'event_uuid' => $this->rawEventUuid($event),
+            'organization_id' => $event->advertiserOrganizationId ?? $event->publisherOrganizationId,
+            'site_id' => $event->siteId,
+            'ad_slot_id' => $event->slotId,
+            'campaign_id' => $event->campaignId,
+            'creative_id' => null,
+            'event_type' => trim($event->eventType),
+            'occurred_at' => $this->formatDate($event->occurredAt),
+            'received_at' => $this->formatDate(new DateTimeImmutable()),
+            'request_ip' => null,
+            'user_agent' => null,
+            'payload_json' => json_encode($this->rawPayload($event), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            'processed_at' => null,
+        ]);
+    }
+
+    private function claimEvent(AdEvent $event): void
+    {
+        $occurredAt = $this->formatDate($event->occurredAt);
+        $createdAt = $this->formatDate(new DateTimeImmutable());
+
+        $this->connection->insert('ad_serving_event_dedup', [
+            'event_type' => trim($event->eventType),
+            'event_id' => trim($event->eventId),
+            'occurred_at' => $occurredAt,
+            'created_at' => $createdAt,
+        ]);
+
+        $this->connection->insert('raw_event_dedup', [
+            'event_uuid' => $this->rawEventUuid($event),
+            'occurred_at' => $occurredAt,
+            'created_at' => $createdAt,
+        ]);
     }
 
     private function rawEventUuid(AdEvent $event): string
     {
         return trim($event->eventType) . ':' . trim($event->eventId);
+    }
+
+    /**
+     * @return array{event_type: string, event_id: string, occurred_at: string}
+     */
+    private function eventIdentity(AdEvent $event): array
+    {
+        return [
+            'event_type' => trim($event->eventType),
+            'event_id' => trim($event->eventId),
+            'occurred_at' => $this->formatDate($event->occurredAt),
+        ];
     }
 
     /**

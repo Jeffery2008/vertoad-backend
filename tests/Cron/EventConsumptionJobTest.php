@@ -124,10 +124,128 @@ final class EventConsumptionJobTest extends TestCase
         $result = $job->run();
 
         self::assertSame(2, $result->metrics['consumed'] ?? null);
-        self::assertSame(2, $result->metrics['billed'] ?? null);
+        self::assertSame(1, $result->metrics['billed'] ?? null);
         self::assertSame(1, $result->metrics['duplicates'] ?? null);
         self::assertSame(920, $ledgerRepository->balanceForOrganization(99));
         self::assertSame(40, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+    }
+
+    public function testDuplicateBufferedEventRepairsPendingDatabaseEventWithoutDoubleBilling(): void
+    {
+        $connection = $this->createConnection();
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        (new PointsLedgerService($ledgerRepository))->credit(99, 'advertiser_balance', null, 1_000, 'recharge:advertiser');
+        (new RevenueShareRepository($connection))->createRule('global', null, null, null, 5000, null, new DateTimeImmutable('2026-06-08 09:00:00'));
+        $event = $this->event('click', 'clk-pending-duplicate', true, 80);
+        $persistence = new DatabaseAdEventRepository($connection);
+        self::assertTrue($persistence->persist($event));
+        $buffer = new InMemoryServingEventBuffer([$event]);
+        $job = new EventConsumptionJob($buffer, $persistence, $this->billingService($connection), 100);
+
+        $result = $job->run();
+
+        self::assertSame(1, $result->metrics['consumed'] ?? null);
+        self::assertSame(1, $result->metrics['duplicates'] ?? null);
+        self::assertSame(1, $result->metrics['billed'] ?? null);
+        self::assertSame([], $buffer->pending());
+        self::assertSame(920, $ledgerRepository->balanceForOrganization(99));
+        self::assertSame(40, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+        self::assertSame('billed', $this->billingStatus($connection, 'click', 'clk-pending-duplicate'));
+        self::assertSame(80, (int) $connection->fetchOne(
+            "SELECT billed_points FROM ad_serving_events WHERE event_type = 'click' AND event_id = 'clk-pending-duplicate'",
+        ));
+        self::assertSame(40, (int) $connection->fetchOne(
+            "SELECT publisher_earning_points FROM ad_serving_events WHERE event_type = 'click' AND event_id = 'clk-pending-duplicate'",
+        ));
+        self::assertNotNull($connection->fetchOne(
+            "SELECT processed_at FROM ad_serving_events WHERE event_type = 'click' AND event_id = 'clk-pending-duplicate'",
+        ));
+    }
+
+    public function testDuplicateBufferedEventRepairsPendingSkippedDatabaseEvent(): void
+    {
+        $connection = $this->createConnection();
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        (new PointsLedgerService($ledgerRepository))->credit(99, 'advertiser_balance', null, 1_000, 'recharge:advertiser');
+        $event = $this->event('click', 'clk-pending-skipped-duplicate', true, 80);
+        $persistence = new DatabaseAdEventRepository($connection);
+        self::assertTrue($persistence->persist($event));
+        $buffer = new InMemoryServingEventBuffer([$event]);
+        $job = new EventConsumptionJob($buffer, $persistence, $this->billingService($connection), 100);
+
+        $result = $job->run();
+
+        self::assertSame(1, $result->metrics['consumed'] ?? null);
+        self::assertSame(1, $result->metrics['duplicates'] ?? null);
+        self::assertSame(0, $result->metrics['billed'] ?? null);
+        self::assertSame(1, $result->metrics['skipped'] ?? null);
+        self::assertSame([], $buffer->pending());
+        self::assertSame(1_000, $ledgerRepository->balanceForOrganization(99));
+        self::assertSame('skipped', $this->billingStatus($connection, 'click', 'clk-pending-skipped-duplicate'));
+        self::assertSame('missing_revenue_share_rule', $connection->fetchOne(
+            "SELECT billing_reason FROM ad_serving_events WHERE event_type = 'click' AND event_id = 'clk-pending-skipped-duplicate'",
+        ));
+        self::assertNotNull($connection->fetchOne(
+            "SELECT processed_at FROM ad_serving_events WHERE event_type = 'click' AND event_id = 'clk-pending-skipped-duplicate'",
+        ));
+    }
+
+    public function testDuplicateEventsAcrossOccurredAtPartitionsAreAckedWithoutDoubleBillingOrDuplicateFacts(): void
+    {
+        $connection = $this->createConnection();
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        (new PointsLedgerService($ledgerRepository))->credit(99, 'advertiser_balance', null, 1_000, 'recharge:advertiser');
+        (new RevenueShareRepository($connection))->createRule('global', null, null, null, 5000, null, new DateTimeImmutable('2026-06-08 09:00:00'));
+        $buffer = new InMemoryServingEventBuffer([
+            $this->event('click', 'clk-cross-partition', true, 80, occurredAt: new DateTimeImmutable('2026-06-08 10:00:00')),
+            $this->event('click', 'clk-cross-partition', true, 80, occurredAt: new DateTimeImmutable('2026-07-08 10:00:00')),
+        ]);
+        $job = new EventConsumptionJob($buffer, new DatabaseAdEventRepository($connection), $this->billingService($connection), 100);
+
+        $result = $job->run();
+
+        self::assertSame(2, $result->metrics['consumed'] ?? null);
+        self::assertSame(1, $result->metrics['billed'] ?? null);
+        self::assertSame(1, $result->metrics['duplicates'] ?? null);
+        self::assertSame(0, $result->metrics['skipped'] ?? null);
+        self::assertSame([], $buffer->pending());
+        self::assertSame(920, $ledgerRepository->balanceForOrganization(99));
+        self::assertSame(40, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+        self::assertSame(1, (int) $connection->fetchOne(
+            "SELECT COUNT(*) FROM ad_serving_events WHERE event_type = 'click' AND event_id = 'clk-cross-partition'",
+        ));
+        self::assertSame(1, (int) $connection->fetchOne(
+            "SELECT COUNT(*) FROM raw_events WHERE event_uuid = 'click:clk-cross-partition'",
+        ));
+        self::assertSame(['click:clk-cross-partition'], array_map(
+            static fn ($event): string => $event->eventId,
+            (new DatabaseArchiveRepository($connection))->pendingEvents(),
+        ));
+    }
+
+    public function testBufferedEventAlreadyBilledByReservationIdIsCountedAsDuplicateWithoutDoubleBilling(): void
+    {
+        $connection = $this->createConnection();
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        (new PointsLedgerService($ledgerRepository))->credit(99, 'advertiser_balance', null, 1_000, 'recharge:advertiser');
+        (new RevenueShareRepository($connection))->createRule('global', null, null, null, 5000, null, new DateTimeImmutable('2026-06-08 09:00:00'));
+        $billing = $this->billingService($connection);
+        $event = $this->event('impression', 'imp-already-billed', true, 40);
+        $preBilled = $billing->billServingEvent($event);
+        $buffer = new InMemoryServingEventBuffer([$event]);
+        $job = new EventConsumptionJob($buffer, new DatabaseAdEventRepository($connection), $billing, 100);
+
+        $result = $job->run();
+
+        self::assertTrue($preBilled->billed);
+        self::assertFalse($preBilled->duplicate);
+        self::assertSame(1, $result->metrics['consumed'] ?? null);
+        self::assertSame(1, $result->metrics['billed'] ?? null);
+        self::assertSame(1, $result->metrics['duplicates'] ?? null);
+        self::assertSame([], $buffer->pending());
+        self::assertSame(960, $ledgerRepository->balanceForOrganization(99));
+        self::assertSame(20, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+        self::assertSame('billed', $this->billingStatus($connection, 'impression', 'imp-already-billed'));
     }
 
     public function testEmptyBufferCompletesWithZeroMetrics(): void
@@ -283,6 +401,9 @@ final class EventConsumptionJobTest extends TestCase
         self::assertSame(20, (int) $connection->fetchOne(
             "SELECT publisher_earning_points FROM ad_serving_events WHERE event_type = 'impression' AND event_id = 'imp-retry-result'",
         ));
+        self::assertNotNull($connection->fetchOne(
+            "SELECT processed_at FROM ad_serving_events WHERE event_type = 'impression' AND event_id = 'imp-retry-result'",
+        ));
     }
 
     private function billingService(Connection $connection): AdEventBillingService
@@ -339,56 +460,6 @@ CREATE TABLE spend_reservations (
 )
 SQL
         );
-        $connection->executeStatement(
-            <<<'SQL'
-CREATE TABLE ad_serving_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_type VARCHAR(32) NOT NULL,
-    event_id VARCHAR(160) NOT NULL,
-    decision_id VARCHAR(160) NOT NULL,
-    site_id INTEGER NOT NULL,
-    slot_id INTEGER NOT NULL,
-    viewer_id VARCHAR(160) NOT NULL,
-    ad_id VARCHAR(160) NULL,
-    campaign_id INTEGER NULL,
-    advertiser_organization_id INTEGER NULL,
-    publisher_organization_id INTEGER NULL,
-    cost_points INTEGER NULL,
-    occurred_at DATETIME NOT NULL,
-    valid INTEGER NOT NULL,
-    reason VARCHAR(120) NULL,
-    visible_ratio NUMERIC NULL,
-    visible_ms INTEGER NULL,
-    billing_status VARCHAR(32) NOT NULL DEFAULT 'pending',
-    billed_points INTEGER NOT NULL DEFAULT 0,
-    publisher_earning_points INTEGER NOT NULL DEFAULT 0,
-    billing_reason VARCHAR(120) NULL,
-    billing_processed_at DATETIME NULL,
-    processed_at DATETIME NULL,
-    UNIQUE (event_type, event_id)
-)
-SQL
-        );
-        $connection->executeStatement(
-            <<<'SQL'
-CREATE TABLE raw_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_uuid VARCHAR(255) NOT NULL UNIQUE,
-    organization_id INTEGER NULL,
-    site_id INTEGER NULL,
-    ad_slot_id INTEGER NULL,
-    campaign_id INTEGER NULL,
-    creative_id INTEGER NULL,
-    event_type VARCHAR(64) NOT NULL,
-    occurred_at DATETIME NOT NULL,
-    received_at DATETIME NOT NULL,
-    request_ip BLOB NULL,
-    user_agent VARCHAR(512) NULL,
-    payload_json TEXT NOT NULL,
-    processed_at DATETIME NULL
-)
-SQL
-        );
         $connection->insert('sites', [
             'id' => 5,
             'organization_id' => 42,
@@ -415,6 +486,7 @@ SQL
         bool $valid,
         ?int $costPoints,
         ?int $publisherOrganizationId = 42,
+        ?DateTimeImmutable $occurredAt = null,
     ): AdEvent {
         return new AdEvent(
             eventType: $type,
@@ -428,7 +500,7 @@ SQL
             advertiserOrganizationId: 99,
             publisherOrganizationId: $publisherOrganizationId,
             costPoints: $costPoints,
-            occurredAt: new DateTimeImmutable('2026-06-08 10:00:00'),
+            occurredAt: $occurredAt ?? new DateTimeImmutable('2026-06-08 10:00:00'),
             valid: $valid,
             reason: $valid ? null : 'fraud_rejected',
         );
@@ -500,13 +572,18 @@ final readonly class ThrowingAdEventPersistence implements ServingEventPersisten
     {
     }
 
-    public function persist(AdEvent $event): void
+    public function persist(AdEvent $event): bool
     {
         if (($this->shouldThrow)($event)) {
             throw new \RuntimeException('simulated poison event');
         }
 
-        $this->inner->persist($event);
+        return $this->inner->persist($event);
+    }
+
+    public function findPendingDuplicate(AdEvent $event): ?AdEvent
+    {
+        return $this->inner->findPendingDuplicate($event);
     }
 
     public function recordBillingResult(AdEvent $event, AdEventBillingResult $result, \DateTimeImmutable $processedAt): void
@@ -531,9 +608,14 @@ final readonly class BillingResultFailingPersistence implements ServingEventPers
     {
     }
 
-    public function persist(AdEvent $event): void
+    public function persist(AdEvent $event): bool
     {
-        $this->inner->persist($event);
+        return $this->inner->persist($event);
+    }
+
+    public function findPendingDuplicate(AdEvent $event): ?AdEvent
+    {
+        return $this->inner->findPendingDuplicate($event);
     }
 
     public function recordBillingResult(AdEvent $event, AdEventBillingResult $result, \DateTimeImmutable $processedAt): void

@@ -51,4 +51,60 @@ final class ServingBillingReportSchemaMigrationTest extends TestCase
             self::assertStringContainsString($fragment, $this->aggregateSql);
         }
     }
+
+    public function testServingEventsArePartitionedByOccurredAtForMySqlHotStorage(): void
+    {
+        $migrationSql = $this->partitionMigrationSql();
+
+        foreach ([
+            'alter table ad_serving_events',
+            'drop foreign key fk_ad_serving_events_decision',
+            'drop foreign key fk_ad_serving_events_site',
+            'drop foreign key fk_ad_serving_events_slot',
+            'drop foreign key fk_ad_serving_events_campaign',
+            'drop foreign key fk_ad_serving_events_advertiser_org',
+            'drop foreign key fk_ad_serving_events_publisher_org',
+            'drop primary key',
+            'add primary key (id, occurred_at)',
+            'partition by range columns (occurred_at)',
+            "partition p_before_2026 values less than ('2026-01-01 00:00:00')",
+            "partition p202606 values less than ('2026-07-01 00:00:00')",
+            'partition p_future values less than (maxvalue)',
+        ] as $fragment) {
+            self::assertStringContainsString($fragment, $migrationSql);
+        }
+
+        self::assertStringNotContainsString('add constraint fk_ad_serving_events', $migrationSql);
+    }
+
+    public function testServingEventDedupTableKeepsGlobalEventIdentityOutsidePartitionedHotTable(): void
+    {
+        $migrationSql = preg_replace(
+            '/\s+/',
+            ' ',
+            strtolower((string) file_get_contents(dirname(__DIR__, 2) . '/db/migrations/20260608120000_create_serving_persistence_tables.php')),
+        ) ?? '';
+
+        foreach ([
+            'create table ad_serving_event_dedup',
+            'event_type varchar(32) not null',
+            'event_id varchar(160) not null',
+            'occurred_at datetime not null',
+            'created_at datetime not null',
+            'primary key (event_type, event_id)',
+            'key idx_ad_serving_event_dedup_occurred_at (occurred_at)',
+        ] as $fragment) {
+            self::assertStringContainsString($fragment, $migrationSql);
+        }
+
+        self::assertStringContainsString('dedup', $migrationSql);
+    }
+
+    private function partitionMigrationSql(): string
+    {
+        $path = dirname(__DIR__, 2) . '/db/migrations/20260615160000_partition_event_tables.php';
+        self::assertFileExists($path);
+
+        return preg_replace('/\s+/', ' ', strtolower((string) file_get_contents($path))) ?? '';
+    }
 }

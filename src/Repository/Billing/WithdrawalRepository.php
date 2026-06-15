@@ -46,6 +46,8 @@ final class WithdrawalRepository
         int $organizationId,
         int $requestedByUserId,
         int $pointsAmount,
+        string $amountCny,
+        int $pointsPerCny,
         string $idempotencyKey,
         string $payoutMethod,
         array $payoutAccount,
@@ -57,6 +59,8 @@ final class WithdrawalRepository
             'organization_id' => $organizationId,
             'requested_by_user_id' => $requestedByUserId,
             'points_amount' => $pointsAmount,
+            'amount_cny' => $amountCny,
+            'points_per_cny' => $pointsPerCny,
             'idempotency_key' => $idempotencyKey,
             'status' => WithdrawalStatus::Requested->value,
             'payout_method' => $payoutMethod,
@@ -104,6 +108,39 @@ final class WithdrawalRepository
             ->fetchAssociative();
 
         return $row === false ? null : $this->hydrateRequest($row);
+    }
+
+    /**
+     * @return list<WithdrawalRequest>
+     */
+    public function listRequests(
+        ?WithdrawalStatus $status,
+        ?int $organizationId,
+        int $limit,
+    ): array {
+        $limit = max(1, min(200, $limit));
+        $query = $this->connection->createQueryBuilder()
+            ->select('*')
+            ->from('withdrawal_requests')
+            ->orderBy('requested_at', 'DESC')
+            ->addOrderBy('id', 'DESC')
+            ->setMaxResults($limit);
+
+        if ($status !== null) {
+            $query
+                ->where('status = :status')
+                ->setParameter('status', $status->value);
+        }
+
+        if ($organizationId !== null && $organizationId > 0) {
+            $query
+                ->andWhere('organization_id = :organization_id')
+                ->setParameter('organization_id', $organizationId);
+        }
+
+        $rows = $query->fetchAllAssociative();
+
+        return array_map(fn (array $row): WithdrawalRequest => $this->hydrateRequest($row), $rows);
     }
 
     /**
@@ -215,7 +252,7 @@ final class WithdrawalRepository
         string $checksum,
         DateTimeImmutable $now,
     ): WithdrawalProof {
-        $this->connection->update('withdrawal_proofs', [
+        $affected = $this->connection->update('withdrawal_proofs', [
             'object_key' => $objectKey,
             'content_type' => $contentType,
             'byte_size' => $byteSize,
@@ -228,6 +265,9 @@ final class WithdrawalRepository
             'organization_id' => $organizationId,
             'uploaded_by_user_id' => $uploadedByUserId,
         ]);
+        if ($affected < 1) {
+            throw new \RuntimeException('withdrawal_proof_not_found');
+        }
 
         $proof = $this->findProof($proofId);
         assert($proof instanceof WithdrawalProof);
@@ -245,6 +285,8 @@ final class WithdrawalRepository
             organizationId: (int) $row['organization_id'],
             requestedByUserId: (int) $row['requested_by_user_id'],
             pointsAmount: (int) $row['points_amount'],
+            amountCny: (string) $row['amount_cny'],
+            pointsPerCny: (int) $row['points_per_cny'],
             idempotencyKey: (string) $row['idempotency_key'],
             status: WithdrawalStatus::from((string) $row['status']),
             payoutMethod: (string) $row['payout_method'],

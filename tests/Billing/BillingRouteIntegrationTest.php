@@ -1046,6 +1046,8 @@ final class BillingRouteIntegrationTest extends TestCase
 
         self::assertSame('requested', $requested['data']['status']);
         self::assertSame(1000, $requested['data']['points_amount']);
+        self::assertSame('10.00', $requested['data']['amount_cny']);
+        self::assertSame(100, $requested['data']['points_per_cny']);
         self::assertSame('withdrawal:route:request:1', $requested['data']['idempotency_key']);
 
         $requestedAgain = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals?organization_id=99', [
@@ -1108,7 +1110,325 @@ final class BillingRouteIntegrationTest extends TestCase
         self::assertSame('requested', $resubmitted['data']['status']);
         self::assertSame(['account_no' => '****0000'], $resubmitted['data']['payout_account']);
         self::assertSame('updated payout account', $resubmitted['data']['reviewer_notes']);
+        self::assertSame('3.00', $resubmitted['data']['amount_cny']);
+        self::assertSame(100, $resubmitted['data']['points_per_cny']);
         self::assertSame(1700, (new PointsLedgerRepository($connection))->balanceForOrganization(99, 'publisher_earnings'));
+    }
+
+    public function testWithdrawalProofCreateReturnsControlledConflictWhenStorageSigningFails(): void
+    {
+        $connection = $this->createConnection();
+        $app = $this->createApp(
+            $connection,
+            proofSigner: new class implements ObjectStorageUploadSignerInterface {
+                public function presignPut(\VertoAD\Infrastructure\Storage\PresignedUploadRequest $request): \VertoAD\Infrastructure\Storage\PresignedUpload
+                {
+                    throw new \RuntimeException('object_storage_unavailable');
+                }
+            },
+        );
+        $this->handleJson($app, 'POST', '/api/v1/auth/register', [
+            'email' => 'withdrawal-proof-conflict@example.com',
+            'password' => 'correct horse battery staple',
+            'display_name' => 'Publisher Owner',
+        ]);
+        $login = $this->handleJson($app, 'POST', '/api/v1/auth/login', [
+            'email' => 'withdrawal-proof-conflict@example.com',
+            'password' => 'correct horse battery staple',
+        ]);
+        $token = $login['data']['token']['access_token'];
+        (new PointsLedgerService(new PointsLedgerRepository($connection)))->credit(99, 'publisher_earnings', null, 1500, 'route:withdrawal-proof-conflict');
+
+        $withdrawal = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals?organization_id=99', [
+            'points_amount' => 1000,
+            'payout_method' => 'bank_transfer',
+            'payout_account' => ['account_no' => '****1234'],
+            'idempotency_key' => 'withdrawal:route:proof-conflict',
+        ], $token);
+
+        $intent = $this->handleJsonResponse(
+            $app,
+            'POST',
+            '/api/v1/billing/withdrawals/' . $withdrawal['data']['id'] . '/proofs?organization_id=99',
+            [
+                'filename' => 'receipt.pdf',
+                'content_type' => 'application/pdf',
+                'byte_size' => 2048,
+            ],
+            $token,
+        );
+
+        self::assertSame(409, $intent['status']);
+        self::assertSame('withdrawal_proof_rejected', $intent['body']['error']['code']);
+        self::assertSame('object_storage_unavailable', $intent['body']['error']['message']);
+    }
+
+    public function testWithdrawalProofConfirmRejectsProofThatDoesNotBelongToWithdrawal(): void
+    {
+        $connection = $this->createConnection();
+        $app = $this->createApp($connection);
+        $this->handleJson($app, 'POST', '/api/v1/auth/register', [
+            'email' => 'withdrawal-proof-mismatch@example.com',
+            'password' => 'correct horse battery staple',
+            'display_name' => 'Publisher Owner',
+        ]);
+        $login = $this->handleJson($app, 'POST', '/api/v1/auth/login', [
+            'email' => 'withdrawal-proof-mismatch@example.com',
+            'password' => 'correct horse battery staple',
+        ]);
+        $token = $login['data']['token']['access_token'];
+        (new PointsLedgerService(new PointsLedgerRepository($connection)))->credit(99, 'publisher_earnings', null, 2500, 'route:withdrawal-proof-mismatch');
+
+        $first = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals?organization_id=99', [
+            'points_amount' => 1000,
+            'payout_method' => 'bank_transfer',
+            'payout_account' => ['account_no' => '****1234'],
+            'idempotency_key' => 'withdrawal:route:proof-mismatch:first',
+        ], $token);
+        $second = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals?organization_id=99', [
+            'points_amount' => 1000,
+            'payout_method' => 'bank_transfer',
+            'payout_account' => ['account_no' => '****5678'],
+            'idempotency_key' => 'withdrawal:route:proof-mismatch:second',
+        ], $token);
+
+        $proofIntent = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $first['data']['id'] . '/proofs?organization_id=99', [
+            'filename' => 'receipt.pdf',
+            'content_type' => 'application/pdf',
+            'byte_size' => 2048,
+        ], $token);
+
+        $confirmed = $this->handleJsonResponse(
+            $app,
+            'POST',
+            '/api/v1/billing/withdrawals/' . $second['data']['id'] . '/proofs/confirm?organization_id=99',
+            [
+                'proof_id' => $proofIntent['data']['proof']['id'],
+                'object_key' => $proofIntent['data']['proof']['object_key'],
+                'content_type' => 'application/pdf',
+                'byte_size' => 2048,
+                'checksum' => 'sha256:route',
+            ],
+            $token,
+        );
+
+        self::assertSame(409, $confirmed['status']);
+        self::assertSame('withdrawal_proof_rejected', $confirmed['body']['error']['code']);
+        self::assertSame('withdrawal_proof_not_found', $confirmed['body']['error']['message']);
+        self::assertSame(
+            'pending_upload',
+            (string) $connection->fetchOne('SELECT status FROM withdrawal_proofs WHERE id = ?', [$proofIntent['data']['proof']['id']]),
+        );
+    }
+
+    public function testAdminListsWithdrawalQueueWithStatusOrganizationLimitAndSnapshotAmounts(): void
+    {
+        $connection = $this->createConnection();
+        $app = $this->createApp($connection, platformPermissions: ['billing.withdrawal.read.platform']);
+        $this->handleJson($app, 'POST', '/api/v1/auth/register', [
+            'email' => 'withdrawal-admin@example.com',
+            'password' => 'correct horse battery staple',
+            'display_name' => 'Withdrawal Admin',
+        ]);
+        $login = $this->handleJson($app, 'POST', '/api/v1/auth/login', [
+            'email' => 'withdrawal-admin@example.com',
+            'password' => 'correct horse battery staple',
+        ]);
+        $token = $login['data']['token']['access_token'];
+        $ledger = new PointsLedgerService(new PointsLedgerRepository($connection));
+        $ledger->credit(99, 'publisher_earnings', null, 4000, 'route:withdrawal-admin-99');
+        $ledger->credit(100, 'publisher_earnings', null, 4000, 'route:withdrawal-admin-100');
+
+        $first = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals?organization_id=99', [
+            'points_amount' => 1200,
+            'payout_method' => 'bank_transfer',
+            'payout_account' => ['account_no' => '****1111'],
+            'idempotency_key' => 'withdrawal:route:admin:first',
+        ], $token);
+        $paid = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals?organization_id=99', [
+            'points_amount' => 800,
+            'payout_method' => 'bank_transfer',
+            'payout_account' => ['account_no' => '****2222'],
+            'idempotency_key' => 'withdrawal:route:admin:paid',
+        ], $token);
+        $latest = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals?organization_id=100', [
+            'points_amount' => 2500,
+            'payout_method' => 'bank_transfer',
+            'payout_account' => ['account_no' => '****3333'],
+            'idempotency_key' => 'withdrawal:route:admin:latest',
+        ], $token);
+        $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $paid['data']['id'] . '/paid?organization_id=99', [
+            'notes' => 'paid',
+        ], $token);
+
+        $requestedQueue = $this->handleJson($app, 'GET', '/api/v1/billing/withdrawals?organization_id=10&status=requested&limit=5', null, $token);
+        self::assertSame('requested', $requestedQueue['data']['status']);
+        self::assertSame(5, $requestedQueue['data']['limit']);
+        self::assertSame([$latest['data']['id'], $first['data']['id']], array_column($requestedQueue['data']['withdrawals'], 'id'));
+        self::assertSame(['25.00', '12.00'], array_column($requestedQueue['data']['withdrawals'], 'amount_cny'));
+        self::assertSame([100, 100], array_column($requestedQueue['data']['withdrawals'], 'points_per_cny'));
+
+        $organizationQueue = $this->handleJson($app, 'GET', '/api/v1/billing/withdrawals?organization_id=10&publisher_organization_id=99', null, $token);
+        self::assertSame(99, $organizationQueue['data']['publisher_organization_id']);
+        self::assertSame([$paid['data']['id'], $first['data']['id']], array_column($organizationQueue['data']['withdrawals'], 'id'));
+
+        $limitedQueue = $this->handleJson($app, 'GET', '/api/v1/billing/withdrawals?organization_id=10&limit=1', null, $token);
+        self::assertSame([$latest['data']['id']], array_column($limitedQueue['data']['withdrawals'], 'id'));
+
+        $invalidStatus = $this->handleJson($app, 'GET', '/api/v1/billing/withdrawals?organization_id=10&status=processing', null, $token);
+        self::assertSame('invalid_request', $invalidStatus['error']['code']);
+
+        $invalidPublisherFilter = $this->handleJson($app, 'GET', '/api/v1/billing/withdrawals?organization_id=10&publisher_organization_id=0', null, $token);
+        self::assertSame('invalid_request', $invalidPublisherFilter['error']['code']);
+
+        $invalidLimit = $this->handleJson($app, 'GET', '/api/v1/billing/withdrawals?organization_id=10&limit=soon', null, $token);
+        self::assertSame('invalid_request', $invalidLimit['error']['code']);
+
+        $unboundedLimit = $this->handleJson($app, 'GET', '/api/v1/billing/withdrawals?organization_id=10&status=all&limit=999', null, $token);
+        self::assertNull($unboundedLimit['data']['status']);
+        self::assertSame(200, $unboundedLimit['data']['limit']);
+
+        $forbiddenApp = $this->createApp($connection, platformPermissions: []);
+        $forbidden = $this->handleJson($forbiddenApp, 'GET', '/api/v1/billing/withdrawals?organization_id=10', null, $token);
+        self::assertSame('permission_required', $forbidden['error']['code']);
+        self::assertSame('billing.withdrawal.read.platform', $forbidden['error']['required_permission']);
+    }
+
+    public function testWithdrawalOwnRoutesRejectCrossOrganizationRequestIds(): void
+    {
+        $connection = $this->createConnection();
+        $app = $this->createApp($connection);
+        $this->handleJson($app, 'POST', '/api/v1/auth/register', [
+            'email' => 'withdrawal-owner-scope@example.com',
+            'password' => 'correct horse battery staple',
+            'display_name' => 'Publisher Owner',
+        ]);
+        $login = $this->handleJson($app, 'POST', '/api/v1/auth/login', [
+            'email' => 'withdrawal-owner-scope@example.com',
+            'password' => 'correct horse battery staple',
+        ]);
+        $token = $login['data']['token']['access_token'];
+        $ledger = new PointsLedgerService(new PointsLedgerRepository($connection));
+        $ledger->credit(99, 'publisher_earnings', null, 4000, 'route:withdrawal-scope-99');
+        $ledger->credit(100, 'publisher_earnings', null, 4000, 'route:withdrawal-scope-100');
+
+        $requested = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals?organization_id=99', [
+            'points_amount' => 1000,
+            'payout_method' => 'bank_transfer',
+            'payout_account' => ['account_no' => '****1234'],
+            'idempotency_key' => 'withdrawal:route:scope:requested',
+        ], $token);
+        $revoked = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals?organization_id=99', [
+            'points_amount' => 500,
+            'payout_method' => 'bank_transfer',
+            'payout_account' => ['account_no' => '****5678'],
+            'idempotency_key' => 'withdrawal:route:scope:revoked',
+        ], $token);
+        $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $revoked['data']['id'] . '/revoke?organization_id=99', [], $token);
+
+        $crossOrgProof = $this->handleJsonResponse($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs?organization_id=100', [
+            'filename' => 'receipt.pdf',
+            'content_type' => 'application/pdf',
+            'byte_size' => 2048,
+        ], $token);
+        self::assertSame(404, $crossOrgProof['status']);
+        self::assertSame('withdrawal_not_found', $crossOrgProof['body']['error']['code']);
+
+        $proofIntent = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs?organization_id=99', [
+            'filename' => 'receipt.pdf',
+            'content_type' => 'application/pdf',
+            'byte_size' => 2048,
+        ], $token);
+
+        foreach ([
+            ['POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/revoke?organization_id=100', []],
+            ['POST', '/api/v1/billing/withdrawals/' . $revoked['data']['id'] . '/resubmit?organization_id=100', [
+                'payout_account' => ['account_no' => '****0000'],
+            ]],
+            ['POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs/confirm?organization_id=100', [
+                'proof_id' => $proofIntent['data']['proof']['id'],
+                'object_key' => $proofIntent['data']['proof']['object_key'],
+                'content_type' => 'application/pdf',
+                'byte_size' => 2048,
+                'checksum' => 'sha256:scope',
+            ]],
+        ] as [$method, $uri, $payload]) {
+            $response = $this->handleJsonResponse($app, $method, $uri, $payload, $token);
+            self::assertSame(404, $response['status'], $method . ' ' . $uri);
+            self::assertSame('withdrawal_not_found', $response['body']['error']['code'], $method . ' ' . $uri);
+        }
+
+        self::assertSame(
+            'requested',
+            (string) $connection->fetchOne('SELECT status FROM withdrawal_requests WHERE id = ?', [$requested['data']['id']]),
+        );
+        self::assertSame(
+            'revoked',
+            (string) $connection->fetchOne('SELECT status FROM withdrawal_requests WHERE id = ?', [$revoked['data']['id']]),
+        );
+        self::assertSame(
+            0,
+            (int) $connection->fetchOne('SELECT COUNT(*) FROM withdrawal_proofs WHERE organization_id = 100'),
+        );
+    }
+
+    public function testWithdrawalQueueActionAcceptsTypedQueryParamsFromProgrammaticRequests(): void
+    {
+        $connection = $this->createConnection();
+        $ledger = new PointsLedgerService(new PointsLedgerRepository($connection));
+        $ledger->credit(99, 'publisher_earnings', null, 1000, 'route:withdrawal-typed-query');
+        $withdrawals = new WithdrawalService(new WithdrawalRepository($connection), $ledger, new PointsLedgerRepository($connection));
+        $withdrawal = $withdrawals->requestWithdrawal(
+            organizationId: 99,
+            requestedByUserId: 7,
+            pointsAmount: 700,
+            payoutMethod: 'bank_transfer',
+            payoutAccount: ['account_no' => '****7777'],
+            notes: null,
+            idempotencyKey: 'withdrawal:route:typed-query',
+            now: new DateTimeImmutable('2026-06-08 12:00:00'),
+        );
+
+        $action = new WithdrawalAction(
+            $withdrawals,
+            new WithdrawalProofService(
+                new WithdrawalRepository($connection),
+                new DeterministicPresignedUploadSigner([
+                    'endpoint' => 'https://r2.example.test',
+                    'bucket' => 'withdrawal-proofs',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                    'path_style_endpoint' => true,
+                ]),
+                static fn (): string => 'route-proof',
+            ),
+        );
+        $request = (new ServerRequestFactory())
+            ->createServerRequest('GET', '/api/v1/billing/withdrawals')
+            ->withQueryParams([
+                'status' => 123,
+                'publisher_organization_id' => 99,
+                'limit' => 1,
+            ]);
+        $responseFactory = new ResponseFactory();
+
+        $badStatus = $action->list($request, $responseFactory->createResponse());
+        $badStatusDecoded = json_decode((string) $badStatus->getBody(), true, flags: JSON_THROW_ON_ERROR);
+        self::assertSame(422, $badStatus->getStatusCode());
+        self::assertSame('invalid_request', $badStatusDecoded['code']);
+
+        $valid = $action->list(
+            $request->withQueryParams([
+                'publisher_organization_id' => 99,
+                'limit' => 1,
+            ]),
+            $responseFactory->createResponse(),
+        );
+        $validDecoded = json_decode((string) $valid->getBody(), true, flags: JSON_THROW_ON_ERROR);
+        self::assertSame(200, $valid->getStatusCode());
+        self::assertSame($withdrawal->id, $validDecoded['withdrawals'][0]['id']);
+        self::assertSame(1, $validDecoded['limit']);
+        self::assertSame(99, $validDecoded['publisher_organization_id']);
     }
 
     public function testWithdrawalRoutesReturnControlledErrors(): void
@@ -1302,6 +1622,7 @@ final class BillingRouteIntegrationTest extends TestCase
         ?Closure $plaintextGenerator = null,
         bool $wireRechargeKeyAudit = true,
         ?array $platformPermissions = null,
+        ?ObjectStorageUploadSignerInterface $proofSigner = null,
     ): \Slim\App
     {
         $appKey = $this->appKey;
@@ -1368,7 +1689,7 @@ final class BillingRouteIntegrationTest extends TestCase
                 PointsLedgerRepositoryInterface $ledgerRepository,
             ): WithdrawalService => new WithdrawalService($repository, $ledger, $ledgerRepository),
             ObjectStorageUploadSignerInterface::class => static fn (): ObjectStorageUploadSignerInterface =>
-                new DeterministicPresignedUploadSigner([
+                $proofSigner ?? new DeterministicPresignedUploadSigner([
                     'endpoint' => 'https://r2.example.test',
                     'bucket' => 'withdrawal-proofs',
                     'access_key_id' => 'access-key',
@@ -1414,6 +1735,11 @@ final class BillingRouteIntegrationTest extends TestCase
             $revealRoute->add($platformPermission('billing.recharge_key.view_plaintext.platform'));
         }
         $revealRoute->add(AuthenticateRequestMiddleware::class);
+        $withdrawalListRoute = $app->get('/api/v1/billing/withdrawals', [WithdrawalAction::class, 'list']);
+        if ($platformPermissions !== null) {
+            $withdrawalListRoute->add($platformPermission('billing.withdrawal.read.platform'));
+        }
+        $withdrawalListRoute->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/billing/withdrawals', [WithdrawalAction::class, 'request'])->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/paid', [WithdrawalAction::class, 'markPaid'])->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/reject', [WithdrawalAction::class, 'reject'])->add(AuthenticateRequestMiddleware::class);
@@ -1535,6 +1861,8 @@ final class BillingRouteIntegrationTest extends TestCase
                 organization_id INTEGER NOT NULL,
                 requested_by_user_id INTEGER NOT NULL,
                 points_amount INTEGER NOT NULL,
+                amount_cny TEXT NOT NULL,
+                points_per_cny INTEGER NOT NULL,
                 idempotency_key VARCHAR(160) NOT NULL,
                 status TEXT NOT NULL,
                 payout_method TEXT NOT NULL,

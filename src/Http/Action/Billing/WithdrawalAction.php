@@ -9,6 +9,7 @@ use InvalidArgumentException;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use RuntimeException;
+use VertoAD\Domain\Billing\WithdrawalStatus;
 use VertoAD\Http\Auth\RequestUserContext;
 use VertoAD\Service\Billing\WithdrawalProofService;
 use VertoAD\Service\Billing\WithdrawalService;
@@ -19,6 +20,30 @@ final readonly class WithdrawalAction
         private WithdrawalService $withdrawals,
         private WithdrawalProofService $proofs,
     ) {
+    }
+
+    public function list(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        $query = $request->getQueryParams();
+        try {
+            $status = $this->statusFilter($query['status'] ?? null);
+            $publisherOrganizationId = $this->optionalPositiveInt($query['publisher_organization_id'] ?? null, 'publisher_organization_id');
+            $limit = $this->limit($query['limit'] ?? null);
+            $withdrawals = $this->withdrawals->listQueue($status, $publisherOrganizationId, $limit);
+        } catch (InvalidArgumentException $exception) {
+            return $this->json($response, ['code' => 'invalid_request', 'message' => $exception->getMessage()], 422);
+        }
+
+        $payload = [
+            'withdrawals' => BillingSerializers::withdrawalRequests($withdrawals),
+            'limit' => $limit,
+            'status' => $status?->value,
+        ];
+        if ($publisherOrganizationId !== null) {
+            $payload['publisher_organization_id'] = $publisherOrganizationId;
+        }
+
+        return $this->json($response, $payload, 200);
     }
 
     public function request(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
@@ -81,10 +106,15 @@ final readonly class WithdrawalAction
                 payoutAccount: $this->arrayField($body, 'payout_account'),
                 notes: $this->optionalStringField($body, 'notes'),
                 now: new DateTimeImmutable(),
+                organizationId: (int) $context->organizationId,
             );
         } catch (InvalidArgumentException $exception) {
             return $this->json($response, ['code' => 'invalid_request', 'message' => $exception->getMessage()], 422);
         } catch (RuntimeException $exception) {
+            if ($exception->getMessage() === 'withdrawal_not_found') {
+                return $this->json($response, ['code' => 'withdrawal_not_found', 'message' => 'Withdrawal request was not found in this organization scope.'], 404);
+            }
+
             return $this->json($response, ['code' => 'withdrawal_transition_rejected', 'message' => $exception->getMessage()], 409);
         }
 
@@ -112,6 +142,12 @@ final readonly class WithdrawalAction
             );
         } catch (InvalidArgumentException $exception) {
             return $this->json($response, ['code' => 'invalid_request', 'message' => $exception->getMessage()], 422);
+        } catch (RuntimeException $exception) {
+            if ($exception->getMessage() === 'withdrawal_not_found') {
+                return $this->json($response, ['code' => 'withdrawal_not_found', 'message' => 'Withdrawal request was not found in this organization scope.'], 404);
+            }
+
+            return $this->json($response, ['code' => 'withdrawal_proof_rejected', 'message' => $exception->getMessage()], 409);
         }
 
         return $this->json($response, BillingSerializers::withdrawalProofIntent($intent), 201);
@@ -140,6 +176,12 @@ final readonly class WithdrawalAction
             );
         } catch (InvalidArgumentException $exception) {
             return $this->json($response, ['code' => 'invalid_request', 'message' => $exception->getMessage()], 422);
+        } catch (RuntimeException $exception) {
+            if ($exception->getMessage() === 'withdrawal_not_found') {
+                return $this->json($response, ['code' => 'withdrawal_not_found', 'message' => 'Withdrawal request was not found in this organization scope.'], 404);
+            }
+
+            return $this->json($response, ['code' => 'withdrawal_proof_rejected', 'message' => $exception->getMessage()], 409);
         }
 
         return $this->json($response, BillingSerializers::withdrawalProof($proof), 200);
@@ -167,11 +209,15 @@ final readonly class WithdrawalAction
             } elseif ($transition === 'rejected') {
                 $withdrawal = $this->withdrawals->reject($id, $actor, $notes, $now);
             } else {
-                $withdrawal = $this->withdrawals->revoke($id, $actor, $notes, $now);
+                $withdrawal = $this->withdrawals->revoke($id, $actor, $notes, $now, (int) $context->organizationId);
             }
         } catch (InvalidArgumentException $exception) {
             return $this->json($response, ['code' => 'invalid_request', 'message' => $exception->getMessage()], 422);
         } catch (RuntimeException $exception) {
+            if ($exception->getMessage() === 'withdrawal_not_found') {
+                return $this->json($response, ['code' => 'withdrawal_not_found', 'message' => 'Withdrawal request was not found in this organization scope.'], 404);
+            }
+
             return $this->json($response, ['code' => 'withdrawal_transition_rejected', 'message' => $exception->getMessage()], 409);
         }
 
@@ -247,6 +293,54 @@ final readonly class WithdrawalAction
         }
 
         return (int) $id;
+    }
+
+    private function statusFilter(mixed $value): ?WithdrawalStatus
+    {
+        if ($value === null || $value === '' || $value === 'all') {
+            return null;
+        }
+
+        if (!is_string($value)) {
+            throw new InvalidArgumentException('status must be requested, paid, rejected, revoked, or all.');
+        }
+
+        return WithdrawalStatus::tryFrom(trim($value))
+            ?? throw new InvalidArgumentException('status must be requested, paid, rejected, revoked, or all.');
+    }
+
+    private function optionalPositiveInt(mixed $value, string $field): ?int
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (is_int($value) && $value > 0) {
+            return $value;
+        }
+
+        if (is_string($value) && ctype_digit($value) && (int) $value > 0) {
+            return (int) $value;
+        }
+
+        throw new InvalidArgumentException($field . ' must be a positive integer when provided.');
+    }
+
+    private function limit(mixed $value): int
+    {
+        if ($value === null || $value === '') {
+            return 50;
+        }
+
+        if (is_int($value)) {
+            return max(1, min(200, $value));
+        }
+
+        if (is_string($value) && ctype_digit($value)) {
+            return max(1, min(200, (int) $value));
+        }
+
+        throw new InvalidArgumentException('limit must be a positive integer.');
     }
 
     /**

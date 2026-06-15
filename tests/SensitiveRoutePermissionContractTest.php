@@ -34,6 +34,15 @@ final class SensitiveRoutePermissionContractTest extends TestCase
         }
     }
 
+    public function testWithdrawalQueueReadPermissionIsSensitiveBecauseItExposesPayoutAccounts(): void
+    {
+        $permissions = array_column((new PermissionInventory())->all(), null, 'code');
+
+        self::assertArrayHasKey('billing.withdrawal.read.platform', $permissions);
+        self::assertTrue($permissions['billing.withdrawal.read.platform']['sensitive']);
+        self::assertTrue($permissions['billing.withdrawal.read.platform']['audit_required']);
+    }
+
     /**
      * @return list<array{0:string, 1:string, 2:string, 3:string}>
      */
@@ -44,6 +53,7 @@ final class SensitiveRoutePermissionContractTest extends TestCase
             ['POST', '/api/v1/billing/recharge-keys/{key_id}/reveal', 'billing.recharge_key.view_plaintext.platform', 'platformPermission'],
             ['POST', '/api/v1/billing/ledger/adjustments', 'billing.ledger.adjust.platform', 'platformPermission'],
             ['POST', '/api/v1/billing/ledger/{entry_id}/reversals', 'billing.ledger.adjust.platform', 'platformPermission'],
+            ['GET', '/api/v1/billing/withdrawals', 'billing.withdrawal.read.platform', 'platformPermission'],
             ['POST', '/api/v1/billing/withdrawals', 'billing.withdrawal.request.own', 'permission'],
             ['POST', '/api/v1/billing/withdrawals/{withdrawal_id}/paid', 'billing.withdrawal.mark_paid.platform', 'platformPermission'],
             ['POST', '/api/v1/billing/withdrawals/{withdrawal_id}/reject', 'billing.withdrawal.review.platform', 'platformPermission'],

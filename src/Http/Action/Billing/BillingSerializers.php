@@ -42,6 +42,9 @@ final class BillingSerializers
             'organization_id' => $request->organizationId,
             'requested_by_user_id' => $request->requestedByUserId,
             'points_amount' => $request->pointsAmount,
+            'amount_cny' => $request->amountCny,
+            'points_per_cny' => $request->pointsPerCny,
+            'currency' => 'CNY',
             'idempotency_key' => $request->idempotencyKey,
             'status' => $request->status->value,
             'payout_method' => $request->payoutMethod,
@@ -50,7 +53,22 @@ final class BillingSerializers
             'reviewer_user_id' => $request->reviewerUserId,
             'reviewer_notes' => $request->reviewerNotes,
             'ledger_entry_id' => $request->ledgerEntryId,
+            'requested_at' => $request->requestedAt->format('Y-m-d H:i:s'),
+            'reviewed_at' => $request->reviewedAt?->format('Y-m-d H:i:s'),
+            'paid_at' => $request->paidAt?->format('Y-m-d H:i:s'),
+            'rejected_at' => $request->rejectedAt?->format('Y-m-d H:i:s'),
+            'revoked_at' => $request->revokedAt?->format('Y-m-d H:i:s'),
+            'resubmitted_at' => $request->resubmittedAt?->format('Y-m-d H:i:s'),
         ];
+    }
+
+    /**
+     * @param list<WithdrawalRequest> $requests
+     * @return list<array<string, mixed>>
+     */
+    public static function withdrawalRequests(array $requests): array
+    {
+        return array_map(self::withdrawalRequest(...), $requests);
     }
 
     /**

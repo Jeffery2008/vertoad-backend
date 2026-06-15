@@ -186,6 +186,84 @@ final class BillingOpenApiContractTest extends TestCase
         }
     }
 
+    public function testAdminWithdrawalQueueAndAmountSnapshotContractsAreDocumented(): void
+    {
+        $openApi = (string) file_get_contents(dirname(__DIR__, 2) . '/docs/openapi.yaml');
+        $withdrawalsPath = $this->block($openApi, '  /api/v1/billing/withdrawals:', '  /api/v1/billing/withdrawals/{withdrawal_id}/paid:');
+        $publisherOrganizationFilter = $this->block($withdrawalsPath, '        - name: publisher_organization_id', '        - name: status');
+        $queueSchema = $this->block($openApi, '    WithdrawalQueueData:', '    WithdrawalRequestCreate:');
+        $requestSchema = $this->block($openApi, '    WithdrawalRequestData:', '    WithdrawalProofCreateRequest:');
+
+        foreach ([
+            'OrganizationId',
+            'get:',
+            'operationId: listWithdrawalQueue',
+            'x-permissions:',
+            '- billing.withdrawal.read.platform',
+            'name: publisher_organization_id',
+            'name: status',
+            'name: limit',
+            'WithdrawalQueueData',
+            '"200":',
+            '"400":',
+            '"401":',
+            '"403":',
+            '"422":',
+        ] as $fragment) {
+            self::assertStringContainsString($fragment, $withdrawalsPath);
+        }
+
+        foreach ([
+            'in: query',
+            'required: false',
+            'Optional publisher organization filter',
+            '`organization_id` query parameter remains the platform permission scope',
+            'minimum: 1',
+        ] as $fragment) {
+            self::assertStringContainsString($fragment, $publisherOrganizationFilter);
+        }
+
+        foreach ([
+            'post:',
+            'operationId: requestPublisherWithdrawal',
+            'WithdrawalRequestCreate',
+            'WithdrawalRequestData',
+            '"201":',
+        ] as $fragment) {
+            self::assertStringContainsString($fragment, $withdrawalsPath);
+        }
+
+        foreach ([
+            'required:',
+            '- withdrawals',
+            '- limit',
+            'withdrawals:',
+            '$ref: "#/components/schemas/WithdrawalRequestData"',
+            'limit:',
+            'maximum: 200',
+        ] as $fragment) {
+            self::assertStringContainsString($fragment, $queueSchema);
+        }
+
+        foreach ([
+            '- amount_cny',
+            '- points_per_cny',
+            '- currency',
+            'points_amount:',
+            'amount_cny:',
+            'pattern: "^[0-9]+\\\\.[0-9]{2}$"',
+            'points_per_cny:',
+            'const: 100',
+            'currency:',
+            'const: CNY',
+            'requested_at:',
+            'paid_at:',
+            '100 points equals 1 CNY',
+        ] as $fragment) {
+            self::assertStringContainsString($fragment, $requestSchema);
+        }
+    }
+
     private function block(string $document, string $start, string $end): string
     {
         $startOffset = strpos($document, $start);

@@ -79,6 +79,7 @@ use VertoAD\Service\Cron\EventConsumptionJob;
 use VertoAD\Service\Cron\ExpiredTokenCleanupJob;
 use VertoAD\Service\Cron\FraudFeatureComputeJob;
 use VertoAD\Service\Cron\NoOpCronJob;
+use VertoAD\Service\Cron\PartitionMaintenanceJob;
 use VertoAD\Service\PasswordHasher;
 use VertoAD\Service\Cron\RedisCronLockStore;
 use VertoAD\Service\PermissionMatcher;
@@ -232,6 +233,7 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(ArchiveParquetJob::class, $container->get(CronJobRegistry::class)->get('archive-parquet'));
             self::assertInstanceOf(DuckDbColdQueryJob::class, $container->get(CronJobRegistry::class)->get('duckdb-cold-query'));
             self::assertInstanceOf(BackupCheckJob::class, $container->get(CronJobRegistry::class)->get('backup-check'));
+            self::assertInstanceOf(PartitionMaintenanceJob::class, $container->get(CronJobRegistry::class)->get('partition-maintenance'));
             self::assertInstanceOf(CronRunner::class, $container->get(CronRunner::class));
         } finally {
             if ($previousAppKey === false) {
@@ -972,6 +974,61 @@ PHP);
         } finally {
             $this->removeTemporaryAppBasePath($basePath);
             @unlink($databasePath);
+        }
+    }
+
+    public function testCronStatusActionUsesConfiguredJobNamesWithoutInstantiatingRegistry(): void
+    {
+        $previousAppKey = getenv('APP_KEY');
+        $previousAppEnv = getenv('APP_ENV');
+        $previousRedisPassword = getenv('REDIS_PASSWORD');
+        $previousRedisDriver = getenv('REDIS_DRIVER');
+        $previousCronToken = getenv('CRON_API_TOKEN');
+        putenv('APP_KEY=' . Key::createNewRandomKey()->saveToAsciiSafeString());
+        putenv('APP_ENV=local');
+        putenv('REDIS_PASSWORD=');
+        putenv('REDIS_DRIVER=auto');
+        putenv('CRON_API_TOKEN=test-cron-token');
+
+        try {
+            $app = AppFactory::create();
+            $request = (new ServerRequestFactory())
+                ->createServerRequest('GET', '/api/v1/cron/status', ['REMOTE_ADDR' => '127.0.0.1'])
+                ->withHeader('X-Cron-Token', 'test-cron-token');
+
+            $response = $app->handle($request);
+            $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+            $settings = require dirname(__DIR__) . '/config/settings.php';
+
+            self::assertSame(200, $response->getStatusCode());
+            self::assertSame($settings['cron']['jobs'], $payload['data']['jobs'] ?? null);
+            self::assertContains('partition-maintenance', $payload['data']['jobs'] ?? []);
+        } finally {
+            if ($previousAppKey === false) {
+                putenv('APP_KEY');
+            } else {
+                putenv('APP_KEY=' . $previousAppKey);
+            }
+            if ($previousAppEnv === false) {
+                putenv('APP_ENV');
+            } else {
+                putenv('APP_ENV=' . $previousAppEnv);
+            }
+            if ($previousRedisPassword === false) {
+                putenv('REDIS_PASSWORD');
+            } else {
+                putenv('REDIS_PASSWORD=' . $previousRedisPassword);
+            }
+            if ($previousRedisDriver === false) {
+                putenv('REDIS_DRIVER');
+            } else {
+                putenv('REDIS_DRIVER=' . $previousRedisDriver);
+            }
+            if ($previousCronToken === false) {
+                putenv('CRON_API_TOKEN');
+            } else {
+                putenv('CRON_API_TOKEN=' . $previousCronToken);
+            }
         }
     }
 

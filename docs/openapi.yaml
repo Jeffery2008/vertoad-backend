@@ -902,6 +902,66 @@ paths:
         default:
           $ref: "#/components/responses/Error"
   /api/v1/billing/withdrawals:
+    get:
+      tags:
+        - Billing
+      operationId: listWithdrawalQueue
+      summary: List withdrawal requests for administrator or finance review.
+      description: Lists publisher withdrawal requests for the administrator/finance queue. Amount snapshots use the platform conversion rate where 100 points equals 1 CNY.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - billing.withdrawal.read.platform
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - name: publisher_organization_id
+          in: query
+          required: false
+          description: Optional publisher organization filter. The separate `organization_id` query parameter remains the platform permission scope used by the first-party console.
+          schema:
+            type: integer
+            minimum: 1
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - requested
+              - paid
+              - rejected
+              - revoked
+              - all
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: Withdrawal queue.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/WithdrawalQueueData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
     post:
       tags:
         - Billing
@@ -3439,7 +3499,7 @@ paths:
         - AuditLogs
       operationId: listAuditLogs
       summary: Search platform audit logs.
-      description: Returns immutable audit log facts in stable `created_at DESC, id DESC` order. Raw context fields `ip_address`, `user_agent`, and `metadata` are only populated for super administrators; other permitted platform staff receive those fields as null with `context_redacted: true`.
+      description: "Returns immutable audit log facts in stable `created_at DESC, id DESC` order. Raw context fields `ip_address`, `user_agent`, and `metadata` are only populated for super administrators; other permitted platform staff receive those fields as null with `context_redacted: true`."
       security:
         - BearerAuth: []
       x-permissions:
@@ -3866,6 +3926,7 @@ paths:
                         - expired-token-cleanup
                         - config-cache-refresh
                         - backup-check
+                        - partition-maintenance
                         - webhook-retry
                       lock_provider: redis
                     error: null
@@ -3931,6 +3992,23 @@ paths:
                         skipped: 10
                         duplicates: 0
                       message: null
+                    error: null
+                    meta: {}
+                    request_id: req_0123456789abcdef
+                partitionMaintenanceFailure:
+                  summary: Partition maintenance found rows in p_future and protected the table.
+                  value:
+                    data:
+                      job: partition-maintenance
+                      status: failed
+                      acquired_lock: true
+                      metrics:
+                        tables_checked: 2
+                        tables_reorganized: 1
+                        protected_tables: 1
+                        protected_table: raw_events
+                        future_rows: 4
+                      message: p_future contains rows for raw_events; partition maintenance was protected.
                     error: null
                     meta: {}
                     request_id: req_0123456789abcdef
@@ -5181,6 +5259,36 @@ components:
         ledger_entry:
           $ref: "#/components/schemas/PointsLedgerEntry"
       additionalProperties: false
+    WithdrawalQueueData:
+      type: object
+      required:
+        - withdrawals
+        - limit
+      properties:
+        withdrawals:
+          type: array
+          items:
+            $ref: "#/components/schemas/WithdrawalRequestData"
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 200
+        status:
+          type:
+            - string
+            - "null"
+          enum:
+            - requested
+            - paid
+            - rejected
+            - revoked
+            - null
+        publisher_organization_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+      additionalProperties: false
     WithdrawalRequestCreate:
       type: object
       required:
@@ -5235,6 +5343,9 @@ components:
         - organization_id
         - requested_by_user_id
         - points_amount
+        - amount_cny
+        - points_per_cny
+        - currency
         - idempotency_key
         - status
         - payout_method
@@ -5243,6 +5354,12 @@ components:
         - reviewer_user_id
         - reviewer_notes
         - ledger_entry_id
+        - requested_at
+        - reviewed_at
+        - paid_at
+        - rejected_at
+        - revoked_at
+        - resubmitted_at
       properties:
         id:
           type:
@@ -5258,6 +5375,19 @@ components:
         points_amount:
           type: integer
           minimum: 1
+          description: Integer point amount requested for withdrawal. The amount snapshot uses 100 points equals 1 CNY.
+        amount_cny:
+          type: string
+          pattern: "^[0-9]+\\.[0-9]{2}$"
+          description: CNY amount snapshot for this withdrawal request at request time.
+        points_per_cny:
+          type: integer
+          const: 100
+          description: Conversion-rate snapshot where 100 points equals 1 CNY.
+        currency:
+          type: string
+          const: CNY
+          description: Currency for the withdrawal amount snapshot.
         idempotency_key:
           type: string
           minLength: 1
@@ -5289,6 +5419,34 @@ components:
         ledger_entry_id:
           type: integer
           minimum: 1
+        requested_at:
+          type: string
+          description: UTC SQL timestamp when the withdrawal was first requested.
+        reviewed_at:
+          type:
+            - string
+            - "null"
+          description: UTC SQL timestamp when a reviewer accepted or rejected the withdrawal.
+        paid_at:
+          type:
+            - string
+            - "null"
+          description: UTC SQL timestamp when the withdrawal was marked paid.
+        rejected_at:
+          type:
+            - string
+            - "null"
+          description: UTC SQL timestamp when the withdrawal was rejected.
+        revoked_at:
+          type:
+            - string
+            - "null"
+          description: UTC SQL timestamp when the publisher revoked the withdrawal.
+        resubmitted_at:
+          type:
+            - string
+            - "null"
+          description: UTC SQL timestamp when the withdrawal was resubmitted.
       additionalProperties: false
     WithdrawalProofCreateRequest:
       type: object
@@ -7960,7 +8118,9 @@ components:
           type: string
           enum:
             - completed
+            - failed
             - locked
+            - not_found
         acquired_lock:
           type: boolean
         metrics:

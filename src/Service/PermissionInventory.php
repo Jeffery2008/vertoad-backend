@@ -32,6 +32,7 @@ final class PermissionInventory
                 ['billing.recharge_key.generate.platform', 'Generate recharge keys.', true],
                 ['billing.recharge_key.view_plaintext.platform', 'View recharge key plaintext.', true],
                 ['billing.recharge_key.redeem.own', 'Redeem recharge keys for own organization.', false],
+                ['billing.withdrawal.read.platform', 'View withdrawal requests and payout account details across the platform.', true],
                 ['billing.withdrawal.request.own', 'Request own organization withdrawals.', true],
                 ['billing.withdrawal.revoke.own', 'Revoke own pending withdrawals.', true],
                 ['billing.withdrawal.resubmit.own', 'Resubmit own revoked withdrawals with updated payout details.', true],

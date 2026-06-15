@@ -78,6 +78,21 @@ final class DatabaseArchiveRepositoryTest extends TestCase
         self::assertNull($fresh->findManifest('missing'));
     }
 
+    public function testPendingEventsDeduplicateManuallyImportedRawEventFacts(): void
+    {
+        $connection = $this->createConnection();
+        $repository = new DatabaseArchiveRepository($connection);
+        $this->insertRawEvent($connection, 'click:duplicate-import', 'click', '2026-06-08 10:15:00', ['event_id' => 'first']);
+        $this->insertRawEvent($connection, 'click:duplicate-import', 'click', '2026-07-08 10:15:00', ['event_id' => 'second']);
+        $this->insertRawEvent($connection, 'impression:unique', 'impression', '2026-07-08 11:15:00', ['event_id' => 'unique']);
+
+        $events = $repository->pendingEvents();
+
+        self::assertSame(['click:duplicate-import', 'impression:unique'], array_map(static fn ($event): string => $event->eventId, $events));
+        self::assertSame('first', $events[0]->payload['event_id'] ?? null);
+        self::assertSame('2026-06-08T10:15:00+00:00', $events[0]->occurredAt->format(DATE_ATOM));
+    }
+
     public function testPersistsColdQueriesAndReturnsNextQueuedJobInCreatedOrder(): void
     {
         $connection = $this->createConnection();

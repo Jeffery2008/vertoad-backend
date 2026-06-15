@@ -21,10 +21,6 @@ final class RedisAdEventRepositoryRealRedisTest extends TestCase
             self::markTestSkipped('Set VERTOAD_REDIS_INTEGRATION=1 with Redis 8.8 settings to run this test.');
         }
 
-        if (!class_exists(\Redis::class)) {
-            self::markTestSkipped('The Redis extension is required for the real Redis integration harness.');
-        }
-
         $password = (string) getenv('REDIS_PASSWORD');
         if (strlen($password) < 32) {
             self::fail('REDIS_PASSWORD must be a strong 32+ character password for the Redis 8.8 integration harness.');
@@ -36,6 +32,7 @@ final class RedisAdEventRepositoryRealRedisTest extends TestCase
     public function testRedisEightEightPasswordProtectedBufferRedeliversAfterVisibilityTimeout(): void
     {
         $repository = RedisAdEventRepository::fromSettings([
+            'driver' => getenv('REDIS_DRIVER') ?: 'predis',
             'host' => getenv('REDIS_HOST') ?: '127.0.0.1',
             'port' => (int) (getenv('REDIS_PORT') ?: 6379),
             'password' => (string) getenv('REDIS_PASSWORD'),

@@ -102,6 +102,44 @@ final class SpendReservationTest extends TestCase
         self::assertSame(SpendFailureReason::ExpiredReservation, $commitExpired->failureReason);
     }
 
+    public function testReservationTimesArePersistedAndHydratedAsUtcWhenDefaultTimezoneDiffers(): void
+    {
+        $previousTimezone = date_default_timezone_get();
+        date_default_timezone_set('Asia/Shanghai');
+        try {
+            $connection = $this->createConnection();
+            $budgetRepository = new CampaignBudgetRepository($connection);
+            $ledgerRepository = new PointsLedgerRepository($connection);
+            $ledger = new PointsLedgerService($ledgerRepository);
+            $service = new CampaignBudgetService($budgetRepository, $ledger, $ledgerRepository);
+
+            $ledger->credit(10, 'advertiser_balance', null, 1_000, 'recharge:reservation-utc');
+
+            $reserved = $service->reserve(
+                10,
+                20,
+                'spend:utc',
+                250,
+                new DateTimeImmutable('2026-06-08T02:00:00+00:00'),
+                300,
+            );
+            $committed = $service->commit('spend:utc', new DateTimeImmutable('2026-06-08T02:04:00+00:00'));
+
+            self::assertTrue($reserved->accepted);
+            self::assertTrue($committed->accepted);
+            self::assertSame(SpendReservationStatus::Committed, $committed->reservation?->status);
+            self::assertSame(750, $ledgerRepository->balanceForOrganization(10));
+            self::assertSame('2026-06-08 02:00:00', $connection->fetchOne(
+                "SELECT reserved_at FROM spend_reservations WHERE reservation_id = 'spend:utc'",
+            ));
+            self::assertSame('2026-06-08 02:04:00', $connection->fetchOne(
+                "SELECT committed_at FROM spend_reservations WHERE reservation_id = 'spend:utc'",
+            ));
+        } finally {
+            date_default_timezone_set($previousTimezone);
+        }
+    }
+
     public function testReserveRejectsInvalidTtlAndDuplicateReservationMismatches(): void
     {
         $connection = $this->createConnection();

@@ -31,9 +31,13 @@ final class PublisherWithdrawalMigrationIntegrityTest extends TestCase
             'constraint fk_publisher_earning_events_rule foreign key (revenue_share_rule_id) references revenue_share_rules (id) on delete set null',
             'constraint chk_publisher_earning_events_points check (gross_points >= 0 and publisher_points >= 0 and platform_points >= 0 and gross_points = publisher_points + platform_points)',
             'ledger_entry_id bigint unsigned not null',
+            'amount_cny decimal(18,2) not null',
+            'points_per_cny int unsigned not null',
             'constraint fk_withdrawal_requests_ledger foreign key (ledger_entry_id) references ledger_entries (id) on delete restrict',
             "constraint chk_withdrawal_requests_status check (status in ('requested', 'paid', 'rejected', 'revoked'))",
             'constraint chk_withdrawal_requests_points_positive check (points_amount > 0)',
+            'constraint chk_withdrawal_requests_points_per_cny_positive check (points_per_cny > 0)',
+            'constraint chk_withdrawal_requests_amount_cny_non_negative check (amount_cny >= 0)',
             'constraint fk_withdrawal_proofs_request foreign key (withdrawal_request_id) references withdrawal_requests (id) on delete cascade',
             "constraint chk_withdrawal_proofs_status check (status in ('pending_upload', 'confirmed'))",
             'constraint chk_withdrawal_proofs_byte_size_positive check (byte_size > 0)',
@@ -88,6 +92,10 @@ final class PublisherWithdrawalMigrationIntegrityTest extends TestCase
 
         $this->assertDatabaseRejects(fn () => $this->insertWithdrawalRequest($connection, [
             'points_amount' => 0,
+        ]));
+
+        $this->assertDatabaseRejects(fn () => $this->insertWithdrawalRequest($connection, [
+            'points_per_cny' => 0,
         ]));
 
         $this->assertDatabaseRejects(fn () => $this->insertWithdrawalRequest($connection, [
@@ -170,6 +178,8 @@ final class PublisherWithdrawalMigrationIntegrityTest extends TestCase
             'organization_id' => 42,
             'requested_by_user_id' => 7,
             'points_amount' => 100,
+            'amount_cny' => '1.00',
+            'points_per_cny' => 100,
             'idempotency_key' => 'withdrawal:migration:' . ($overrides['id'] ?? bin2hex(random_bytes(4))),
             'status' => 'requested',
             'payout_method' => 'bank_transfer',

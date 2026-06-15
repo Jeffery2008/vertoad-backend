@@ -164,6 +164,9 @@ return static function (App $app): void {
         ->add(TurnstileMiddleware::class)
         ->add(RateLimitMiddleware::class)
         ->add(AuthenticateRequestMiddleware::class);
+    $app->get('/api/v1/billing/withdrawals', [WithdrawalAction::class, 'list'])
+        ->add($platformPermission('billing.withdrawal.read.platform'))
+        ->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/billing/withdrawals', [WithdrawalAction::class, 'request'])
         ->add($permission('billing.withdrawal.request.own'))
         ->add(AuthenticateRequestMiddleware::class);

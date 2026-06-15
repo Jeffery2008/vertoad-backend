@@ -87,6 +87,8 @@ CREATE TABLE withdrawal_requests (
     organization_id BIGINT UNSIGNED NOT NULL,
     requested_by_user_id BIGINT UNSIGNED NOT NULL,
     points_amount BIGINT NOT NULL,
+    amount_cny DECIMAL(18,2) NOT NULL,
+    points_per_cny INT UNSIGNED NOT NULL,
     idempotency_key VARCHAR(160) NOT NULL,
     status VARCHAR(32) NOT NULL,
     payout_method VARCHAR(64) NOT NULL,
@@ -112,7 +114,9 @@ CREATE TABLE withdrawal_requests (
     CONSTRAINT fk_withdrawal_requests_reviewer FOREIGN KEY (reviewer_user_id) REFERENCES users (id) ON DELETE SET NULL,
     CONSTRAINT fk_withdrawal_requests_ledger FOREIGN KEY (ledger_entry_id) REFERENCES ledger_entries (id) ON DELETE RESTRICT,
     CONSTRAINT chk_withdrawal_requests_status CHECK (status IN ('requested', 'paid', 'rejected', 'revoked')),
-    CONSTRAINT chk_withdrawal_requests_points_positive CHECK (points_amount > 0)
+    CONSTRAINT chk_withdrawal_requests_points_positive CHECK (points_amount > 0),
+    CONSTRAINT chk_withdrawal_requests_points_per_cny_positive CHECK (points_per_cny > 0),
+    CONSTRAINT chk_withdrawal_requests_amount_cny_non_negative CHECK (amount_cny >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 SQL);
 

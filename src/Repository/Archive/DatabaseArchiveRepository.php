@@ -28,7 +28,15 @@ final readonly class DatabaseArchiveRepository implements ArchiveRepositoryInter
             ->addOrderBy('event_uuid', 'ASC')
             ->fetchAllAssociative();
 
-        return array_map(fn (array $row): ArchiveEvent => $this->eventFromRow($row), $rows);
+        $uniqueRows = [];
+        foreach ($rows as $row) {
+            $eventUuid = (string) $row['event_uuid'];
+            if (!array_key_exists($eventUuid, $uniqueRows)) {
+                $uniqueRows[$eventUuid] = $row;
+            }
+        }
+
+        return array_map(fn (array $row): ArchiveEvent => $this->eventFromRow($row), array_values($uniqueRows));
     }
 
     public function saveManifest(ArchiveManifest $manifest): ArchiveManifest

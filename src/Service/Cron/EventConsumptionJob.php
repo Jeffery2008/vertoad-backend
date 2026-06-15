@@ -37,7 +37,27 @@ final readonly class EventConsumptionJob implements CronJobInterface
             ++$consumed;
 
             try {
-                $this->persistence->persist($event);
+                if (!$this->persistence->persist($event)) {
+                    $existing = $this->persistence->findPendingDuplicate($event);
+                    if ($existing === null) {
+                        ++$duplicates;
+                        $this->events->acknowledge($event);
+                        continue;
+                    }
+
+                    ++$duplicates;
+                    $result = $this->billing->billServingEvent($existing);
+                    $this->persistence->recordBillingResult($existing, $result, new DateTimeImmutable());
+                    if ($result->billed) {
+                        ++$billed;
+                    } else {
+                        ++$skipped;
+                    }
+
+                    $this->persistence->acknowledge($existing);
+                    $this->events->acknowledge($event);
+                    continue;
+                }
 
                 $result = $this->billing->billServingEvent($event);
                 $this->persistence->recordBillingResult($event, $result, new DateTimeImmutable());

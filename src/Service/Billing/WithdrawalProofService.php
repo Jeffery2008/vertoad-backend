@@ -7,8 +7,10 @@ namespace VertoAD\Service\Billing;
 use DateInterval;
 use DateTimeImmutable;
 use InvalidArgumentException;
+use RuntimeException;
 use VertoAD\Domain\Billing\WithdrawalProof;
 use VertoAD\Domain\Billing\WithdrawalProofUploadIntent;
+use VertoAD\Domain\Billing\WithdrawalRequest;
 use VertoAD\Infrastructure\Storage\ObjectStorageUploadSignerInterface;
 use VertoAD\Infrastructure\Storage\PresignedUploadRequest;
 use VertoAD\Repository\Billing\WithdrawalRepository;
@@ -35,11 +37,12 @@ final class WithdrawalProofService
         DateTimeImmutable $now,
     ): WithdrawalProofUploadIntent {
         $this->validateProofInput($withdrawalRequestId, $organizationId, $uploadedByUserId, $contentType, $byteSize);
+        $request = $this->requireRequestForOrganization($withdrawalRequestId, $organizationId);
         $safeFilename = preg_replace('/[^A-Za-z0-9._-]+/', '-', trim($filename)) ?: 'proof';
         $tokenFactory = $this->tokenFactory;
         $objectKey = sprintf(
             'withdrawals/%d/%d/%s-%s',
-            $organizationId,
+            $request->organizationId,
             $withdrawalRequestId,
             trim((string) $tokenFactory()),
             $safeFilename,
@@ -47,7 +50,7 @@ final class WithdrawalProofService
 
         $proof = $this->repository->createProof(
             withdrawalRequestId: $withdrawalRequestId,
-            organizationId: $organizationId,
+            organizationId: $request->organizationId,
             uploadedByUserId: $uploadedByUserId,
             objectKey: $objectKey,
             contentType: trim($contentType),
@@ -79,6 +82,7 @@ final class WithdrawalProofService
         if ($proofId <= 0 || trim($objectKey) === '' || trim($checksum) === '') {
             throw new InvalidArgumentException('Withdrawal proof confirmation is invalid.');
         }
+        $this->requireRequestForOrganization($withdrawalRequestId, $organizationId);
 
         return $this->repository->confirmProof(
             proofId: $proofId,
@@ -91,6 +95,16 @@ final class WithdrawalProofService
             checksum: trim($checksum),
             now: $now,
         );
+    }
+
+    private function requireRequestForOrganization(int $withdrawalRequestId, int $organizationId): WithdrawalRequest
+    {
+        $request = $this->repository->findRequest($withdrawalRequestId);
+        if ($request === null || $request->organizationId !== $organizationId) {
+            throw new RuntimeException('withdrawal_not_found');
+        }
+
+        return $request;
     }
 
     private function validateProofInput(

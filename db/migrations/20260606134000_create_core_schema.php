@@ -329,7 +329,8 @@ CREATE TABLE raw_events (
     payload_json JSON NOT NULL,
     processed_at DATETIME NULL,
     PRIMARY KEY (id),
-    UNIQUE KEY uq_raw_events_event_uuid (event_uuid),
+    UNIQUE KEY uq_raw_events_event_uuid_occurred (event_uuid, occurred_at),
+    KEY idx_raw_events_event_uuid (event_uuid),
     KEY idx_raw_events_received (received_at),
     KEY idx_raw_events_processing (processed_at, received_at),
     KEY idx_raw_events_campaign_type_time (campaign_id, event_type, occurred_at),
@@ -338,6 +339,16 @@ CREATE TABLE raw_events (
     CONSTRAINT fk_raw_events_ad_slot FOREIGN KEY (ad_slot_id) REFERENCES ad_slots (id) ON DELETE SET NULL,
     CONSTRAINT fk_raw_events_campaign FOREIGN KEY (campaign_id) REFERENCES campaigns (id) ON DELETE SET NULL,
     CONSTRAINT fk_raw_events_creative FOREIGN KEY (creative_id) REFERENCES creatives (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+SQL);
+
+        $this->execute(<<<'SQL'
+CREATE TABLE raw_event_dedup (
+    event_uuid VARCHAR(255) NOT NULL,
+    occurred_at DATETIME NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (event_uuid),
+    KEY idx_raw_event_dedup_occurred_at (occurred_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 SQL);
 
@@ -364,6 +375,7 @@ SQL);
     public function down(): void
     {
         $this->execute('DROP TABLE IF EXISTS error_logs');
+        $this->execute('DROP TABLE IF EXISTS raw_event_dedup');
         $this->execute('DROP TABLE IF EXISTS raw_events');
         $this->execute('DROP TABLE IF EXISTS creatives');
         $this->execute('DROP TABLE IF EXISTS campaigns');

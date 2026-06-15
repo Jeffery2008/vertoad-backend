@@ -97,8 +97,10 @@ return [
             'expired-token-cleanup',
             'config-cache-refresh',
             'backup-check',
+            'partition-maintenance',
             'webhook-retry',
         ],
+        'partition_maintenance_lookahead_months' => (int) (getenv('CRON_PARTITION_MAINTENANCE_LOOKAHEAD_MONTHS') ?: 3),
     ],
     'webhooks' => [
         'signing_secret' => getenv('WEBHOOK_SIGNING_SECRET') ?: 'whsec_local_dev_secret',

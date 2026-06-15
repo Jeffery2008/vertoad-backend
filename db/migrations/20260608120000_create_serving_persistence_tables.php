@@ -67,7 +67,8 @@ CREATE TABLE ad_serving_events (
     processed_at DATETIME NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    UNIQUE KEY uq_ad_serving_events_type_event (event_type, event_id),
+    UNIQUE KEY uq_ad_serving_events_type_event_occurred (event_type, event_id, occurred_at),
+    KEY idx_ad_serving_events_type_event (event_type, event_id),
     KEY idx_ad_serving_events_decision_viewer (decision_id, viewer_id, event_type, valid),
     KEY idx_ad_serving_events_processing (processed_at, occurred_at, id),
     KEY idx_ad_serving_events_billing_report (billing_status, event_type, occurred_at),
@@ -83,10 +84,22 @@ CREATE TABLE ad_serving_events (
     CONSTRAINT chk_ad_serving_events_billing_status CHECK (billing_status IN ('pending', 'billed', 'skipped', 'failed'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 SQL);
+
+        $this->execute(<<<'SQL'
+CREATE TABLE ad_serving_event_dedup (
+    event_type VARCHAR(32) NOT NULL,
+    event_id VARCHAR(160) NOT NULL,
+    occurred_at DATETIME NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (event_type, event_id),
+    KEY idx_ad_serving_event_dedup_occurred_at (occurred_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+SQL);
     }
 
     public function down(): void
     {
+        $this->execute('DROP TABLE IF EXISTS ad_serving_event_dedup');
         $this->execute('DROP TABLE IF EXISTS ad_serving_events');
         $this->execute('DROP TABLE IF EXISTS ad_serving_decisions');
     }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VertoAD\Repository;
 
 use DateTimeImmutable;
+use DateTimeZone;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\ParameterType;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
@@ -308,18 +309,23 @@ final class CampaignBudgetRepository implements CampaignBudgetRepositoryInterfac
             campaignId: (int) $row['campaign_id'],
             pointsAmount: (int) $row['points_amount'],
             status: SpendReservationStatus::from((string) $row['status']),
-            reservedAt: new DateTimeImmutable((string) $row['reserved_at']),
-            expiresAt: new DateTimeImmutable((string) $row['expires_at']),
-            committedAt: $row['committed_at'] === null ? null : new DateTimeImmutable((string) $row['committed_at']),
-            releasedAt: $row['released_at'] === null ? null : new DateTimeImmutable((string) $row['released_at']),
-            expiredAt: $row['expired_at'] === null ? null : new DateTimeImmutable((string) $row['expired_at']),
+            reservedAt: $this->parseDate((string) $row['reserved_at']),
+            expiresAt: $this->parseDate((string) $row['expires_at']),
+            committedAt: $row['committed_at'] === null ? null : $this->parseDate((string) $row['committed_at']),
+            releasedAt: $row['released_at'] === null ? null : $this->parseDate((string) $row['released_at']),
+            expiredAt: $row['expired_at'] === null ? null : $this->parseDate((string) $row['expired_at']),
             ledgerEntryId: $row['ledger_entry_id'] === null ? null : (int) $row['ledger_entry_id'],
         );
     }
 
     private function formatDate(DateTimeImmutable $value): string
     {
-        return $value->format('Y-m-d H:i:s');
+        return $value->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+    }
+
+    private function parseDate(string $value): DateTimeImmutable
+    {
+        return new DateTimeImmutable($value, new DateTimeZone('UTC'));
     }
 
     private function ensureOrganizationBudgetLock(int $organizationId): void

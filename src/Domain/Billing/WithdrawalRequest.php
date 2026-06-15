@@ -16,6 +16,8 @@ final readonly class WithdrawalRequest
         public int $organizationId,
         public int $requestedByUserId,
         public int $pointsAmount,
+        public string $amountCny,
+        public int $pointsPerCny,
         public string $idempotencyKey,
         public WithdrawalStatus $status,
         public string $payoutMethod,

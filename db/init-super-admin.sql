@@ -52,6 +52,7 @@ VALUES
     ('billing.recharge_key.generate.platform', 'Generate recharge keys.'),
     ('billing.recharge_key.view_plaintext.platform', 'View recharge key plaintext.'),
     ('billing.recharge_key.redeem.own', 'Redeem recharge keys for own organization.'),
+    ('billing.withdrawal.read.platform', 'View withdrawal requests and payout account details across the platform.'),
     ('billing.withdrawal.request.own', 'Request own organization withdrawals.'),
     ('billing.withdrawal.revoke.own', 'Revoke own pending withdrawals.'),
     ('billing.withdrawal.resubmit.own', 'Resubmit own revoked withdrawals with updated payout details.'),

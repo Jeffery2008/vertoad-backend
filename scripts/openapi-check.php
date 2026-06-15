@@ -10,57 +10,31 @@ if (!is_file($openApiPath)) {
 }
 
 $contents = (string) file_get_contents($openApiPath);
-if (function_exists('yaml_parse_file')) {
-    $parser = 'ext-yaml';
-    $parsed = yaml_parse_file($openApiPath);
-    if (!is_array($parsed)) {
-        fwrite(STDERR, "OpenAPI YAML could not be parsed.\n");
-        exit(1);
-    }
-
-    if (($parsed['openapi'] ?? null) !== '3.1.0') {
-        fwrite(STDERR, "OpenAPI contract must declare version 3.1.0.\n");
-        exit(1);
-    }
-
-    $documentedRoutes = documentedRoutesFromParsedOpenApi($parsed);
-    $operationErrors = operationErrorsFromParsedOpenApi($parsed);
-    $metadataErrors = metadataErrorsFromParsedOpenApi($parsed, $contents);
-} else {
-    $parser = 'structural-fallback';
-    $requiredPatterns = [
-        'openapi: 3.1.0' => '/^openapi:\s*3\.1\.0\s*$/m',
-        'SuccessEnvelope:' => '/^\s{4}SuccessEnvelope:\s*$/m',
-        'ErrorEnvelope:' => '/^\s{4}ErrorEnvelope:\s*$/m',
-    ];
-
-    foreach ($requiredPatterns as $fragment => $pattern) {
-        if (preg_match($pattern, $contents) !== 1) {
-            fwrite(STDERR, "OpenAPI contract is missing required fragment: {$fragment}\n");
-            exit(1);
-        }
-    }
-
-    $documentedRoutes = documentedRoutesFromYaml($contents);
-    $operationErrors = operationErrorsFromYaml($contents);
-    $metadataErrors = metadataErrorsFromYaml($contents);
+$metadataErrors = metadataPlaceholderErrors($contents);
+[$parser, $parsed, $parseError] = parseOpenApiYaml($openApiPath);
+if ($parsed === null) {
+    $errors = $metadataErrors;
+    $errors[] = $parseError ?? 'OpenAPI YAML could not be parsed.';
+    fwrite(STDERR, implode(PHP_EOL, $errors) . PHP_EOL);
+    exit(1);
 }
 
+if (($parsed['openapi'] ?? null) !== '3.1.0') {
+    fwrite(STDERR, "OpenAPI contract must declare version 3.1.0.\n");
+    exit(1);
+}
+
+$documentedRoutes = documentedRoutesFromParsedOpenApi($parsed);
+$operationErrors = operationErrorsFromParsedOpenApi($parsed);
+$metadataErrors = array_merge($metadataErrors, metadataErrorsFromParsedOpenApi($parsed));
 $operationErrors = array_merge($metadataErrors, $operationErrors);
 $implementedSecurity = implementedRouteSecurityFromRoutesFile($routesPath);
-if (function_exists('yaml_parse_file') && isset($parsed) && is_array($parsed)) {
-    $operationErrors = array_merge(
-        $operationErrors,
-        securityErrorsFromParsedOpenApi($parsed, $implementedSecurity),
-        queryParameterErrorsFromParsedOpenApi($parsed),
-    );
-} else {
-    $operationErrors = array_merge(
-        $operationErrors,
-        securityErrorsFromYaml($contents, $implementedSecurity),
-        queryParameterErrorsFromYaml($contents),
-    );
-}
+$operationErrors = array_merge(
+    $operationErrors,
+    securityErrorsFromParsedOpenApi($parsed, $implementedSecurity),
+    queryParameterErrorsFromParsedOpenApi($parsed),
+    schemaStructureErrorsFromParsedOpenApi($parsed),
+);
 
 if ($operationErrors !== []) {
     fwrite(STDERR, implode(PHP_EOL, $operationErrors) . PHP_EOL);
@@ -76,6 +50,41 @@ foreach (implementedRoutesFromRoutesFile($routesPath) as $route) {
 
 $routeCount = count($documentedRoutes);
 fwrite(STDERR, "OpenAPI contract check passed; parser={$parser}; documented_routes={$routeCount}.\n");
+
+/**
+ * @return array{0: string, 1: array<string, mixed>|null, 2: string|null}
+ */
+function parseOpenApiYaml(string $openApiPath): array
+{
+    if (function_exists('yaml_parse_file')) {
+        $parsed = @yaml_parse_file($openApiPath);
+
+        return is_array($parsed)
+            ? ['ext-yaml', $parsed, null]
+            : ['ext-yaml', null, 'OpenAPI YAML could not be parsed.'];
+    }
+
+    if (!class_exists(\Symfony\Component\Yaml\Yaml::class)) {
+        $autoloadPath = dirname(__DIR__) . '/vendor/autoload.php';
+        if (is_file($autoloadPath)) {
+            require_once $autoloadPath;
+        }
+    }
+
+    if (!class_exists(\Symfony\Component\Yaml\Yaml::class)) {
+        return ['unavailable', null, 'OpenAPI YAML parser is unavailable; install ext-yaml or run composer install.'];
+    }
+
+    try {
+        $parsed = \Symfony\Component\Yaml\Yaml::parseFile($openApiPath);
+    } catch (\Throwable) {
+        return ['symfony/yaml', null, 'OpenAPI YAML could not be parsed.'];
+    }
+
+    return is_array($parsed)
+        ? ['symfony/yaml', $parsed, null]
+        : ['symfony/yaml', null, 'OpenAPI YAML could not be parsed.'];
+}
 
 /**
  * @return list<string>
@@ -163,9 +172,9 @@ function operationErrorsFromParsedOpenApi(array $parsed): array
 /**
  * @return list<string>
  */
-function metadataErrorsFromParsedOpenApi(array $parsed, string $contents): array
+function metadataErrorsFromParsedOpenApi(array $parsed): array
 {
-    $errors = metadataPlaceholderErrors($contents);
+    $errors = [];
     if (!sharedErrorResponseUsesErrorEnvelopeFromParsedOpenApi($parsed)) {
         $errors[] = 'OpenAPI component response Error must use ErrorEnvelope for JSON error payloads.';
     }
@@ -186,6 +195,138 @@ function metadataErrorsFromParsedOpenApi(array $parsed, string $contents): array
     }
 
     return $errors;
+}
+
+/**
+ * @return list<string>
+ */
+function schemaStructureErrorsFromParsedOpenApi(array $parsed): array
+{
+    $schemas = $parsed['components']['schemas'] ?? null;
+    if (!is_array($schemas)) {
+        return [];
+    }
+
+    $errors = [];
+    foreach ($schemas as $schemaName => $schema) {
+        if (!is_string($schemaName) || !is_array($schema)) {
+            continue;
+        }
+
+        $errors = array_merge($errors, schemaRequiredPropertyErrors($schema, $schemaName, $parsed));
+    }
+
+    return $errors;
+}
+
+/**
+ * @return list<string>
+ */
+function schemaRequiredPropertyErrors(array $schema, string $schemaName, array $document): array
+{
+    $errors = [];
+    $required = schemaRequiredFields($schema, $document);
+    if ($required !== []) {
+        $propertyNames = schemaPropertyNames($schema, $document);
+        $missing = [];
+        foreach ($required as $field) {
+            if (is_string($field) && !in_array($field, $propertyNames, true)) {
+                $missing[] = $field;
+            }
+        }
+
+        if ($missing !== []) {
+            $errors[] = sprintf(
+                'OpenAPI schema %s required fields are missing from properties: %s',
+                $schemaName,
+                implode(', ', $missing),
+            );
+        }
+    }
+
+    foreach (schemaPropertySchemas($schema, $document) as $propertyName => $propertySchema) {
+        if (is_string($propertyName) && is_array($propertySchema)) {
+            $errors = array_merge($errors, schemaRequiredPropertyErrors($propertySchema, $schemaName . '.' . $propertyName, $document));
+        }
+    }
+
+    foreach (['anyOf', 'oneOf'] as $composition) {
+        foreach (($schema[$composition] ?? []) as $index => $childSchema) {
+            if (is_array($childSchema)) {
+                $resolved = resolveSchemaRef($childSchema, $document);
+                $errors = array_merge(
+                    $errors,
+                    schemaRequiredPropertyErrors($resolved, $schemaName . '.' . $composition . '[' . $index . ']', $document),
+                );
+            }
+        }
+    }
+
+    if (is_array($schema['items'] ?? null)) {
+        $errors = array_merge($errors, schemaRequiredPropertyErrors(resolveSchemaRef($schema['items'], $document), $schemaName . '.items', $document));
+    }
+
+    return $errors;
+}
+
+/**
+ * @return list<string>
+ */
+function schemaRequiredFields(array $schema, array $document): array
+{
+    $fields = array_values(array_filter($schema['required'] ?? [], 'is_string'));
+    foreach (($schema['allOf'] ?? []) as $childSchema) {
+        if (is_array($childSchema)) {
+            $fields = array_merge($fields, schemaRequiredFields(resolveSchemaRef($childSchema, $document), $document));
+        }
+    }
+
+    return array_values(array_unique($fields));
+}
+
+/**
+ * @return list<string>
+ */
+function schemaPropertyNames(array $schema, array $document): array
+{
+    $names = array_keys(schemaPropertySchemas($schema, $document));
+
+    return array_values(array_filter($names, 'is_string'));
+}
+
+/**
+ * @return array<string, mixed>
+ */
+function schemaPropertySchemas(array $schema, array $document): array
+{
+    $properties = [];
+    $ownProperties = $schema['properties'] ?? [];
+    if (is_array($ownProperties)) {
+        $properties = $ownProperties;
+    }
+
+    foreach (($schema['allOf'] ?? []) as $childSchema) {
+        if (is_array($childSchema)) {
+            $properties = array_merge($properties, schemaPropertySchemas(resolveSchemaRef($childSchema, $document), $document));
+        }
+    }
+
+    return $properties;
+}
+
+/**
+ * @param array<string, mixed> $schema
+ * @return array<string, mixed>
+ */
+function resolveSchemaRef(array $schema, array $document): array
+{
+    if (isset($schema['$ref']) && is_string($schema['$ref'])) {
+        $resolved = resolveLocalRef($document, $schema['$ref']);
+
+        return is_array($resolved) ? $resolved : $schema;
+    }
+
+    return $schema;
 }
 
 /**
