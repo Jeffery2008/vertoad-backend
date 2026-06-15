@@ -88,6 +88,7 @@ final class SensitiveRoutePermissionContractTest extends TestCase
             ['POST', '/api/v1/operations/config/versions/{version_id}/rollback', 'config.rollback.platform', 'platformPermission'],
             ['GET', '/api/v1/operations/webhooks/deliveries', 'webhook.delivery.read.platform', 'platformPermission'],
             ['POST', '/api/v1/operations/webhooks/deliveries/{delivery_id}/retry', 'webhook.delivery.retry.platform', 'platformPermission'],
+            ['GET', '/api/v1/audit-logs', 'audit.read.platform', 'platformPermission'],
             ['POST', '/api/v1/support/tickets', 'support.ticket.write.own', 'permission'],
             ['GET', '/api/v1/support/tickets', 'support.ticket.read.own', 'permission'],
             ['POST', '/api/v1/support/tickets/{ticket_id}/notes', 'support.ticket.note.internal.platform', 'platformPermission'],

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Slim\App;
 use Slim\Routing\RouteCollectorProxy;
+use VertoAD\Http\Action\AuditLogs\ListAuditLogsAction;
 use VertoAD\Http\Action\Cron\CronRunAction;
 use VertoAD\Http\Action\Cron\CronStatusAction;
 use VertoAD\Http\Action\HealthAction;
@@ -320,6 +321,9 @@ return static function (App $app): void {
         ->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/operations/webhooks/deliveries/{delivery_id}/retry', RetryWebhookDeliveryAction::class)
         ->add($platformPermission('webhook.delivery.retry.platform'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->get('/api/v1/audit-logs', ListAuditLogsAction::class)
+        ->add($platformPermission('audit.read.platform'))
         ->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/support/tickets', CreateSupportTicketAction::class)
         ->add($permission('support.ticket.write.own'))
