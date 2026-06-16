@@ -4,8 +4,8 @@ info:
   version: 0.1.0
   summary: Current VertoAD backend public API contract.
   description: |
-    This contract documents only public HTTP endpoints that are implemented in
-    the current backend slice.
+    This contract documents public HTTP endpoints implemented in the current backend slice,
+    including operations request-correlation and asynchronous IP geo administration surfaces.
 
     Current surface:
     - Base path: `/api/v1`.
@@ -46,7 +46,7 @@ tags:
   - name: Assets
     description: Creative asset upload intents, validation, and review preparation endpoints.
   - name: Serving
-    description: Public ad serving, impression tracking, and click redirect endpoints.
+    description: Public ad serving, impression tracking, and click redirect endpoints. Serving reads canonical geo when available, queues unresolved IPs asynchronously, and never waits for an external IP geo provider.
   - name: Campaigns
     description: Authenticated organization-scoped campaign planning and status management.
   - name: Review
@@ -58,7 +58,7 @@ tags:
   - name: Archive
     description: Parquet archive manifests and asynchronous DuckDB cold-query jobs.
   - name: Operations
-    description: Operational error logs, config versions, backup status, and Redis hardening.
+    description: Operational error logs, request correlation, admin IP geo lookup, config versions, backup status, and Redis hardening.
   - name: AuditLogs
     description: Platform audit trail search with super-admin-only raw context visibility.
   - name: Webhooks
@@ -1750,7 +1750,7 @@ paths:
         - Serving
       operationId: serveAdFrame
       summary: Return sandboxed ad iframe HTML for SDK delivery.
-      description: Browser-facing endpoint used as the SDK iframe src. It accepts the same publisher slot identity as the JSON decision API and returns platform-controlled HTML for sandboxed rendering on the ads origin. Filled responses include nonce-scoped runtime JavaScript that listens for SDK viewability messages, posts accepted impressions to `/api/v1/ads/track`, and rewrites creative clicks through `/api/v1/ads/click` redirect URLs without exposing raw landing URLs in the frame document.
+      description: Browser-facing endpoint used as the SDK iframe src. It accepts the same publisher slot identity as the JSON decision API and returns platform-controlled HTML for sandboxed rendering on the ads origin. Filled responses include nonce-scoped runtime JavaScript that listens for SDK viewability messages, posts accepted impressions to `/api/v1/ads/track`, and rewrites creative clicks through `/api/v1/ads/click` redirect URLs without exposing raw landing URLs in the frame document. The serving path reads canonical geo when available, queues unresolved IPs for `ip-geo-resolve`, and does not synchronously call an IP geo provider; unknown geo is a valid serving state.
       security: []
       parameters:
         - name: site_id
@@ -1832,7 +1832,7 @@ paths:
         - Serving
       operationId: serveAdDecision
       summary: Return an ad decision for a verified publisher slot.
-      description: Returns a sandboxed iframe payload when an eligible safe candidate exists; otherwise returns deterministic no-fill.
+      description: Returns a sandboxed iframe payload when an eligible safe candidate exists; otherwise returns deterministic no-fill. The decision path reads `canonical_geo_code` from the backend IP geo store when present, queues unresolved IPs asynchronously, and never waits for a provider registry lookup; candidates that require explicit geo can no-fill with `geo_target_mismatch`, while unknown geo does not create an API error.
       security: []
       requestBody:
         required: true
@@ -2172,7 +2172,7 @@ paths:
         - Serving
       operationId: trackAdImpression
       summary: Record a valid viewable impression event.
-      description: Accepts only impression events that meet the configured visible ratio and dwell-time threshold, with event-id idempotency. Normal SDK telemetry does not require Turnstile; submissions flagged with `risk`, `traffic_risk`, `abnormal`, `high_risk`, or matching risk headers are treated as abnormal traffic and must include `CF-Turnstile-Token`.
+      description: Accepts only impression events that meet the configured visible ratio and dwell-time threshold, with event-id idempotency. Normal SDK telemetry does not require Turnstile; submissions flagged with `risk`, `traffic_risk`, `abnormal`, `high_risk`, or matching risk headers are treated as abnormal traffic and must include `CF-Turnstile-Token`. Tracking accepts unknown geo and does not wait on provider registry lookups; unresolved IPs are handled by the async IP geo queue.
       security: []
       parameters:
         - $ref: "#/components/parameters/OptionalTrafficRisk"
@@ -2205,7 +2205,7 @@ paths:
         - Serving
       operationId: redirectAdClick
       summary: Record click intent and redirect to the validated landing URL.
-      description: Valid click decisions return a 302 Location header pointing only to a validated http or https landing URL. SDK frames generate click `event_id` values immediately before navigation and use this endpoint as the only browser-visible destination; raw landing URLs are not embedded in creative HTML. Normal click redirects do not require Turnstile; clicks flagged with `risk`, `traffic_risk`, `abnormal`, `high_risk`, or matching risk headers are treated as abnormal traffic and must include `CF-Turnstile-Token`.
+      description: Valid click decisions return a 302 Location header pointing only to a validated http or https landing URL. SDK frames generate click `event_id` values immediately before navigation and use this endpoint as the only browser-visible destination; raw landing URLs are not embedded in creative HTML. Normal click redirects do not require Turnstile; clicks flagged with `risk`, `traffic_risk`, `abnormal`, `high_risk`, or matching risk headers are treated as abnormal traffic and must include `CF-Turnstile-Token`. Click redirect accepts unknown geo and does not wait on provider registry lookups; unresolved IPs are handled by the async IP geo queue.
       security: []
       parameters:
         - $ref: "#/components/parameters/OptionalTurnstileToken"
@@ -3265,8 +3265,17 @@ paths:
         - Operations
       operationId: listOperationErrors
       summary: List operational error logs without raw context.
+      description: Returns redacted operation error facts. `request_id` filtering is preserved for request-correlation drilldown and does not expose raw context; raw context remains available only through the audit-on-view endpoint.
       security:
         - BearerAuth: []
+      parameters:
+        - name: request_id
+          in: query
+          required: false
+          description: Filter operation errors captured during one stable HTTP request correlation ID.
+          schema:
+            type: string
+            minLength: 1
       responses:
         "200":
           description: Operation error logs.
@@ -3331,13 +3340,222 @@ paths:
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/operations/request-correlations:
+    get:
+      tags:
+        - Operations
+      operationId: searchOperationRequestCorrelations
+      summary: Search correlated operations logs for the admin timeline.
+      description: |
+        Searches redacted correlation records for the admin logs page. The
+        collection response contains normalized filters, page-sliced typed
+        entries, page metadata, and generated_at. Use
+        `/api/v1/operations/request-correlations/{request_id}` for the grouped
+        request-level aggregation.
+
+        request_id is the primary correlation key. The same HTTP request must
+        propagate one stable request_id into audit, error, webhook, serving,
+        risk, and IP geo operations records; log writers must not independently
+        generate different IDs for the same request.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - ops.dashboard.read.platform
+      parameters:
+        - name: request_id
+          in: query
+          required: false
+          description: Stable HTTP request correlation ID to match across log sources.
+          schema:
+            type: string
+            minLength: 1
+        - name: actor_user_id
+          in: query
+          required: false
+          description: User ID for the authenticated actor when a user actor exists.
+          schema:
+            type: integer
+            minimum: 1
+        - name: actor
+          in: query
+          required: false
+          description: Actor identifier such as a user email/display name, OAuth client ID, cron job name, or system actor key. Frontend user searches map to this actor filter.
+          schema:
+            type: string
+            minLength: 1
+        - name: action
+          in: query
+          required: false
+          description: Stable action or event name, for example operations.error.raw_context.viewed.
+          schema:
+            type: string
+            minLength: 1
+        - name: subject_type
+          in: query
+          required: false
+          description: Subject/entity type touched by the log entry.
+          schema:
+            type: string
+            minLength: 1
+        - name: subject_id
+          in: query
+          required: false
+          description: Subject/entity identifier represented as a string.
+          schema:
+            type: string
+            minLength: 1
+        - name: ip_address
+          in: query
+          required: false
+          description: Client, actor, or observed IP address associated with the entry.
+          schema:
+            type: string
+            minLength: 1
+        - name: endpoint
+          in: query
+          required: false
+          description: HTTP endpoint path or route template associated with the log entry.
+          schema:
+            type: string
+            minLength: 1
+        - name: occurred_from
+          in: query
+          required: false
+          description: Inclusive lower bound for timeline timestamps.
+          schema:
+            type: string
+            format: date-time
+        - name: occurred_to
+          in: query
+          required: false
+          description: Inclusive upper bound for timeline timestamps.
+          schema:
+            type: string
+            format: date-time
+        - name: entry_type
+          in: query
+          required: false
+          description: Optional source-type filter. Repeating this query parameter narrows the timeline to selected log types.
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/OperationLogCorrelationEntryType"
+          style: form
+          explode: true
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: Correlated operations timeline entries.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/OperationLogCorrelationListData"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/operations/request-correlations/{request_id}:
+    get:
+      tags:
+        - Operations
+      operationId: getOperationRequestCorrelation
+      summary: Return correlated logs for one request ID.
+      description: Shortcut for GET /api/v1/operations/request-correlations?request_id=.... It returns the grouped request-level view used to jump between operation errors, audit records, webhook deliveries, and the same typed timeline entries returned by the search endpoint.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - ops.error_log.read_redacted.platform
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          description: Stable HTTP request correlation ID.
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: Correlated logs for a single request ID.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/OperationRequestCorrelation"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/operations/ip-geo/lookup:
+    post:
+      tags:
+        - Operations
+      operationId: lookupOperationIpGeo
+      summary: Resolve an IP address through the admin real-time geo path.
+      description: Authenticated and audited real-time lookup for the admin logs page and support debugging. The request body accepts only ip_address; provider selection and canonical-store persistence are controlled by the backend serving.geo_provider policy. Serving, track, click, and risk paths only read canonical geo when present, queue unresolved IPs asynchronously, and never wait on this endpoint or an external provider response.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - ops.error_log.read_redacted.platform
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OperationIpGeoLookupRequest"
+      responses:
+        "200":
+          description: Real-time IP geo lookup result.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/OperationIpGeoLookupResult"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/operations/config/versions:
     get:
       tags:
         - Operations
       operationId: listConfigVersions
       summary: List config versions for a key.
-      description: Lists audited configuration versions for the supported business-policy keys `billing.default_revenue_share`, `security.rate_limit`, `attribution.default_window_seconds`, `serving.event_validation`, `assets.upload_policy`, `review.ai_policy`, `webhook.delivery_policy`, and `security.turnstile_policy`. Unknown config keys are rejected, and secret material such as API keys is never returned through config versions.
+      description: Lists audited configuration versions for the supported business-policy keys `billing.default_revenue_share`, `security.rate_limit`, `attribution.default_window_seconds`, `serving.event_validation`, `serving.geo_provider`, `assets.upload_policy`, `review.ai_policy`, `webhook.delivery_policy`, and `security.turnstile_policy`. Unknown config keys are rejected, and secret material such as API keys is never returned through config versions.
       security:
         - BearerAuth: []
       parameters:
@@ -3376,7 +3594,7 @@ paths:
         - Operations
       operationId: createConfigVersion
       summary: Create a new config version.
-      description: Creates an audited business configuration version. Provider API keys, Turnstile secrets, signing secrets, passwords, tokens, and provider egress URLs stay out of database-backed config values.
+      description: Creates an audited business configuration version. Provider API keys, Turnstile secrets, signing secrets, passwords, and tokens stay out of database-backed config values. IP geo provider endpoints may be configured only as HTTPS registry endpoints; credentials are referenced by environment variable name.
       security:
         - BearerAuth: []
       requestBody:
@@ -3523,6 +3741,13 @@ paths:
         - name: action
           in: query
           required: false
+          schema:
+            type: string
+            minLength: 1
+        - name: request_id
+          in: query
+          required: false
+          description: Filter audit logs by the stable request correlation ID stored in audit metadata.
           schema:
             type: string
             minLength: 1
@@ -5930,6 +6155,7 @@ components:
             - frequency_cap_exceeded
             - fraud_high_risk_viewer
             - fraud_high_risk_slot
+            - geo_target_mismatch
             - null
         iframe:
           type: object
@@ -6712,6 +6938,678 @@ components:
           type: string
           format: date-time
       additionalProperties: false
+    OperationLogCorrelationListData:
+      type: object
+      required:
+        - filters
+        - entries
+        - page
+        - generated_at
+      properties:
+        filters:
+          $ref: "#/components/schemas/OperationLogCorrelationFilters"
+        entries:
+          type: array
+          description: Page-sliced correlated timeline entries sorted by descending sort_key.
+          items:
+            $ref: "#/components/schemas/OperationLogCorrelationEntry"
+        page:
+          $ref: "#/components/schemas/AuditLogPage"
+        generated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    OperationLogCorrelationFilters:
+      type: object
+      required:
+        - request_id
+        - actor_user_id
+        - actor
+        - action
+        - subject_type
+        - subject_id
+        - ip_address
+        - endpoint
+        - occurred_from
+        - occurred_to
+        - entry_type
+        - limit
+        - offset
+      properties:
+        request_id:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        actor_user_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        actor:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        action:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        subject_type:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        subject_id:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        ip_address:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        endpoint:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        occurred_from:
+          type:
+            - string
+            - "null"
+          format: date-time
+        occurred_to:
+          type:
+            - string
+            - "null"
+          format: date-time
+        entry_type:
+          type: array
+          items:
+            $ref: "#/components/schemas/OperationLogCorrelationEntryType"
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 200
+        offset:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+    OperationLogCorrelationCounts:
+      type: object
+      required:
+        - operation_errors
+        - audit_logs
+        - webhook_deliveries
+        - system_logs
+        - serving_events
+        - risk_decisions
+        - ip_geo_lookups
+      properties:
+        operation_errors:
+          type: integer
+          minimum: 0
+        audit_logs:
+          type: integer
+          minimum: 0
+        webhook_deliveries:
+          type: integer
+          minimum: 0
+        system_logs:
+          type: integer
+          minimum: 0
+        serving_events:
+          type: integer
+          minimum: 0
+        risk_decisions:
+          type: integer
+          minimum: 0
+        ip_geo_lookups:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+    OperationLogCorrelationEntryType:
+      type: string
+      enum:
+        - audit_log
+        - operation_error
+        - system_log
+        - webhook_delivery
+        - serving_event
+        - tracking_event
+        - click_event
+        - risk_decision
+        - ip_geo_lookup
+    OperationLogCorrelationEntry:
+      type: object
+      required:
+        - entry_id
+        - entry_type
+        - source_id
+        - request_id
+        - occurred_at
+        - sort_key
+        - severity
+        - action
+        - summary
+        - actor
+        - subject
+        - ip_address
+        - endpoint
+        - http_method
+        - geo
+        - raw_context_available
+        - context_redacted
+        - redacted_context
+      properties:
+        entry_id:
+          type: string
+          minLength: 1
+          description: Stable timeline entry ID, usually prefixed by the source type.
+        entry_type:
+          $ref: "#/components/schemas/OperationLogCorrelationEntryType"
+        source_id:
+          type: string
+          minLength: 1
+          description: Native source record ID, such as `error_id`, audit row ID, webhook delivery ID, event ID, or lookup task ID.
+        request_id:
+          type: string
+          minLength: 1
+          description: Stable request ID propagated from the HTTP request entrypoint.
+        occurred_at:
+          type: string
+          format: date-time
+        sort_key:
+          type: string
+          minLength: 1
+          description: Stable descending timeline sort key, derived from timestamp plus source ID.
+        severity:
+          type: string
+          enum:
+            - debug
+            - info
+            - warning
+            - error
+            - critical
+        action:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        summary:
+          type: string
+          minLength: 1
+        actor:
+          $ref: "#/components/schemas/OperationLogCorrelationActor"
+        subject:
+          $ref: "#/components/schemas/OperationLogCorrelationSubject"
+        ip_address:
+          type:
+            - string
+            - "null"
+          description: Present only when the caller may view that context; otherwise null with `context_redacted` true.
+        endpoint:
+          type:
+            - string
+            - "null"
+          description: HTTP endpoint path or route template when known.
+        http_method:
+          type:
+            - string
+            - "null"
+          enum:
+            - GET
+            - POST
+            - PUT
+            - PATCH
+            - DELETE
+            - null
+        geo:
+          oneOf:
+            - $ref: "#/components/schemas/OperationLogCorrelationGeo"
+            - type: "null"
+        raw_context_available:
+          type: boolean
+          description: True when a separate audited raw-context view exists for this source.
+        context_redacted:
+          type: boolean
+        redacted_context:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+    OperationLogCorrelationActor:
+      type: object
+      required:
+        - actor_type
+        - actor_id
+        - actor_user_id
+        - display
+      properties:
+        actor_type:
+          type: string
+          enum:
+            - user
+            - oauth_client
+            - cron
+            - system
+            - anonymous
+            - unknown
+        actor_id:
+          type:
+            - string
+            - "null"
+        actor_user_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        display:
+          type:
+            - string
+            - "null"
+      additionalProperties: false
+    OperationLogCorrelationSubject:
+      type: object
+      required:
+        - subject_type
+        - subject_id
+      properties:
+        subject_type:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        subject_id:
+          oneOf:
+            - type: integer
+            - type: string
+            - type: "null"
+      additionalProperties: false
+    OperationLogCorrelationGeo:
+      type: object
+      required:
+        - canonical_geo_code
+        - country_code
+        - region_code
+        - region_name
+        - city_name
+        - provider_id
+      properties:
+        canonical_geo_code:
+          type:
+            - string
+            - "null"
+          description: Canonical code such as `CN-SH`; null represents unknown geo.
+        country_code:
+          type:
+            - string
+            - "null"
+        region_code:
+          type:
+            - string
+            - "null"
+        region_name:
+          type:
+            - string
+            - "null"
+        city_name:
+          type:
+            - string
+            - "null"
+        provider_id:
+          type:
+            - string
+            - "null"
+      additionalProperties: false
+    OperationRequestCorrelation:
+      type: object
+      required:
+        - request_id
+        - timeline
+        - operation_errors
+        - audit_logs
+        - webhook_deliveries
+        - system_logs
+        - serving_events
+        - risk_decisions
+        - ip_geo_lookups
+        - counts
+      properties:
+        request_id:
+          type: string
+          minLength: 1
+        timeline:
+          type: array
+          description: Timeline-ready merge of all correlated log entries.
+          items:
+            $ref: "#/components/schemas/OperationLogCorrelationEntry"
+        operation_errors:
+          type: array
+          items:
+            $ref: "#/components/schemas/OperationErrorLog"
+        audit_logs:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditLogItem"
+        webhook_deliveries:
+          type: array
+          items:
+            $ref: "#/components/schemas/WebhookDelivery"
+        system_logs:
+          type: array
+          items:
+            $ref: "#/components/schemas/OperationSystemLogEntry"
+        serving_events:
+          type: array
+          items:
+            $ref: "#/components/schemas/OperationServingLogEntry"
+        risk_decisions:
+          type: array
+          items:
+            $ref: "#/components/schemas/OperationRiskDecisionLogEntry"
+        ip_geo_lookups:
+          type: array
+          items:
+            $ref: "#/components/schemas/OperationIpGeoLookupLogEntry"
+        counts:
+          $ref: "#/components/schemas/OperationLogCorrelationCounts"
+      additionalProperties: false
+    OperationSystemLogEntry:
+      type: object
+      required:
+        - log_id
+        - request_id
+        - level
+        - message
+        - endpoint
+        - occurred_at
+        - redacted_context
+      properties:
+        log_id:
+          type: string
+          minLength: 1
+        request_id:
+          type: string
+          minLength: 1
+        level:
+          type: string
+          enum:
+            - debug
+            - info
+            - warning
+            - error
+            - critical
+        message:
+          type: string
+          minLength: 1
+        endpoint:
+          type:
+            - string
+            - "null"
+        occurred_at:
+          type: string
+          format: date-time
+        redacted_context:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+    OperationServingLogEntry:
+      type: object
+      required:
+        - event_id
+        - event_type
+        - request_id
+        - endpoint
+        - viewer_id
+        - site_id
+        - slot_id
+        - campaign_id
+        - geo
+        - occurred_at
+      properties:
+        event_id:
+          type: string
+          minLength: 1
+        event_type:
+          type: string
+          enum:
+            - serve
+            - track
+            - click
+        request_id:
+          type: string
+          minLength: 1
+        endpoint:
+          type: string
+          minLength: 1
+        viewer_id:
+          type:
+            - string
+            - "null"
+        site_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        slot_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        campaign_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        geo:
+          oneOf:
+            - $ref: "#/components/schemas/OperationLogCorrelationGeo"
+            - type: "null"
+        occurred_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    OperationRiskDecisionLogEntry:
+      type: object
+      required:
+        - decision_id
+        - request_id
+        - action
+        - risk_score
+        - reason_codes
+        - subject_type
+        - subject_id
+        - ip_address
+        - endpoint
+        - occurred_at
+      properties:
+        decision_id:
+          type: string
+          minLength: 1
+        request_id:
+          type: string
+          minLength: 1
+        action:
+          type: string
+          minLength: 1
+        risk_score:
+          type:
+            - integer
+            - "null"
+          minimum: 0
+        reason_codes:
+          type: array
+          items:
+            type: string
+        subject_type:
+          type:
+            - string
+            - "null"
+        subject_id:
+          type:
+            - string
+            - "null"
+        ip_address:
+          type:
+            - string
+            - "null"
+        endpoint:
+          type:
+            - string
+            - "null"
+        occurred_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    OperationIpGeoLookupLogEntry:
+      type: object
+      required:
+        - lookup_id
+        - request_id
+        - ip_hash
+        - ip_address
+        - source
+        - status
+        - provider_id
+        - canonical_geo_code
+        - queued_at
+        - resolved_at
+      properties:
+        lookup_id:
+          type: string
+          minLength: 1
+        request_id:
+          type: string
+          minLength: 1
+        ip_hash:
+          type: string
+          minLength: 1
+        ip_address:
+          type:
+            - string
+            - "null"
+          description: Present only when the caller may view raw IP context.
+        source:
+          type: string
+          minLength: 1
+          description: Queue source recorded for the lookup task. Serving middleware uses the configured `serving.geo_provider.queue_source` value, default `serving`; administrator real-time fallback queues use `operations_realtime_lookup`.
+        status:
+          type: string
+          enum:
+            - queued
+            - resolved
+            - failed
+            - skipped
+        provider_id:
+          type:
+            - string
+            - "null"
+        canonical_geo_code:
+          type:
+            - string
+            - "null"
+        queued_at:
+          type: string
+          format: date-time
+        resolved_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+      additionalProperties: false
+    OperationIpGeoLookupRequest:
+      type: object
+      required:
+        - ip_address
+      properties:
+        ip_address:
+          type: string
+          minLength: 1
+          description: IPv4 or IPv6 address to resolve for administrator diagnostics.
+      additionalProperties: false
+    OperationIpGeoLookupResult:
+      type: object
+      required:
+        - ip_address
+        - canonical_geo_code
+        - country_code
+        - region_code
+        - region
+        - city
+        - latitude
+        - longitude
+        - timezone
+        - provider_id
+        - source
+        - queried_at
+        - persisted_to_canonical_store
+      properties:
+        ip_address:
+          type: string
+          minLength: 1
+        canonical_geo_code:
+          type:
+            - string
+            - "null"
+        country_code:
+          type:
+            - string
+            - "null"
+        country_name:
+          type:
+            - string
+            - "null"
+        region_code:
+          type:
+            - string
+            - "null"
+        region:
+          type:
+            - string
+            - "null"
+        city:
+          type:
+            - string
+            - "null"
+        latitude:
+          type:
+            - number
+            - "null"
+        longitude:
+          type:
+            - number
+            - "null"
+        timezone:
+          type:
+            - string
+            - "null"
+        provider_id:
+          type:
+            - string
+            - "null"
+        source:
+          type: string
+          enum:
+            - canonical_store
+            - provider
+            - queued
+        status:
+          type:
+            - string
+            - "null"
+          enum:
+            - resolved
+            - pending
+            - null
+        queried_at:
+          type: string
+          format: date-time
+        persisted_to_canonical_store:
+          type: boolean
+      additionalProperties: false
     AuditLogListData:
       type: object
       required:
@@ -6757,6 +7655,7 @@ components:
         - subject_id
         - ip_address
         - user_agent
+        - request_id
         - metadata
         - context_redacted
         - created_at
@@ -6795,6 +7694,11 @@ components:
             - string
             - "null"
           description: Present only for super administrators.
+        request_id:
+          type:
+            - string
+            - "null"
+          description: Stable request ID propagated from the HTTP request entrypoint when the audit event originated from a request.
         metadata:
           type:
             - object
@@ -6842,6 +7746,7 @@ components:
         - $ref: "#/components/schemas/RateLimitConfigVersionCreateRequest"
         - $ref: "#/components/schemas/AttributionWindowConfigVersionCreateRequest"
         - $ref: "#/components/schemas/ServingEventValidationConfigVersionCreateRequest"
+        - $ref: "#/components/schemas/ServingGeoProviderConfigVersionCreateRequest"
         - $ref: "#/components/schemas/AssetUploadPolicyConfigVersionCreateRequest"
         - $ref: "#/components/schemas/AiReviewPolicyConfigVersionCreateRequest"
         - $ref: "#/components/schemas/WebhookDeliveryPolicyConfigVersionCreateRequest"
@@ -6889,6 +7794,17 @@ components:
           const: serving.event_validation
         value:
           $ref: "#/components/schemas/ServingEventValidationConfig"
+      additionalProperties: false
+    ServingGeoProviderConfigVersionCreateRequest:
+      type: object
+      required:
+        - config_key
+        - value
+      properties:
+        config_key:
+          const: serving.geo_provider
+        value:
+          $ref: "#/components/schemas/IpGeoProviderRegistryConfig"
       additionalProperties: false
     AssetUploadPolicyConfigVersionCreateRequest:
       type: object
@@ -6940,6 +7856,7 @@ components:
         - $ref: "#/components/schemas/RateLimitPolicyConfig"
         - $ref: "#/components/schemas/AttributionWindowConfig"
         - $ref: "#/components/schemas/ServingEventValidationConfig"
+        - $ref: "#/components/schemas/IpGeoProviderRegistryConfig"
         - $ref: "#/components/schemas/AssetUploadPolicyConfig"
         - $ref: "#/components/schemas/AiReviewPolicyConfig"
         - $ref: "#/components/schemas/WebhookDeliveryPolicyConfig"
@@ -6993,6 +7910,119 @@ components:
         repeat_click_window_seconds:
           type: integer
           minimum: 1
+      additionalProperties: false
+    IpGeoProviderRegistryConfig:
+      type: object
+      description: Backend serving.geo_provider policy used by async IP geo Cron resolution and administrator real-time lookup. Serving requests only read canonical geo and queue unresolved IPs; they do not call these providers synchronously.
+      required:
+        - enabled
+      properties:
+        enabled:
+          type: boolean
+        include_builtins:
+          type: boolean
+          default: false
+          description: When true, prepend the backend built-in free providers before configured providers; when providers is omitted, built-ins are included unless this is explicitly false.
+        providers:
+          type: array
+          items:
+            $ref: "#/components/schemas/IpGeoProviderRegistryProvider"
+        batch_size:
+          type: integer
+          minimum: 1
+          default: 100
+          description: Maximum queued IPs processed by one protected ip-geo-resolve Cron run.
+        max_attempts:
+          type: integer
+          minimum: 1
+          default: 3
+        retry_backoff_seconds:
+          type: integer
+          minimum: 1
+          default: 300
+        cache_ttl_seconds:
+          type: integer
+          minimum: 1
+          default: 86400
+          description: Canonical geo record freshness window used by the IP geo middleware and Cron refresh policy.
+        queue_source:
+          type: string
+          minLength: 1
+          default: serving
+      additionalProperties: false
+    IpGeoProviderRegistryProvider:
+      type: object
+      required:
+        - id
+        - endpoint_template
+        - fields
+      properties:
+        id:
+          type: string
+          minLength: 1
+          description: Stable provider identifier persisted on canonical geo records as provider_id.
+        endpoint_template:
+          type: string
+          format: uri
+          description: HTTPS URL template containing {ip} and, when needed, {api_key}. API keys are loaded only from api_key_env_var.
+        fields:
+          $ref: "#/components/schemas/IpGeoFieldMapping"
+        regions:
+          type: array
+          minItems: 1
+          default:
+            - GLOBAL
+          items:
+            type: string
+            minLength: 1
+        weight:
+          type: integer
+          minimum: 1
+          default: 1
+        timeout_seconds:
+          type: integer
+          minimum: 1
+          default: 2
+        api_key_env_var:
+          type:
+            - string
+            - "null"
+          pattern: "^[A-Z][A-Z0-9_]*$"
+          description: Environment variable name for the provider credential. Plaintext keys, tokens, authorization headers, passwords, and secrets are rejected from config versions.
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+      additionalProperties: false
+    IpGeoFieldMapping:
+      type: object
+      required:
+        - country_code
+      properties:
+        country_code:
+          type: string
+          minLength: 1
+        country_name:
+          type: string
+          minLength: 1
+        region_code:
+          type: string
+          minLength: 1
+        region_name:
+          type: string
+          minLength: 1
+        city_name:
+          type: string
+          minLength: 1
+        latitude:
+          type: string
+          minLength: 1
+        longitude:
+          type: string
+          minLength: 1
+        timezone:
+          type: string
+          minLength: 1
       additionalProperties: false
     AssetUploadPolicyConfig:
       type: object
@@ -7396,6 +8426,7 @@ components:
         - endpoint_url
         - event_type
         - payload_json
+        - request_id
         - status
         - retry_count
         - next_attempt_at
@@ -7424,6 +8455,10 @@ components:
         payload_json:
           type: string
           minLength: 1
+        request_id:
+          type:
+            - string
+            - "null"
         status:
           type: string
           enum:

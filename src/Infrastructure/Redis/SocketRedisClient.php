@@ -89,6 +89,11 @@ LUA,
         return $this->command('SET', [$key, $value, 'EX', (string) $seconds, 'NX']) === 'OK';
     }
 
+    public function setEx(string $key, string $value, int $seconds): bool
+    {
+        return $this->command('SETEX', [$key, (string) $seconds, $value]) === 'OK';
+    }
+
     public function zRangeByScore(string $key, string $from, string $to, int $offset, int $count): array
     {
         $members = $this->command('ZRANGEBYSCORE', [$key, $from, $to, 'LIMIT', (string) $offset, (string) $count]);

@@ -41,6 +41,9 @@ final class SocketRedisClientTest extends TestCase
             "+OK\r\n",
             "+OK\r\n",
             "+OK\r\n",
+            "+OK\r\n",
+            "+OK\r\n",
+            "+OK\r\n",
             ":1\r\n",
             "+OK\r\n",
             "+OK\r\n",
@@ -68,6 +71,7 @@ final class SocketRedisClientTest extends TestCase
         self::assertSame('value', $client->get('key'));
         self::assertSame(3, $client->increment('key'));
         self::assertTrue($client->setNxEx('key', 'value', 10));
+        self::assertTrue($client->setEx('key', 'value', 10));
         self::assertTrue($client->deleteIfValue('key', 'value'));
         self::assertSame(['event-a', '9'], $client->zRangeByScore('z', '-inf', '+inf', 1, 2));
         self::assertSame(1, $client->zAdd('z', 1.5, 'member'));
@@ -93,6 +97,9 @@ final class SocketRedisClientTest extends TestCase
             ['AUTH', ['secret']],
             ['SELECT', ['2']],
             ['SET', ['key', 'value', 'EX', '10', 'NX']],
+            ['AUTH', ['secret']],
+            ['SELECT', ['2']],
+            ['SETEX', ['key', '10', 'value']],
             ['AUTH', ['secret']],
             ['SELECT', ['2']],
             ['EVAL', [self::deleteIfValueLua(), '1', 'key', 'value']],
@@ -125,6 +132,8 @@ final class SocketRedisClientTest extends TestCase
             "+OK\r\n",
             ":0\r\n",
             "+OK\r\n",
+            ":0\r\n",
+            "+OK\r\n",
             "*-1\r\n",
             "+OK\r\n",
             "-ERR denied\r\n",
@@ -135,6 +144,7 @@ final class SocketRedisClientTest extends TestCase
         self::assertFalse($client->expire('missing', 60));
         self::assertFalse($client->get('missing'));
         self::assertFalse($client->setNxEx('key', 'value', 10));
+        self::assertFalse($client->setEx('key', 'value', 10));
         self::assertFalse($client->deleteIfValue('key', 'value'));
         self::assertSame([], $client->zRangeByScore('z', '-inf', '+inf', 0, 1));
 

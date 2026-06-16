@@ -11,6 +11,7 @@ use Psr\Http\Message\ServerRequestInterface;
 use VertoAD\Domain\Ledger\LedgerDirection;
 use VertoAD\Domain\Ledger\PointsLedgerEntry;
 use VertoAD\Http\Auth\RequestUserContext;
+use VertoAD\Http\RequestIdContext;
 use VertoAD\Infrastructure\Security\ClientIpResolver;
 use VertoAD\Repository\PointsLedgerRepositoryInterface;
 use VertoAD\Service\AuditLogService;
@@ -167,6 +168,7 @@ final readonly class LedgerAdjustmentAction
             organizationId: $entry->organizationId,
             ipAddress: $this->ipResolver->resolve($request),
             userAgent: $request->getHeaderLine('User-Agent') ?: null,
+            requestId: RequestIdContext::fromRequest($request),
             metadata: [
                 'account_id' => $entry->accountId,
                 'account_type' => $entry->accountType,

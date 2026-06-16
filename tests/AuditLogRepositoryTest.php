@@ -25,6 +25,7 @@ CREATE TABLE audit_logs (
     subject_id INTEGER NULL,
     ip_address BLOB NULL,
     user_agent VARCHAR(512) NULL,
+    request_id VARCHAR(160) NULL,
     metadata_json TEXT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 )
@@ -41,7 +42,8 @@ SQL
             organizationId: 3,
             packedIpAddress: "\x7f\x00\x00\x01",
             userAgent: 'Mozilla/5.0',
-            metadata: ['a' => ['first' => 1, 'second' => 2], 'z' => 'last'],
+            requestId: 'req-audit-write',
+            metadata: ['a' => ['first' => 1, 'second' => 2], 'request_id' => 'req-audit-write', 'z' => 'last'],
         ));
 
         $row = $connection->fetchAssociative('SELECT * FROM audit_logs');
@@ -54,7 +56,8 @@ SQL
         self::assertSame(42, (int) $row['subject_id']);
         self::assertSame("\x7f\x00\x00\x01", $row['ip_address']);
         self::assertSame('Mozilla/5.0', $row['user_agent']);
-        self::assertSame('{"a":{"first":1,"second":2},"z":"last"}', $row['metadata_json']);
+        self::assertSame('req-audit-write', $row['request_id']);
+        self::assertSame('{"a":{"first":1,"second":2},"request_id":"req-audit-write","z":"last"}', $row['metadata_json']);
     }
 
     public function testAppendPersistsNullMetadataWhenAbsent(): void
@@ -71,6 +74,7 @@ CREATE TABLE audit_logs (
     subject_id INTEGER NULL,
     ip_address BLOB NULL,
     user_agent VARCHAR(512) NULL,
+    request_id VARCHAR(160) NULL,
     metadata_json TEXT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 )

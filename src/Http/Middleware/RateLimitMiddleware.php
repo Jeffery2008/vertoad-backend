@@ -11,6 +11,7 @@ use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\MiddlewareInterface;
 use Psr\Http\Server\RequestHandlerInterface;
 use VertoAD\Http\Auth\RequestUserContext;
+use VertoAD\Http\RequestIdContext;
 use VertoAD\Infrastructure\Security\ClientIpResolver;
 use VertoAD\Infrastructure\Security\RateLimitDimensions;
 use VertoAD\Infrastructure\Security\RateLimiter;
@@ -48,6 +49,7 @@ final readonly class RateLimitMiddleware implements MiddlewareInterface
             organizationId: $dimensions->organizationId,
             ipAddress: $dimensions->ip,
             userAgent: $request->getHeaderLine('User-Agent') ?: null,
+            requestId: RequestIdContext::fromRequest($request),
             metadata: [
                 ...$dimensions->auditMetadata(),
                 'limit' => $result->limit,

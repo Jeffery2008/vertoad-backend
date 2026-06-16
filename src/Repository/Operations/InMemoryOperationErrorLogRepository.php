@@ -23,8 +23,15 @@ final class InMemoryOperationErrorLogRepository implements OperationErrorLogRepo
         return $this->entries[$errorId] ?? null;
     }
 
-    public function all(): array
+    public function all(?string $requestId = null): array
     {
-        return array_values($this->entries);
+        if ($requestId === null || trim($requestId) === '') {
+            return array_values($this->entries);
+        }
+
+        return array_values(array_filter(
+            $this->entries,
+            static fn (OperationErrorLog $entry): bool => $entry->request_id === trim($requestId),
+        ));
     }
 }

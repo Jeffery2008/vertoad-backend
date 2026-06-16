@@ -66,22 +66,54 @@ final class InMemoryAdEventRepository implements AdEventRepositoryInterface, Ser
         return false;
     }
 
-    public function recordImpression(AdDecision $decision, string $eventId, float $visibleRatio, int $visibleMs, DateTimeImmutable $occurredAt): void
+    public function recordImpression(AdDecision $decision, string $eventId, float $visibleRatio, int $visibleMs, DateTimeImmutable $occurredAt, ?string $requestId = null): void
     {
         $this->eventIds[$this->key('impression', $eventId)] = true;
-        $this->events[] = $this->event('impression', $decision, $eventId, $occurredAt, true, null, $visibleRatio, $visibleMs);
+        $this->events[] = $this->event('impression', $decision, $eventId, $occurredAt, true, null, $visibleRatio, $visibleMs, $requestId);
     }
 
-    public function recordClick(AdDecision $decision, string $eventId, DateTimeImmutable $occurredAt): void
+    public function recordClick(AdDecision $decision, string $eventId, DateTimeImmutable $occurredAt, ?string $requestId = null): void
     {
         $this->eventIds[$this->key('click', $eventId)] = true;
-        $this->events[] = $this->event('click', $decision, $eventId, $occurredAt, true, null);
+        $this->events[] = $this->event('click', $decision, $eventId, $occurredAt, true, null, null, null, $requestId);
     }
 
-    public function recordInvalidClick(AdDecision $decision, string $eventId, DateTimeImmutable $occurredAt, string $reason): void
+    public function recordInvalidClick(AdDecision $decision, string $eventId, DateTimeImmutable $occurredAt, string $reason, ?string $requestId = null): void
     {
         $this->eventIds[$this->key('click', $eventId)] = true;
-        $this->events[] = $this->event('click', $decision, $eventId, $occurredAt, false, $reason);
+        $this->events[] = $this->event('click', $decision, $eventId, $occurredAt, false, $reason, null, null, $requestId);
+    }
+
+    public function searchEvents(array $filters): array
+    {
+        $items = array_values(array_filter(
+            $this->events,
+            function (AdEvent $event) use ($filters): bool {
+                if (isset($filters['request_id']) && (string) $filters['request_id'] !== (string) ($event->requestId ?? '')) {
+                    return false;
+                }
+                if (isset($filters['ip_address']) && (string) $filters['ip_address'] !== (string) ($event->ipAddress ?? '')) {
+                    return false;
+                }
+                if (isset($filters['event_type']) && (string) $filters['event_type'] !== $event->eventType) {
+                    return false;
+                }
+                if (isset($filters['occurred_from']) && $event->occurredAt < new DateTimeImmutable((string) $filters['occurred_from'])) {
+                    return false;
+                }
+                if (isset($filters['occurred_to']) && $event->occurredAt > new DateTimeImmutable((string) $filters['occurred_to'])) {
+                    return false;
+                }
+
+                return true;
+            },
+        ));
+
+        if (isset($filters['limit']) && is_int($filters['limit']) && $filters['limit'] > 0) {
+            return array_slice($items, 0, $filters['limit']);
+        }
+
+        return $items;
     }
 
     public function impressionCount(): int
@@ -145,6 +177,7 @@ final class InMemoryAdEventRepository implements AdEventRepositoryInterface, Ser
         ?string $reason,
         ?float $visibleRatio = null,
         ?int $visibleMs = null,
+        ?string $requestId = null,
     ): AdEvent {
         return new AdEvent(
             eventType: $eventType,
@@ -163,6 +196,10 @@ final class InMemoryAdEventRepository implements AdEventRepositoryInterface, Ser
             reason: $reason,
             visibleRatio: $visibleRatio,
             visibleMs: $visibleMs,
+            requestId: $requestId,
+            ipAddress: $decision->ipAddress,
+            userAgent: $decision->userAgent,
+            geoCode: $decision->geoCode,
         );
     }
 

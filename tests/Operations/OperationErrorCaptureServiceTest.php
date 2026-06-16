@@ -78,6 +78,33 @@ final class OperationErrorCaptureServiceTest extends TestCase
         self::assertSame('req-php-1', $auditRepository->entries[0]->metadata['request_id'] ?? null);
     }
 
+    public function testListErrorsCanFilterByRequestId(): void
+    {
+        $repositoryClass = 'VertoAD\\Repository\\Operations\\InMemoryOperationErrorLogRepository';
+        $serviceClass = 'VertoAD\\Service\\Operations\\OperationErrorCaptureService';
+        $service = new $serviceClass(new $repositoryClass(), new AuditLogService(new OperationAuditRepository()));
+
+        $service->captureApiError(
+            requestId: 'req-filter-match',
+            severity: 'error',
+            message: 'Matched request error',
+            context: [],
+            occurredAt: new DateTimeImmutable('2026-06-08T12:00:00Z'),
+        );
+        $service->captureApiError(
+            requestId: 'req-filter-other',
+            severity: 'error',
+            message: 'Other request error',
+            context: [],
+            occurredAt: new DateTimeImmutable('2026-06-08T12:01:00Z'),
+        );
+
+        $listed = $service->listErrors('req-filter-match');
+
+        self::assertCount(1, $listed);
+        self::assertSame('req-filter-match', $this->value($listed[0], 'request_id'));
+    }
+
     public function testRejectsBlankErrorMetadataAndMissingRawContext(): void
     {
         $repositoryClass = 'VertoAD\\Repository\\Operations\\InMemoryOperationErrorLogRepository';

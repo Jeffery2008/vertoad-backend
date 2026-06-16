@@ -23,7 +23,10 @@ final class OperationsRouteContractTest extends TestCase
             [
                 'GET /api/v1/operations/summary',
                 'GET /api/v1/operations/errors',
+                'GET /api/v1/operations/request-correlations',
+                'GET /api/v1/operations/request-correlations/{request_id}',
                 'GET /api/v1/operations/errors/{error_id}/raw-context',
+                'POST /api/v1/operations/ip-geo/lookup',
                 'GET /api/v1/operations/config/versions',
                 'POST /api/v1/operations/config/versions',
                 'POST /api/v1/operations/config/versions/{version_id}/rollback',

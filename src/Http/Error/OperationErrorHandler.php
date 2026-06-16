@@ -10,6 +10,7 @@ use Psr\Http\Message\ResponseFactoryInterface;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Throwable;
+use VertoAD\Http\RequestIdContext;
 use VertoAD\Service\Operations\OperationErrorCaptureService;
 
 final readonly class OperationErrorHandler
@@ -28,34 +29,36 @@ final readonly class OperationErrorHandler
         bool $logErrorDetails,
     ): ResponseInterface {
         $requestId = $this->requestId($request);
-        $captured = $exception instanceof \Error
-            ? $this->errors->capturePhpError($requestId, 'critical', $exception->getMessage(), $this->context($request, $exception), $this->now())
-            : $this->errors->captureApiError($requestId, 'error', $exception->getMessage(), $this->context($request, $exception), $this->now());
+        try {
+            $captured = $exception instanceof \Error
+                ? $this->errors->capturePhpError($requestId, 'critical', $exception->getMessage(), $this->context($request, $exception), $this->now())
+                : $this->errors->captureApiError($requestId, 'error', $exception->getMessage(), $this->context($request, $exception), $this->now());
 
-        $response = $this->responseFactory->createResponse(500);
-        $response->getBody()->write(json_encode([
-            'data' => null,
-            'error' => [
-                'code' => 'operation_error',
-                'message' => 'Internal server error. The incident has been logged for operations review.',
-                'operation_error_id' => $captured['error_id'],
-            ],
-            'meta' => [
-                'api_version' => 'v1',
-            ],
-            'request_id' => $requestId,
-        ], JSON_THROW_ON_ERROR));
+            $response = $this->responseFactory->createResponse(500);
+            $response->getBody()->write(json_encode([
+                'data' => null,
+                'error' => [
+                    'code' => 'operation_error',
+                    'message' => 'Internal server error. The incident has been logged for operations review.',
+                    'operation_error_id' => $captured['error_id'],
+                ],
+                'meta' => [
+                    'api_version' => 'v1',
+                ],
+                'request_id' => $requestId,
+            ], JSON_THROW_ON_ERROR));
 
-        return $response
-            ->withHeader('Content-Type', 'application/json')
-            ->withHeader('X-Request-Id', $requestId);
+            return $response
+                ->withHeader('Content-Type', 'application/json')
+                ->withHeader('X-Request-Id', $requestId);
+        } finally {
+            RequestIdContext::clear();
+        }
     }
 
     private function requestId(ServerRequestInterface $request): string
     {
-        $provided = trim($request->getHeaderLine('X-Request-Id'));
-
-        return $provided !== '' ? $provided : bin2hex(random_bytes(16));
+        return RequestIdContext::ensure($request);
     }
 
     /**
@@ -83,4 +86,5 @@ final readonly class OperationErrorHandler
     {
         return new DateTimeImmutable('now', new DateTimeZone('UTC'));
     }
+
 }

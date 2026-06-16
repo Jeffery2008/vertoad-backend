@@ -8,6 +8,7 @@ use InvalidArgumentException;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use VertoAD\Http\Auth\RequestUserContext;
+use VertoAD\Http\RequestIdContext;
 use VertoAD\Service\Operations\ConfigVersionService;
 
 final readonly class CreateConfigVersionAction
@@ -27,6 +28,7 @@ final readonly class CreateConfigVersionAction
                 (string) ($payload['config_key'] ?? ''),
                 is_array($payload['value'] ?? null) ? $payload['value'] : [],
                 $context->user?->id ?? 0,
+                RequestIdContext::fromRequest($request),
             );
         } catch (InvalidArgumentException $exception) {
             return OperationsJson::write($response, ['code' => 'invalid_request', 'message' => $exception->getMessage()], 422);

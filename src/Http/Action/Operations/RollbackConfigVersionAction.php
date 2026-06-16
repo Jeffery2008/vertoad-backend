@@ -8,6 +8,7 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use RuntimeException;
 use VertoAD\Http\Auth\RequestUserContext;
+use VertoAD\Http\RequestIdContext;
 use VertoAD\Service\Operations\ConfigVersionService;
 
 final readonly class RollbackConfigVersionAction
@@ -21,7 +22,11 @@ final readonly class RollbackConfigVersionAction
     {
         $context = RequestUserContext::fromRequest($request);
         try {
-            $version = $this->configs->rollback($args['version_id'] ?? '', $context->user?->id ?? 0);
+            $version = $this->configs->rollback(
+                $args['version_id'] ?? '',
+                $context->user?->id ?? 0,
+                RequestIdContext::fromRequest($request),
+            );
         } catch (RuntimeException $exception) {
             return OperationsJson::write($response, ['code' => 'not_found', 'message' => $exception->getMessage()], 404);
         }

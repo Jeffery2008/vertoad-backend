@@ -7,9 +7,11 @@ namespace VertoAD\Tests;
 use PHPUnit\Framework\TestCase;
 use VertoAD\Domain\Assets\AssetType;
 use VertoAD\Domain\Assets\AssetUploadPolicy;
+use VertoAD\Domain\IpGeo\IpGeoProviderPolicy;
 use VertoAD\Domain\Review\AiReviewPolicy;
 use VertoAD\Domain\Security\TurnstilePolicy;
 use VertoAD\Domain\Serving\ServingEventPolicy;
+use VertoAD\Domain\Serving\ServingGeoTargetingPolicy;
 use VertoAD\Domain\Webhooks\WebhookDeliveryPolicy;
 use VertoAD\Infrastructure\Security\RateLimitPolicy;
 use VertoAD\Repository\SystemConfigRepositoryInterface;
@@ -214,6 +216,96 @@ final class SystemConfigServiceTest extends TestCase
                 self::fail('Invalid serving.event_validation value must be rejected.');
             } catch (\UnexpectedValueException $exception) {
                 self::assertStringStartsWith('Invalid serving.event_validation ', $exception->getMessage());
+            }
+        }
+    }
+
+    public function testServingGeoTargetingPolicyUsesConfiguredProvider(): void
+    {
+        $repository = new ArraySystemConfigRepository([
+            'serving.geo_provider' => [
+                'enabled' => true,
+                'provider' => 'pconline',
+                'endpoint' => 'https://whois.pconline.com.cn/ipJson.jsp',
+                'timeout_seconds' => 3,
+                'cache_ttl_seconds' => 7200,
+                'cache_prefix' => 'vertoad:test:geo:',
+                'default_country_code' => 'CN',
+            ],
+        ]);
+
+        $policy = (new SystemConfigService($repository))->servingGeoTargetingPolicy();
+
+        self::assertInstanceOf(ServingGeoTargetingPolicy::class, $policy);
+        self::assertTrue($policy->enabled);
+        self::assertSame('pconline', $policy->provider);
+        self::assertSame('https://whois.pconline.com.cn/ipJson.jsp', $policy->endpoint);
+        self::assertSame(3, $policy->timeoutSeconds);
+        self::assertSame(7200, $policy->cacheTtlSeconds);
+        self::assertSame('vertoad:test:geo:', $policy->cachePrefix);
+        self::assertSame('CN', $policy->defaultCountryCode);
+        self::assertSame(['serving.geo_provider'], $repository->queries);
+    }
+
+    public function testServingGeoTargetingPolicyFallsBackToDisabledLocalPolicy(): void
+    {
+        $policy = (new SystemConfigService(new ArraySystemConfigRepository()))->servingGeoTargetingPolicy();
+
+        self::assertFalse($policy->enabled);
+        self::assertSame('pconline', $policy->provider);
+        self::assertSame(86400, $policy->cacheTtlSeconds);
+    }
+
+    public function testIpGeoProviderPolicyUsesConfiguredProviderRegistry(): void
+    {
+        $repository = new ArraySystemConfigRepository([
+            'serving.geo_provider' => [
+                'enabled' => true,
+                'batch_size' => 25,
+                'max_attempts' => 4,
+                'retry_backoff_seconds' => 120,
+                'providers' => [[
+                    'id' => 'custom-us',
+                    'endpoint_template' => 'https://geo.example/lookup/{ip}',
+                    'regions' => ['US'],
+                    'weight' => 3,
+                    'api_key_env_var' => 'IP_GEO_CUSTOM_KEY',
+                    'fields' => ['country_code' => 'country_code'],
+                ]],
+            ],
+        ]);
+        $policy = (new SystemConfigService($repository))->ipGeoProviderPolicy();
+
+        self::assertInstanceOf(IpGeoProviderPolicy::class, $policy);
+        self::assertTrue($policy->enabled);
+        self::assertSame(25, $policy->batchSize);
+        self::assertSame(4, $policy->maxAttempts);
+        self::assertSame(120, $policy->retryBackoffSeconds);
+        self::assertSame('custom-us', $policy->provider('custom-us')?->id);
+        self::assertSame('IP_GEO_CUSTOM_KEY', $policy->provider('custom-us')?->apiKeyEnvVar);
+    }
+
+    public function testServingGeoTargetingPolicyRejectsInvalidConfiguredValues(): void
+    {
+        foreach (
+            [
+                ['enabled' => true, 'provider' => '', 'endpoint' => 'https://geo.example.test', 'timeout_seconds' => 2, 'cache_ttl_seconds' => 60, 'cache_prefix' => 'geo:', 'default_country_code' => 'CN'],
+                ['enabled' => true, 'provider' => 'pconline', 'endpoint' => '', 'timeout_seconds' => 2, 'cache_ttl_seconds' => 60, 'cache_prefix' => 'geo:', 'default_country_code' => 'CN'],
+                ['enabled' => true, 'provider' => 'pconline', 'endpoint' => 'https://geo.example.test', 'timeout_seconds' => 0, 'cache_ttl_seconds' => 60, 'cache_prefix' => 'geo:', 'default_country_code' => 'CN'],
+                ['enabled' => true, 'provider' => 'pconline', 'endpoint' => 'https://geo.example.test', 'timeout_seconds' => 2, 'cache_ttl_seconds' => 0, 'cache_prefix' => 'geo:', 'default_country_code' => 'CN'],
+                ['enabled' => true, 'provider' => 'pconline', 'endpoint' => 'https://geo.example.test', 'timeout_seconds' => 2, 'cache_ttl_seconds' => 60, 'cache_prefix' => '', 'default_country_code' => 'CN'],
+                ['enabled' => true, 'provider' => 'pconline', 'endpoint' => 'https://geo.example.test', 'timeout_seconds' => 2, 'cache_ttl_seconds' => 60, 'cache_prefix' => 'geo:', 'default_country_code' => ''],
+            ] as $value
+        ) {
+            $service = new SystemConfigService(new ArraySystemConfigRepository([
+                'serving.geo_provider' => $value,
+            ]));
+
+            try {
+                $service->servingGeoTargetingPolicy();
+                self::fail('Invalid serving.geo_provider value must be rejected.');
+            } catch (\UnexpectedValueException $exception) {
+                self::assertStringStartsWith('Invalid serving.geo_provider ', $exception->getMessage());
             }
         }
     }
@@ -697,6 +789,13 @@ final class SystemConfigServiceTest extends TestCase
             self::fail('Production runtime config must not silently fall back when serving event config is missing.');
         } catch (\RuntimeException $exception) {
             self::assertSame('Missing required system config: serving.event_validation.', $exception->getMessage());
+        }
+
+        try {
+            $service->servingGeoTargetingPolicy();
+            self::fail('Production runtime config must not silently fall back when serving geo provider config is missing.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('Missing required system config: serving.geo_provider.', $exception->getMessage());
         }
 
         try {

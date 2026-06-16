@@ -9,9 +9,11 @@ use InvalidArgumentException;
 use VertoAD\Domain\Assets\AssetType;
 use VertoAD\Domain\Assets\AssetUploadPolicy;
 use RuntimeException;
+use VertoAD\Domain\IpGeo\IpGeoProviderPolicy;
 use VertoAD\Domain\Operations\ConfigVersion;
 use VertoAD\Domain\Review\AiReviewPolicy;
 use VertoAD\Domain\Security\TurnstilePolicy;
+use VertoAD\Domain\Serving\ServingGeoTargetingPolicy;
 use VertoAD\Domain\Webhooks\WebhookDeliveryPolicy;
 use VertoAD\Repository\Operations\ConfigVersionRepositoryInterface;
 use VertoAD\Service\AuditLogService;
@@ -22,6 +24,7 @@ final readonly class ConfigVersionService
     private const RATE_LIMIT_KEY = 'security.rate_limit';
     private const ATTRIBUTION_DEFAULT_WINDOW_KEY = 'attribution.default_window_seconds';
     private const SERVING_EVENT_VALIDATION_KEY = 'serving.event_validation';
+    private const SERVING_GEO_PROVIDER_KEY = 'serving.geo_provider';
     private const ASSET_UPLOAD_POLICY_KEY = 'assets.upload_policy';
     private const AI_REVIEW_POLICY_KEY = 'review.ai_policy';
     private const WEBHOOK_DELIVERY_POLICY_KEY = 'webhook.delivery_policy';
@@ -39,9 +42,9 @@ final readonly class ConfigVersionService
      * @param array<string, mixed> $value
      * @return array<string, mixed>
      */
-    public function createVersion(string $configKey, array $value, int $createdByUserId): array
+    public function createVersion(string $configKey, array $value, int $createdByUserId, ?string $requestId = null): array
     {
-        return $this->create($configKey, $value, $createdByUserId)->toArray();
+        return $this->create($configKey, $value, $createdByUserId, $requestId)->toArray();
     }
 
     /**
@@ -57,18 +60,19 @@ final readonly class ConfigVersionService
     /**
      * @return array<string, mixed>
      */
-    public function rollback(string $versionId, int $createdByUserId): array
+    public function rollback(string $versionId, int $createdByUserId, ?string $requestId = null): array
     {
         $target = $this->versions->find($versionId);
         if ($target === null) {
             throw new RuntimeException('Config version not found.');
         }
 
-        $created = $this->create($target->config_key, $target->value, $createdByUserId);
+        $created = $this->create($target->config_key, $target->value, $createdByUserId, $requestId);
         $this->audit->record(
             action: 'operations.config.rollback',
             subjectType: 'config_version',
             actorUserId: $createdByUserId,
+            requestId: $requestId,
             metadata: [
                 'created_version_id' => $created->version_id,
                 'config_key' => $created->config_key,
@@ -82,7 +86,7 @@ final readonly class ConfigVersionService
     /**
      * @param array<string, mixed> $value
      */
-    private function create(string $configKey, array $value, int $createdByUserId): ConfigVersion
+    private function create(string $configKey, array $value, int $createdByUserId, ?string $requestId = null): ConfigVersion
     {
         $this->assertValidKey($configKey);
         $this->assertValidValue($configKey, $value);
@@ -100,6 +104,7 @@ final readonly class ConfigVersionService
             action: 'operations.config.version_created',
             subjectType: 'config_version',
             actorUserId: $createdByUserId,
+            requestId: $requestId,
             metadata: [
                 'config_key' => $created->config_key,
                 'created_version_id' => $created->version_id,
@@ -157,6 +162,10 @@ final readonly class ConfigVersionService
             $this->assertValidServingEventValidation($value);
         }
 
+        if ($configKey === self::SERVING_GEO_PROVIDER_KEY) {
+            $this->assertValidServingGeoProvider($value);
+        }
+
         if ($configKey === self::ASSET_UPLOAD_POLICY_KEY) {
             $this->assertValidAssetUploadPolicy($value);
         }
@@ -193,7 +202,7 @@ final readonly class ConfigVersionService
 
     private function isSecretKey(string $normalized): bool
     {
-        if (in_array($normalized, ['max_input_tokens', 'max_output_tokens'], true)) {
+        if (in_array($normalized, ['max_input_tokens', 'max_output_tokens', 'api_key_env_var'], true)) {
             return false;
         }
 
@@ -215,6 +224,7 @@ final readonly class ConfigVersionService
             self::RATE_LIMIT_KEY,
             self::ATTRIBUTION_DEFAULT_WINDOW_KEY,
             self::SERVING_EVENT_VALIDATION_KEY,
+            self::SERVING_GEO_PROVIDER_KEY,
             self::ASSET_UPLOAD_POLICY_KEY,
             self::AI_REVIEW_POLICY_KEY,
             self::WEBHOOK_DELIVERY_POLICY_KEY,
@@ -274,6 +284,67 @@ final readonly class ConfigVersionService
 
         $this->requiredPositiveInt(self::SERVING_EVENT_VALIDATION_KEY, $value, 'min_visible_ms');
         $this->requiredPositiveInt(self::SERVING_EVENT_VALIDATION_KEY, $value, 'repeat_click_window_seconds');
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     */
+    private function assertValidServingGeoProvider(array $value): void
+    {
+        if (isset($value['providers'])) {
+            $this->assertValidIpGeoProviderPolicy($value);
+            return;
+        }
+
+        $this->assertOnlyFields(
+            self::SERVING_GEO_PROVIDER_KEY,
+            $value,
+            ['enabled', 'provider', 'endpoint', 'timeout_seconds', 'cache_ttl_seconds', 'cache_prefix', 'default_country_code'],
+        );
+
+        if (!is_bool($value['enabled'] ?? null)) {
+            throw new InvalidArgumentException('Invalid serving.geo_provider enabled must be boolean.');
+        }
+
+        if (($value['provider'] ?? null) !== ServingGeoTargetingPolicy::DEFAULT_PROVIDER) {
+            throw new InvalidArgumentException('Invalid serving.geo_provider provider must be pconline.');
+        }
+
+        $endpoint = $value['endpoint'] ?? null;
+        if (!is_string($endpoint) || !filter_var($endpoint, FILTER_VALIDATE_URL) || !str_starts_with(strtolower($endpoint), 'https://')) {
+            throw new InvalidArgumentException('Invalid serving.geo_provider endpoint must be an HTTPS URL.');
+        }
+
+        $this->requiredPositiveInt(self::SERVING_GEO_PROVIDER_KEY, $value, 'timeout_seconds');
+        $this->requiredPositiveInt(self::SERVING_GEO_PROVIDER_KEY, $value, 'cache_ttl_seconds');
+
+        $cachePrefix = $value['cache_prefix'] ?? null;
+        if (!is_string($cachePrefix) || trim($cachePrefix) === '') {
+            throw new InvalidArgumentException('Invalid serving.geo_provider cache_prefix must be a non-empty string.');
+        }
+
+        $defaultCountryCode = $value['default_country_code'] ?? null;
+        if (!is_string($defaultCountryCode) || preg_match('/^[A-Z]{2}$/', strtoupper(trim($defaultCountryCode))) !== 1) {
+            throw new InvalidArgumentException('Invalid serving.geo_provider default_country_code must be an ISO-like country code.');
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     */
+    private function assertValidIpGeoProviderPolicy(array $value): void
+    {
+        $this->assertOnlyFields(
+            self::SERVING_GEO_PROVIDER_KEY,
+            $value,
+            ['enabled', 'providers', 'include_builtins', 'batch_size', 'max_attempts', 'retry_backoff_seconds', 'cache_ttl_seconds', 'queue_source'],
+        );
+
+        try {
+            IpGeoProviderPolicy::fromArray($value);
+        } catch (InvalidArgumentException $exception) {
+            throw new InvalidArgumentException('Invalid serving.geo_provider ' . $exception->getMessage(), 0, $exception);
+        }
     }
 
     /**

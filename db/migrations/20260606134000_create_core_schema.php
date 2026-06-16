@@ -135,11 +135,13 @@ CREATE TABLE audit_logs (
     subject_id BIGINT UNSIGNED NULL,
     ip_address VARBINARY(16) NULL,
     user_agent VARCHAR(512) NULL,
+    request_id VARCHAR(160) NULL,
     metadata_json JSON NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     KEY idx_audit_logs_organization_created (organization_id, created_at),
     KEY idx_audit_logs_actor_created (actor_user_id, created_at),
+    KEY idx_audit_logs_request_created (request_id, created_at),
     KEY idx_audit_logs_subject (subject_type, subject_id),
     CONSTRAINT fk_audit_logs_organization FOREIGN KEY (organization_id) REFERENCES organizations (id) ON DELETE SET NULL,
     CONSTRAINT fk_audit_logs_actor FOREIGN KEY (actor_user_id) REFERENCES users (id) ON DELETE SET NULL

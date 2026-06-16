@@ -58,6 +58,11 @@ LUA,
         return (bool) $this->redis->set($key, $value, ['nx', 'ex' => $seconds]);
     }
 
+    public function setEx(string $key, string $value, int $seconds): bool
+    {
+        return (bool) $this->redis->setex($key, $seconds, $value);
+    }
+
     public function zRangeByScore(string $key, string $from, string $to, int $offset, int $count): array
     {
         $members = $this->redis->zRangeByScore($key, $from, $to, ['limit' => [$offset, $count]]);

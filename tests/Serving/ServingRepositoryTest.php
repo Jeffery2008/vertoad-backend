@@ -97,6 +97,23 @@ final class ServingRepositoryTest extends TestCase
         self::assertSame(5, $candidates[0]->dailyFrequencyCap);
     }
 
+    public function testDatabaseCandidateRepositoryHydratesGeoTargetingRules(): void
+    {
+        $connection = $this->createCampaignConnection();
+        $this->insertCandidateFixture(
+            $connection,
+            campaignId: 100,
+            assetId: 200,
+            targeting: ['site_ids' => [10], 'slot_ids' => [20], 'geos' => ['CN-SH', 'CN-BJ']],
+        );
+
+        $candidates = (new DatabaseAdCandidateRepository($connection))
+            ->eligibleCandidatesForSlot(10, 20, ['width' => 300, 'height' => 250]);
+
+        self::assertCount(1, $candidates);
+        self::assertSame(['CN-SH', 'CN-BJ'], $candidates[0]->geos);
+    }
+
     public function testDatabaseCandidateRepositoryDefaultsMissingQualityCtrAndCaps(): void
     {
         $connection = $this->createCampaignConnection();

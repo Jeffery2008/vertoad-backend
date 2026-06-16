@@ -34,6 +34,7 @@ final class AuditLogQueryServiceTest extends TestCase
             'subject_id',
             'ip_address',
             'user_agent',
+            'request_id',
             'metadata',
             'context_redacted',
             'created_at',
@@ -109,6 +110,19 @@ final class AuditLogQueryServiceTest extends TestCase
         );
 
         self::assertSame(10, $repository->lastFilters['organization_id'] ?? null);
+    }
+
+    public function testListNormalizesRequestIdFilter(): void
+    {
+        $repository = new CapturingAuditLogQueryRepositoryStub();
+        $service = new AuditLogService($repository);
+
+        $service->search(
+            filters: ['request_id' => ' req-audit-1 '],
+            context: new RequestUserContext(new AuthenticatedUser(1, 'root@example.com', true), null),
+        );
+
+        self::assertSame('req-audit-1', $repository->lastFilters['request_id'] ?? null);
     }
 
     public function testListRejectsInvalidStringFilterType(): void
@@ -216,6 +230,7 @@ final class AuditLogQueryRepositoryStub implements AuditLogRepositoryInterface, 
                     subjectId: 123,
                     ipAddress: '203.0.113.10',
                     userAgent: 'PHPUnit',
+                    requestId: 'req-audit-stub',
                     metadata: ['safe' => 'value', 'token' => 'raw-token'],
                     createdAt: '2026-06-15T10:00:00Z',
                 ),

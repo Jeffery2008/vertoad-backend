@@ -16,6 +16,8 @@ final readonly class ListOperationErrorsAction
 
     public function __invoke(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
-        return OperationsJson::write($response, ['errors' => $this->errors->listErrors()]);
+        $requestId = $request->getQueryParams()['request_id'] ?? null;
+
+        return OperationsJson::write($response, ['errors' => $this->errors->listErrors(is_string($requestId) ? $requestId : null)]);
     }
 }

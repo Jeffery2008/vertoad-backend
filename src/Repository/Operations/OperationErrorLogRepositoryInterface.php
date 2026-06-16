@@ -15,5 +15,5 @@ interface OperationErrorLogRepositoryInterface
     /**
      * @return list<OperationErrorLog>
      */
-    public function all(): array;
+    public function all(?string $requestId = null): array;
 }

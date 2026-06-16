@@ -112,6 +112,7 @@ final readonly class DatabaseAdCandidateRepository implements AdCandidateReposit
                 historicalCtrPerMille: $this->historicalCtrPerMille((int) $row['historical_impressions'], (int) $row['historical_clicks']),
                 hourlyFrequencyCap: $row['hourly_impression_cap'] === null ? null : (int) $row['hourly_impression_cap'],
                 dailyFrequencyCap: $row['daily_impression_cap'] === null ? null : (int) $row['daily_impression_cap'],
+                geos: $targeting->geos,
             );
         }
 

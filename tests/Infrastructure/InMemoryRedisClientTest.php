@@ -21,8 +21,10 @@ final class InMemoryRedisClientTest extends TestCase
         self::assertTrue($client->exists('key'));
         self::assertTrue($client->expire('key', 60));
         self::assertSame('value', $client->get('key'));
+        self::assertTrue($client->setEx('key', 'replacement', 30));
+        self::assertSame('replacement', $client->get('key'));
         self::assertFalse($client->deleteIfValue('key', 'other'));
-        self::assertTrue($client->deleteIfValue('key', 'value'));
+        self::assertTrue($client->deleteIfValue('key', 'replacement'));
         self::assertFalse($client->exists('key'));
         self::assertSame(0, $client->delete('missing'));
         self::assertSame(1, $client->increment('count'));
@@ -43,5 +45,6 @@ final class InMemoryRedisClientTest extends TestCase
         self::assertSame(1, $client->zAdd('z', 1.5, 'member'));
         self::assertSame(1, $client->zRem('z', 'member'));
         self::assertFalse($client->setNxEx('expired', 'value', 0));
+        self::assertFalse($client->setEx('expired', 'value', 0));
     }
 }

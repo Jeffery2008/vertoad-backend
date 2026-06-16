@@ -45,14 +45,20 @@ final readonly class DatabaseOperationErrorLogRepository implements OperationErr
         return $row === false ? null : $this->hydrate($row);
     }
 
-    public function all(): array
+    public function all(?string $requestId = null): array
     {
-        $rows = $this->connection->createQueryBuilder()
+        $query = $this->connection->createQueryBuilder()
             ->select(...$this->columns())
             ->from('operation_error_logs')
             ->orderBy('occurred_at', 'ASC')
-            ->addOrderBy('error_id', 'ASC')
-            ->fetchAllAssociative();
+            ->addOrderBy('error_id', 'ASC');
+
+        if ($requestId !== null && trim($requestId) !== '') {
+            $query->where('request_id = :request_id')
+                ->setParameter('request_id', trim($requestId));
+        }
+
+        $rows = $query->fetchAllAssociative();
 
         return array_map(fn (array $row): OperationErrorLog => $this->hydrate($row), $rows);
     }

@@ -10,6 +10,7 @@ use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\MiddlewareInterface;
 use Psr\Http\Server\RequestHandlerInterface;
 use VertoAD\Domain\Security\TurnstilePolicy;
+use VertoAD\Http\RequestIdContext;
 use VertoAD\Infrastructure\Security\ClientIpResolver;
 use VertoAD\Infrastructure\Security\TurnstileVerifier;
 use VertoAD\Service\AuditLogService;
@@ -154,6 +155,7 @@ final readonly class TurnstileMiddleware implements MiddlewareInterface
             subjectType: 'security_control',
             ipAddress: $this->remoteIp($request),
             userAgent: $request->getHeaderLine('User-Agent') ?: null,
+            requestId: RequestIdContext::fromRequest($request),
             metadata: [
                 'endpoint' => $request->getMethod() . ':' . $request->getUri()->getPath(),
                 'reason' => $reason,
@@ -163,10 +165,7 @@ final readonly class TurnstileMiddleware implements MiddlewareInterface
 
     private function errorResponse(ServerRequestInterface $request, int $statusCode, string $code, string $message): ResponseInterface
     {
-        $requestId = trim($request->getHeaderLine('X-Request-Id'));
-        if ($requestId === '') {
-            $requestId = bin2hex(random_bytes(16));
-        }
+        $requestId = RequestIdContext::ensure($request);
 
         $response = $this->responseFactory->createResponse($statusCode);
         $response->getBody()->write(json_encode([

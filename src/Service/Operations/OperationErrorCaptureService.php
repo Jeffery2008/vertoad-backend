@@ -53,9 +53,9 @@ final readonly class OperationErrorCaptureService
     /**
      * @return list<array<string, mixed>>
      */
-    public function listErrors(): array
+    public function listErrors(?string $requestId = null): array
     {
-        return array_map(static fn (OperationErrorLog $entry): array => $entry->toArray(), $this->errors->all());
+        return array_map(static fn (OperationErrorLog $entry): array => $entry->toArray(), $this->errors->all($requestId));
     }
 
     /**
@@ -77,6 +77,7 @@ final readonly class OperationErrorCaptureService
             subjectType: 'operation_error_log',
             actorUserId: $context->user->id,
             organizationId: $context->organizationId,
+            requestId: $entry->request_id,
             metadata: [
                 'error_id' => $entry->error_id,
                 'request_id' => $entry->request_id,

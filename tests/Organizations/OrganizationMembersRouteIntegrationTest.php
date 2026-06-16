@@ -191,6 +191,7 @@ final class OrganizationMembersRouteIntegrationTest extends TestCase
             '/api/v1/organizations/99/members',
             method: 'POST',
             body: ['email' => 'analyst@example.com', 'role_id' => 'campaign_manager'],
+            headers: ['X-Request-Id' => 'req-org-member-invite'],
         );
 
         self::assertSame(201, $response['status'], json_encode($response['body'], JSON_THROW_ON_ERROR));
@@ -200,6 +201,7 @@ final class OrganizationMembersRouteIntegrationTest extends TestCase
         self::assertSame(1, (int) $connection->fetchOne(
             "SELECT COUNT(*) FROM audit_logs WHERE action = 'organization.member.invite' AND subject_type = 'organization_member'",
         ));
+        self::assertSame('req-org-member-invite', $connection->fetchOne("SELECT request_id FROM audit_logs WHERE action = 'organization.member.invite'"));
     }
 
     public function testInvitingMissingOrganizationReturnsNotFound(): void
@@ -340,12 +342,16 @@ final class OrganizationMembersRouteIntegrationTest extends TestCase
         string $uri,
         string $method = 'GET',
         ?array $body = null,
+        array $headers = [],
     ): array
     {
         $request = (new ServerRequestFactory())
             ->createServerRequest($method, $uri, ['REMOTE_ADDR' => '203.0.113.10'])
             ->withHeader('User-Agent', 'OrganizationRouteTest/1.0')
             ->withHeader('Authorization', 'Bearer fixed-token');
+        foreach ($headers as $name => $value) {
+            $request = $request->withHeader((string) $name, (string) $value);
+        }
         if ($body !== null) {
             $request = $request
                 ->withHeader('Content-Type', 'application/json')
@@ -520,7 +526,7 @@ final class OrganizationMembersRouteIntegrationTest extends TestCase
         $connection->executeStatement('CREATE TABLE permissions (id INTEGER PRIMARY KEY, slug TEXT NOT NULL, description TEXT NULL)');
         $connection->executeStatement('CREATE TABLE role_permissions (role_id INTEGER NOT NULL, permission_id INTEGER NOT NULL)');
         $connection->executeStatement('CREATE TABLE user_roles (user_id INTEGER NOT NULL, role_id INTEGER NOT NULL, organization_id INTEGER NULL)');
-        $connection->executeStatement('CREATE TABLE audit_logs (id INTEGER PRIMARY KEY, organization_id INTEGER NULL, actor_user_id INTEGER NULL, action TEXT NOT NULL, subject_type TEXT NOT NULL, subject_id INTEGER NULL, ip_address BLOB NULL, user_agent TEXT NULL, metadata_json TEXT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)');
+        $connection->executeStatement('CREATE TABLE audit_logs (id INTEGER PRIMARY KEY, organization_id INTEGER NULL, actor_user_id INTEGER NULL, action TEXT NOT NULL, subject_type TEXT NOT NULL, subject_id INTEGER NULL, ip_address BLOB NULL, user_agent TEXT NULL, request_id TEXT NULL, metadata_json TEXT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)');
         $connection->insert('users', ['id' => 1, 'email' => 'owner@example.com', 'password_hash' => 'unused', 'display_name' => 'Owner User', 'status' => 'active', 'last_login_at' => null]);
         $connection->insert('users', ['id' => 2, 'email' => 'viewer@example.com', 'password_hash' => 'unused', 'display_name' => null, 'status' => 'active', 'last_login_at' => null]);
         $connection->insert('organizations', ['id' => 99, 'name' => 'Route Test Org', 'slug' => 'route-test-org']);

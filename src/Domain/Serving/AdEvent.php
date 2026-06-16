@@ -25,6 +25,10 @@ final readonly class AdEvent
         public ?string $reason,
         public ?float $visibleRatio = null,
         public ?int $visibleMs = null,
+        public ?string $requestId = null,
+        public ?string $ipAddress = null,
+        public ?string $userAgent = null,
+        public ?string $geoCode = null,
     ) {
     }
 }

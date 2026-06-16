@@ -6,6 +6,7 @@ namespace VertoAD\Repository;
 
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\ParameterType;
+use Doctrine\DBAL\Platforms\SQLitePlatform;
 use VertoAD\Domain\Audit\AuditLogEntry;
 use VertoAD\Domain\Audit\AuditLogRecord;
 
@@ -27,6 +28,7 @@ final class AuditLogRepository implements AuditLogRepositoryInterface, AuditLogQ
                 'subject_id' => $entry->subjectId,
                 'ip_address' => $entry->packedIpAddress,
                 'user_agent' => $entry->userAgent,
+                'request_id' => $entry->requestId,
                 'metadata_json' => $entry->metadata === null
                     ? null
                     : json_encode($entry->metadata, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
@@ -39,6 +41,7 @@ final class AuditLogRepository implements AuditLogRepositoryInterface, AuditLogQ
                 'subject_id' => $entry->subjectId === null ? ParameterType::NULL : ParameterType::INTEGER,
                 'ip_address' => $entry->packedIpAddress === null ? ParameterType::NULL : ParameterType::BINARY,
                 'user_agent' => $entry->userAgent === null ? ParameterType::NULL : ParameterType::STRING,
+                'request_id' => $entry->requestId === null ? ParameterType::NULL : ParameterType::STRING,
                 'metadata_json' => $entry->metadata === null ? ParameterType::NULL : ParameterType::STRING,
             ],
         );
@@ -65,6 +68,7 @@ final class AuditLogRepository implements AuditLogRepositoryInterface, AuditLogQ
                 'al.subject_id',
                 'al.ip_address',
                 'al.user_agent',
+                'al.request_id',
                 'al.metadata_json',
                 'al.created_at',
             )
@@ -116,6 +120,24 @@ final class AuditLogRepository implements AuditLogRepositoryInterface, AuditLogQ
                 ->setParameter('subject_id', $filters['subject_id'], ParameterType::INTEGER);
         }
 
+        if (isset($filters['request_id'])) {
+            $query->andWhere('(al.request_id = :request_id OR ' . $this->metadataStringExpression('request_id') . ' = :request_id OR ' . $this->metadataStringExpression('correlation_id') . ' = :request_id)')
+                ->setParameter('request_id', $filters['request_id'], ParameterType::STRING);
+        }
+
+        if (isset($filters['ip_address'])) {
+            $packed = inet_pton((string) $filters['ip_address']);
+            if ($packed !== false) {
+                $query->andWhere('al.ip_address = :ip_address')
+                    ->setParameter('ip_address', $packed, ParameterType::BINARY);
+            }
+        }
+
+        if (isset($filters['endpoint'])) {
+            $query->andWhere($this->metadataStringExpression('endpoint') . ' = :endpoint')
+                ->setParameter('endpoint', $filters['endpoint'], ParameterType::STRING);
+        }
+
         if (isset($filters['created_from'])) {
             $query->andWhere('al.created_at >= :created_from')
                 ->setParameter('created_from', $filters['created_from'], ParameterType::STRING);
@@ -125,6 +147,16 @@ final class AuditLogRepository implements AuditLogRepositoryInterface, AuditLogQ
             $query->andWhere('al.created_at <= :created_to')
                 ->setParameter('created_to', $filters['created_to'], ParameterType::STRING);
         }
+    }
+
+    private function metadataStringExpression(string $field): string
+    {
+        $path = '$.' . $field;
+        if ($this->connection->getDatabasePlatform() instanceof SQLitePlatform) {
+            return "json_extract(al.metadata_json, '" . $path . "')";
+        }
+
+        return "JSON_UNQUOTE(JSON_EXTRACT(al.metadata_json, '" . $path . "'))";
     }
 
     /**
@@ -141,6 +173,7 @@ final class AuditLogRepository implements AuditLogRepositoryInterface, AuditLogQ
             subjectId: $row['subject_id'] === null ? null : (int) $row['subject_id'],
             ipAddress: $this->unpackIpAddress($row['ip_address'] ?? null),
             userAgent: $row['user_agent'] === null ? null : (string) $row['user_agent'],
+            requestId: $row['request_id'] === null ? null : (string) $row['request_id'],
             metadata: $this->decodeMetadata($row['metadata_json'] ?? null),
             createdAt: $this->formatCreatedAt((string) $row['created_at']),
         );

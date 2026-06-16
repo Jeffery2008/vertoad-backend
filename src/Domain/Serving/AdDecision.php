@@ -26,6 +26,10 @@ final readonly class AdDecision
         public ?int $clickCostPoints,
         public ?string $landingUrl,
         public DateTimeImmutable $decidedAt,
+        public ?string $requestId = null,
+        public ?string $ipAddress = null,
+        public ?string $userAgent = null,
+        public ?string $geoCode = null,
     ) {
     }
 
@@ -49,6 +53,10 @@ final readonly class AdDecision
             clickCostPoints: $this->clickCostPoints,
             landingUrl: $landingUrl,
             decidedAt: $this->decidedAt,
+            requestId: $this->requestId,
+            ipAddress: $this->ipAddress,
+            userAgent: $this->userAgent,
+            geoCode: $this->geoCode,
         );
     }
 }

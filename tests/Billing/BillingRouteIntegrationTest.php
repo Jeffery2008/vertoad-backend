@@ -569,6 +569,7 @@ final class BillingRouteIntegrationTest extends TestCase
         ], $token, ['REMOTE_ADDR' => '198.51.100.24'], [
             'CF-Connecting-IP' => '203.0.113.88',
             'User-Agent' => 'LedgerAdmin/1.0',
+            'X-Request-Id' => 'req-ledger-adjust',
         ]);
         self::assertSame(201, $adjustmentResponse['status']);
         $adjustment = $adjustmentResponse['body'];
@@ -610,6 +611,7 @@ final class BillingRouteIntegrationTest extends TestCase
             [
                 'CF-Connecting-IP' => '203.0.113.89',
                 'User-Agent' => 'LedgerAdmin/1.0',
+                'X-Request-Id' => 'req-ledger-reverse',
             ],
         );
         self::assertSame(201, $reversalResponse['status']);
@@ -656,7 +658,7 @@ final class BillingRouteIntegrationTest extends TestCase
         $duplicateReversal = $duplicateReversalResponse['body'];
         self::assertSame('ledger_reversal_conflict', $duplicateReversal['error']['code']);
 
-        $auditRows = $connection->fetchAllAssociative('SELECT action, subject_type, subject_id, actor_user_id, organization_id, ip_address, user_agent, metadata_json FROM audit_logs ORDER BY id ASC');
+        $auditRows = $connection->fetchAllAssociative('SELECT action, subject_type, subject_id, actor_user_id, organization_id, ip_address, user_agent, request_id, metadata_json FROM audit_logs ORDER BY id ASC');
         self::assertCount(2, $auditRows);
         self::assertSame('billing.ledger.adjust', $auditRows[0]['action']);
         self::assertSame('ledger_entry', $auditRows[0]['subject_type']);
@@ -665,6 +667,7 @@ final class BillingRouteIntegrationTest extends TestCase
         self::assertSame(10, (int) $auditRows[0]['organization_id']);
         self::assertSame(inet_pton('203.0.113.88'), $auditRows[0]['ip_address']);
         self::assertSame('LedgerAdmin/1.0', $auditRows[0]['user_agent']);
+        self::assertSame('req-ledger-adjust', $auditRows[0]['request_id']);
         self::assertStringContainsString('compensate failed recharge import', (string) $auditRows[0]['metadata_json']);
 
         self::assertSame('billing.ledger.reverse', $auditRows[1]['action']);
@@ -674,6 +677,7 @@ final class BillingRouteIntegrationTest extends TestCase
         self::assertSame(10, (int) $auditRows[1]['organization_id']);
         self::assertSame(inet_pton('203.0.113.89'), $auditRows[1]['ip_address']);
         self::assertSame('LedgerAdmin/1.0', $auditRows[1]['user_agent']);
+        self::assertSame('req-ledger-reverse', $auditRows[1]['request_id']);
         self::assertStringContainsString('operator found duplicate compensation', (string) $auditRows[1]['metadata_json']);
     }
 
@@ -1851,6 +1855,7 @@ final class BillingRouteIntegrationTest extends TestCase
                 organization_id INTEGER NULL,
                 ip_address BLOB NULL,
                 user_agent TEXT NULL,
+                request_id TEXT NULL,
                 metadata_json TEXT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )',

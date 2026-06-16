@@ -38,6 +38,7 @@ final readonly class RuntimeConfigHealthCheck
             }
             $configs->rateLimitPolicy();
             $configs->servingEventPolicy();
+            $configs->ipGeoProviderPolicy();
             $aiReviewPolicy = $configs->aiReviewPolicy();
             if ($aiReviewApiKeyResolver !== null) {
                 if (!$aiReviewPolicy->enabled) {

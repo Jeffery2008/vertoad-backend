@@ -73,19 +73,54 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
         return (int) $count > 0;
     }
 
-    public function recordImpression(AdDecision $decision, string $eventId, float $visibleRatio, int $visibleMs, DateTimeImmutable $occurredAt): void
+    public function recordImpression(AdDecision $decision, string $eventId, float $visibleRatio, int $visibleMs, DateTimeImmutable $occurredAt, ?string $requestId = null): void
     {
-        $this->record('impression', $decision, $eventId, $occurredAt, true, null, $visibleRatio, $visibleMs);
+        $this->record('impression', $decision, $eventId, $occurredAt, true, null, $visibleRatio, $visibleMs, $requestId);
     }
 
-    public function recordClick(AdDecision $decision, string $eventId, DateTimeImmutable $occurredAt): void
+    public function recordClick(AdDecision $decision, string $eventId, DateTimeImmutable $occurredAt, ?string $requestId = null): void
     {
-        $this->record('click', $decision, $eventId, $occurredAt, true, null);
+        $this->record('click', $decision, $eventId, $occurredAt, true, null, null, null, $requestId);
     }
 
-    public function recordInvalidClick(AdDecision $decision, string $eventId, DateTimeImmutable $occurredAt, string $reason): void
+    public function recordInvalidClick(AdDecision $decision, string $eventId, DateTimeImmutable $occurredAt, string $reason, ?string $requestId = null): void
     {
-        $this->record('click', $decision, $eventId, $occurredAt, false, trim($reason));
+        $this->record('click', $decision, $eventId, $occurredAt, false, trim($reason), null, null, $requestId);
+    }
+
+    public function searchEvents(array $filters): array
+    {
+        $query = $this->connection->createQueryBuilder()
+            ->select(...$this->columns())
+            ->from('ad_serving_events')
+            ->orderBy('occurred_at', 'DESC')
+            ->addOrderBy('id', 'DESC');
+
+        if (isset($filters['request_id']) && trim((string) $filters['request_id']) !== '') {
+            $query->andWhere('request_id = :request_id')
+                ->setParameter('request_id', trim((string) $filters['request_id']));
+        }
+        if (isset($filters['ip_address']) && trim((string) $filters['ip_address']) !== '') {
+            $query->andWhere('ip_address = :ip_address')
+                ->setParameter('ip_address', trim((string) $filters['ip_address']));
+        }
+        if (isset($filters['event_type']) && trim((string) $filters['event_type']) !== '') {
+            $query->andWhere('event_type = :event_type')
+                ->setParameter('event_type', trim((string) $filters['event_type']));
+        }
+        if (isset($filters['occurred_from']) && trim((string) $filters['occurred_from']) !== '') {
+            $query->andWhere('occurred_at >= :occurred_from')
+                ->setParameter('occurred_from', $this->formatDate(new DateTimeImmutable((string) $filters['occurred_from'])));
+        }
+        if (isset($filters['occurred_to']) && trim((string) $filters['occurred_to']) !== '') {
+            $query->andWhere('occurred_at <= :occurred_to')
+                ->setParameter('occurred_to', $this->formatDate(new DateTimeImmutable((string) $filters['occurred_to'])));
+        }
+        if (isset($filters['limit']) && is_int($filters['limit']) && $filters['limit'] > 0) {
+            $query->setMaxResults($filters['limit']);
+        }
+
+        return array_map(fn (array $row): AdEvent => $this->hydrate($row), $query->fetchAllAssociative());
     }
 
     public function persist(AdEvent $event): bool
@@ -111,6 +146,10 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
                     'reason' => $event->reason,
                     'visible_ratio' => $event->visibleRatio,
                     'visible_ms' => $event->visibleMs,
+                    'request_id' => $event->requestId,
+                    'ip_address' => $event->ipAddress,
+                    'user_agent' => $event->userAgent,
+                    'geo_code' => $event->geoCode,
                     'billing_status' => 'pending',
                     'billed_points' => 0,
                     'publisher_earning_points' => 0,
@@ -228,6 +267,7 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
         ?string $reason,
         ?float $visibleRatio = null,
         ?int $visibleMs = null,
+        ?string $requestId = null,
     ): void {
         $this->persist(new AdEvent(
             eventType: $eventType,
@@ -246,6 +286,10 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
             reason: $reason,
             visibleRatio: $visibleRatio,
             visibleMs: $visibleMs,
+            requestId: $requestId,
+            ipAddress: $decision->ipAddress,
+            userAgent: $decision->userAgent,
+            geoCode: $decision->geoCode,
         ));
     }
 
@@ -261,8 +305,9 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
             'event_type' => trim($event->eventType),
             'occurred_at' => $this->formatDate($event->occurredAt),
             'received_at' => $this->formatDate(new DateTimeImmutable()),
+            'request_id' => $event->requestId,
             'request_ip' => null,
-            'user_agent' => null,
+            'user_agent' => $event->userAgent,
             'payload_json' => json_encode($this->rawPayload($event), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
             'processed_at' => null,
         ]);
@@ -327,6 +372,10 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
             'reason' => $event->reason,
             'visible_ratio' => $event->visibleRatio,
             'visible_ms' => $event->visibleMs,
+            'request_id' => $event->requestId,
+            'ip_address' => $event->ipAddress,
+            'user_agent' => $event->userAgent,
+            'geo_code' => $event->geoCode,
         ];
     }
 
@@ -352,6 +401,10 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
             'reason',
             'visible_ratio',
             'visible_ms',
+            'request_id',
+            'ip_address',
+            'user_agent',
+            'geo_code',
         ];
     }
 
@@ -377,6 +430,10 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
             reason: $row['reason'] === null ? null : (string) $row['reason'],
             visibleRatio: $row['visible_ratio'] === null ? null : (float) $row['visible_ratio'],
             visibleMs: $row['visible_ms'] === null ? null : (int) $row['visible_ms'],
+            requestId: $row['request_id'] === null ? null : (string) $row['request_id'],
+            ipAddress: $row['ip_address'] === null ? null : (string) $row['ip_address'],
+            userAgent: $row['user_agent'] === null ? null : (string) $row['user_agent'],
+            geoCode: $row['geo_code'] === null ? null : (string) $row['geo_code'],
         );
     }
 

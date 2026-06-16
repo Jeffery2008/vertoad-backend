@@ -9,6 +9,7 @@ use VertoAD\Domain\Budget\SpendFailureReason;
 use VertoAD\Domain\Serving\AdCandidate;
 use VertoAD\Domain\Serving\AdDecision;
 use VertoAD\Domain\Serving\AdEventResult;
+use VertoAD\Domain\Serving\ServingRequestContext;
 use VertoAD\Domain\Serving\ServingEventPolicy;
 use VertoAD\Repository\Serving\AdCandidateRepositoryInterface;
 use VertoAD\Repository\Serving\AdDecisionRepositoryInterface;
@@ -47,22 +48,29 @@ final readonly class AdServingService
         ?array $size,
         bool $debug,
         DateTimeImmutable $now,
+        string|ServingRequestContext|null $context = null,
     ): AdDecision {
         $width = $size['width'] ?? 1;
         $height = $size['height'] ?? 1;
+        $context = $this->requestContext($context);
 
         if (!$this->inventory->isVerifiedActiveSlot($siteId, $slotId)) {
-            return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'unverified_inventory', $now));
+            return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'unverified_inventory', $now, $context));
         }
 
         $candidates = $this->candidates->eligibleCandidatesForSlot($siteId, $slotId, $size);
         if ($candidates === []) {
-            return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'no_eligible_ad', $now));
+            return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'no_eligible_ad', $now, $context));
+        }
+
+        $candidates = $this->filterGeoTargetedCandidates($candidates, $context->geoCode);
+        if ($candidates === []) {
+            return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'geo_target_mismatch', $now, $context));
         }
 
         $trafficRisk = $this->selectionPolicy->trafficRisk($siteId, $slotId, $viewerId);
         if (!$trafficRisk->allowed) {
-            return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, $trafficRisk->reason ?? 'fraud_high_risk', $now));
+            return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, $trafficRisk->reason ?? 'fraud_high_risk', $now, $context));
         }
 
         $candidates = $this->selectionPolicy->rankCandidates($candidates, $siteId, $slotId, $viewerId, $now);
@@ -83,21 +91,21 @@ final readonly class AdServingService
                 continue;
             }
 
-            $decision = $this->filled($siteId, $slotId, $viewerId, $candidate, $now);
+            $decision = $this->filled($siteId, $slotId, $viewerId, $candidate, $now, $context);
             $this->selectionPolicy->recordServe($candidate, $siteId, $slotId, $viewerId, $now);
 
             return $this->save($decision);
         }
 
         if ($budgetRejection !== null) {
-            return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'budget_' . $budgetRejection->value, $now));
+            return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'budget_' . $budgetRejection->value, $now, $context));
         }
 
         if ($frequencyCapped) {
-            return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'frequency_cap_exceeded', $now));
+            return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'frequency_cap_exceeded', $now, $context));
         }
 
-        return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'unsafe_landing_url', $now));
+        return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'unsafe_landing_url', $now, $context));
     }
 
     public function trackImpression(
@@ -107,6 +115,7 @@ final readonly class AdServingService
         int $visibleMs,
         string $eventId,
         DateTimeImmutable $occurredAt,
+        ?string $requestId = null,
     ): AdEventResult {
         $decision = $this->decisions->find($decisionId);
         if ($decision === null || !$decision->filled || $decision->viewerId !== $viewerId) {
@@ -121,7 +130,7 @@ final readonly class AdServingService
             return AdEventResult::rejected('viewability_threshold_not_met');
         }
 
-        $this->events->recordImpression($decision, $eventId, $visibleRatio, $visibleMs, $occurredAt);
+        $this->events->recordImpression($decision, $eventId, $visibleRatio, $visibleMs, $occurredAt, $requestId);
 
         return AdEventResult::accepted();
     }
@@ -131,6 +140,7 @@ final readonly class AdServingService
         string $viewerId,
         string $eventId,
         DateTimeImmutable $occurredAt,
+        ?string $requestId = null,
     ): AdEventResult {
         $decision = $this->decisions->find($decisionId);
         if ($decision === null || !$decision->filled || $decision->viewerId !== $viewerId || $decision->landingUrl === null) {
@@ -160,12 +170,12 @@ final readonly class AdServingService
             $occurredAt,
             $this->eventPolicy->repeatClickWindowSeconds,
         )) {
-            $this->events->recordInvalidClick($decision, $eventId, $occurredAt, 'repeat_click_window');
+            $this->events->recordInvalidClick($decision, $eventId, $occurredAt, 'repeat_click_window', $requestId);
 
             return AdEventResult::rejected('repeat_click_window');
         }
 
-        $this->events->recordClick($decision, $eventId, $occurredAt);
+        $this->events->recordClick($decision, $eventId, $occurredAt, $requestId);
 
         return AdEventResult::accepted(redirectUrl: $decision->landingUrl);
     }
@@ -185,6 +195,7 @@ final readonly class AdServingService
         int $height,
         string $reason,
         DateTimeImmutable $now,
+        ServingRequestContext $context,
     ): AdDecision {
         $escapedReason = htmlspecialchars($reason, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 
@@ -206,10 +217,14 @@ final readonly class AdServingService
             clickCostPoints: null,
             landingUrl: null,
             decidedAt: $now,
+            requestId: $context->requestId,
+            ipAddress: $context->ipAddress,
+            userAgent: $context->userAgent,
+            geoCode: $context->geoCode,
         );
     }
 
-    private function filled(int $siteId, int $slotId, string $viewerId, AdCandidate $candidate, DateTimeImmutable $now): AdDecision
+    private function filled(int $siteId, int $slotId, string $viewerId, AdCandidate $candidate, DateTimeImmutable $now, ServingRequestContext $context): AdDecision
     {
         $decisionId = 'ad:' . hash('sha256', $siteId . '|' . $slotId . '|' . $viewerId . '|' . $candidate->adId . '|' . $now->format(DATE_ATOM));
         $creative = htmlspecialchars($this->creativeSrcdoc($decisionId, $viewerId, $candidate), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
@@ -232,6 +247,10 @@ final readonly class AdServingService
             clickCostPoints: $candidate->clickCostPoints,
             landingUrl: $candidate->landingUrl,
             decidedAt: $now,
+            requestId: $context->requestId,
+            ipAddress: $context->ipAddress,
+            userAgent: $context->userAgent,
+            geoCode: $context->geoCode,
         );
     }
 
@@ -287,6 +306,61 @@ final readonly class AdServingService
             max($candidate->impressionCostPoints, $candidate->clickCostPoints),
             $now,
         );
+    }
+
+    /**
+     * @param list<AdCandidate> $candidates
+     * @return list<AdCandidate>
+     */
+    private function filterGeoTargetedCandidates(array $candidates, ?string $geoCode): array
+    {
+        $geoCode = $this->normalizeGeo($geoCode);
+
+        return array_values(array_filter(
+            $candidates,
+            function (AdCandidate $candidate) use ($geoCode): bool {
+                if ($candidate->geos === []) {
+                    return true;
+                }
+
+                if ($geoCode === null) {
+                    return false;
+                }
+
+                foreach ($candidate->geos as $targetGeo) {
+                    $normalizedTarget = $this->normalizeGeo($targetGeo);
+                    if ($normalizedTarget !== null && ($geoCode === $normalizedTarget || str_starts_with($geoCode, $normalizedTarget . '-'))) {
+                        return true;
+                    }
+                }
+
+                return false;
+            },
+        ));
+    }
+
+    private function requestContext(string|ServingRequestContext|null $context): ServingRequestContext
+    {
+        if ($context instanceof ServingRequestContext) {
+            return $context;
+        }
+
+        if (is_string($context)) {
+            return new ServingRequestContext(geoCode: $context);
+        }
+
+        return new ServingRequestContext();
+    }
+
+    private function normalizeGeo(?string $geo): ?string
+    {
+        if ($geo === null) {
+            return null;
+        }
+
+        $geo = strtoupper(trim($geo));
+
+        return $geo === '' ? null : $geo;
     }
 
     private function isSafeLandingUrl(string $url): bool

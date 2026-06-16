@@ -18,6 +18,7 @@ final readonly class AuditLogRecord
         public ?int $subjectId,
         public ?string $ipAddress,
         public ?string $userAgent,
+        public ?string $requestId,
         public ?array $metadata,
         public string $createdAt,
     ) {

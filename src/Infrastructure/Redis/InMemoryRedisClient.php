@@ -63,6 +63,17 @@ final class InMemoryRedisClient implements RedisClientInterface
         return true;
     }
 
+    public function setEx(string $key, string $value, int $seconds): bool
+    {
+        if ($seconds <= 0) {
+            return false;
+        }
+
+        $this->values[$key] = $value;
+
+        return true;
+    }
+
     public function zRangeByScore(string $key, string $from, string $to, int $offset, int $count): array
     {
         return [];

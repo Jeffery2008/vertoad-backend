@@ -17,7 +17,8 @@ final readonly class AuditLogEntry
         public ?int $organizationId,
         public ?string $packedIpAddress,
         public ?string $userAgent,
-        public ?array $metadata,
+        public ?string $requestId = null,
+        public ?array $metadata = null,
     ) {
     }
 }

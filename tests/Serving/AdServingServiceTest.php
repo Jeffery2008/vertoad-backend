@@ -86,6 +86,67 @@ final class AdServingServiceTest extends TestCase
         self::assertSame('unsafe_landing_url', $unsafe->reason);
     }
 
+    public function testServeAppliesGeoTargetingAfterRequestIpResolution(): void
+    {
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([
+                $this->candidate(
+                    adId: 'ad-shanghai',
+                    campaignId: 30,
+                    advertiserOrganizationId: 40,
+                    landingUrl: 'https://advertiser.example/shanghai',
+                    impressionCostPoints: 10,
+                    clickCostPoints: 20,
+                    geos: ['CN-SH'],
+                ),
+                $this->candidate(
+                    adId: 'ad-untargeted',
+                    campaignId: 31,
+                    advertiserOrganizationId: 41,
+                    landingUrl: 'https://advertiser.example/untargeted',
+                    impressionCostPoints: 8,
+                    clickCostPoints: 16,
+                ),
+            ]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+        );
+
+        $matched = $service->serve(10, 20, 'viewer-shanghai', null, false, new DateTimeImmutable('2026-06-08 10:00:00'), 'CN-SH');
+        $mismatched = $service->serve(10, 20, 'viewer-beijing', null, false, new DateTimeImmutable('2026-06-08 10:00:00'), 'CN-BJ');
+
+        self::assertTrue($matched->filled);
+        self::assertSame('ad-shanghai', $matched->adId);
+        self::assertTrue($mismatched->filled);
+        self::assertSame('ad-untargeted', $mismatched->adId);
+    }
+
+    public function testServeNoFillsWhenEveryCandidateIsGeoMismatched(): void
+    {
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([
+                $this->candidate(
+                    adId: 'ad-shanghai',
+                    campaignId: 30,
+                    advertiserOrganizationId: 40,
+                    landingUrl: 'https://advertiser.example/shanghai',
+                    impressionCostPoints: 10,
+                    clickCostPoints: 20,
+                    geos: ['CN-SH'],
+                ),
+            ]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+        );
+
+        $decision = $service->serve(10, 20, 'viewer-beijing', null, false, new DateTimeImmutable('2026-06-08 10:00:00'), 'CN-BJ');
+
+        self::assertFalse($decision->filled);
+        self::assertSame('geo_target_mismatch', $decision->reason);
+    }
+
     public function testTrackRequiresValidViewabilityThresholdAndDeduplicatesEvents(): void
     {
         $events = new InMemoryAdEventRepository();
@@ -562,6 +623,38 @@ final class AdServingServiceTest extends TestCase
         self::assertSame(2, $frequencyCaps->servedCount(31, 20, 'viewer-frequency', 'hour', $now));
     }
 
+    public function testServeTrackAndClickPreserveRequestIdsForCorrelation(): void
+    {
+        $decisions = new InMemoryAdDecisionRepository();
+        $events = new InMemoryAdEventRepository();
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([$this->safeCandidate()]),
+            $decisions,
+            $events,
+        );
+        $now = new DateTimeImmutable('2026-06-08 10:00:00');
+
+        $decision = $service->serve(10, 20, 'viewer-request-id', null, false, $now, new \VertoAD\Domain\Serving\ServingRequestContext(
+            ipAddress: '198.51.100.10',
+            userAgent: 'Correlation browser',
+            geoCode: 'CN-SH',
+            requestId: 'req-serve-1',
+        ));
+        $impression = $service->trackImpression($decision->decisionId, 'viewer-request-id', 0.75, 1500, 'imp-request-id', $now->modify('+2 seconds'), 'req-track-1');
+        $click = $service->recordClick($decision->decisionId, 'viewer-request-id', 'clk-request-id', $now->modify('+40 seconds'), 'req-click-1');
+
+        self::assertTrue($decision->filled);
+        self::assertSame('req-serve-1', $decisions->find($decision->decisionId)?->requestId);
+        self::assertSame('198.51.100.10', $decisions->find($decision->decisionId)?->ipAddress);
+        self::assertSame('Correlation browser', $decisions->find($decision->decisionId)?->userAgent);
+        self::assertSame('CN-SH', $decisions->find($decision->decisionId)?->geoCode);
+        self::assertTrue($impression->accepted);
+        self::assertSame('req-track-1', $events->findEvent('impression', 'imp-request-id')?->requestId);
+        self::assertTrue($click->accepted);
+        self::assertSame('req-click-1', $events->findEvent('click', 'clk-request-id')?->requestId);
+    }
+
     public function testInMemoryFrequencyCapStoreRejectsUnsupportedWindow(): void
     {
         $this->expectException(\InvalidArgumentException::class);
@@ -606,6 +699,7 @@ final class AdServingServiceTest extends TestCase
         int $historicalCtrPerMille = 0,
         ?int $hourlyFrequencyCap = null,
         ?int $dailyFrequencyCap = null,
+        array $geos = [],
     ): AdCandidate
     {
         return new AdCandidate(
@@ -622,6 +716,7 @@ final class AdServingServiceTest extends TestCase
             historicalCtrPerMille: $historicalCtrPerMille,
             hourlyFrequencyCap: $hourlyFrequencyCap,
             dailyFrequencyCap: $dailyFrequencyCap,
+            geos: $geos,
         );
     }
 }

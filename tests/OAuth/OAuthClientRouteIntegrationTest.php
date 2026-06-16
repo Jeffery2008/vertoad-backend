@@ -50,7 +50,7 @@ final class OAuthClientRouteIntegrationTest extends TestCase
             'grant_types' => ['authorization_code', 'client_credentials'],
             'scopes' => ['campaign.read.own', 'report.read.own', 'sdk.oauth_client.read.own'],
             'is_confidential' => true,
-        ]);
+        ], ['X-Request-Id' => 'req-oauth-client-create']);
 
         self::assertSame(201, $created['status']);
         self::assertSame(99, $created['body']['data']['client']['organization_id']);
@@ -73,6 +73,7 @@ final class OAuthClientRouteIntegrationTest extends TestCase
             'POST',
             '/api/v1/oauth/clients/' . $created['body']['data']['client']['client_id'] . '/rotate-secret?organization_id=99',
             [],
+            ['X-Request-Id' => 'req-oauth-client-rotate'],
         );
 
         self::assertSame(200, $rotated['status']);
@@ -87,6 +88,7 @@ final class OAuthClientRouteIntegrationTest extends TestCase
         self::assertSame(99, (int) $auditRows[0]['organization_id']);
         self::assertSame(1, (int) $auditRows[0]['actor_user_id']);
         self::assertSame('OAuthClientRouteIntegrationTest/1.0', $auditRows[0]['user_agent']);
+        self::assertSame('req-oauth-client-create', $auditRows[0]['request_id']);
         self::assertStringContainsString('sdk.oauth_client.read.own', (string) $auditRows[0]['metadata_json']);
         self::assertStringNotContainsString('secret-v1', (string) $auditRows[0]['metadata_json']);
         self::assertStringNotContainsString('secret-v2', (string) $auditRows[0]['metadata_json']);
@@ -94,6 +96,7 @@ final class OAuthClientRouteIntegrationTest extends TestCase
         self::assertSame('sdk.oauth_client.rotate_secret', $auditRows[1]['action']);
         self::assertSame('oauth_client', $auditRows[1]['subject_type']);
         self::assertSame((int) $connection->fetchOne('SELECT id FROM oauth_clients'), (int) $auditRows[1]['subject_id']);
+        self::assertSame('req-oauth-client-rotate', $auditRows[1]['request_id']);
         self::assertStringNotContainsString('secret-v2', (string) $auditRows[1]['metadata_json']);
     }
 
@@ -361,12 +364,15 @@ final class OAuthClientRouteIntegrationTest extends TestCase
      * @param array<string, mixed>|null $payload
      * @return array{status: int, body: array<string, mixed>}
      */
-    private function handleJson(\Slim\App $app, string $method, string $uri, ?array $payload): array
+    private function handleJson(\Slim\App $app, string $method, string $uri, ?array $payload, array $headers = []): array
     {
         $request = (new ServerRequestFactory())
             ->createServerRequest($method, $uri)
             ->withHeader('Authorization', 'Bearer fixed-token')
             ->withHeader('User-Agent', 'OAuthClientRouteIntegrationTest/1.0');
+        foreach ($headers as $name => $value) {
+            $request = $request->withHeader((string) $name, (string) $value);
+        }
         if ($payload !== null) {
             $request = $request->withParsedBody($payload);
         }
@@ -448,6 +454,7 @@ final class OAuthClientRouteIntegrationTest extends TestCase
                 subject_id INTEGER NULL,
                 ip_address BLOB NULL,
                 user_agent TEXT NULL,
+                request_id TEXT NULL,
                 metadata_json TEXT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )',

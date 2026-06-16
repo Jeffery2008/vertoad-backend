@@ -56,6 +56,7 @@ final class PredisRedisClientTest extends TestCase
             'get' => 42,
             'incr' => 3,
             'set' => 'OK',
+            'setex' => 'OK',
             'zrangebyscore' => ['event-a', 9],
             'zadd' => 1,
             'zrem' => 1,
@@ -69,6 +70,7 @@ final class PredisRedisClientTest extends TestCase
         self::assertSame('42', $client->get('key'));
         self::assertSame(3, $client->increment('key'));
         self::assertTrue($client->setNxEx('key', 'value', 10));
+        self::assertTrue($client->setEx('key', 'value', 10));
         self::assertTrue($client->deleteIfValue('key', 'value'));
         self::assertSame(['event-a', '9'], $client->zRangeByScore('z', '-inf', '+inf', 1, 2));
         self::assertSame(1, $client->zAdd('z', 1.5, 'member'));
@@ -81,14 +83,15 @@ final class PredisRedisClientTest extends TestCase
         self::assertSame(['key'], $commands->calls[3][1]);
         self::assertSame(['key'], $commands->calls[4][1]);
         self::assertSame(['key', 'value', 'EX', 10, 'NX'], $commands->calls[5][1]);
-        self::assertStringContainsString("redis.call('GET', KEYS[1])", (string) $commands->calls[6][1][0]);
-        self::assertSame(1, $commands->calls[6][1][1]);
-        self::assertSame('key', $commands->calls[6][1][2]);
-        self::assertSame('value', $commands->calls[6][1][3]);
-        self::assertSame(['z', '-inf', '+inf', ['limit' => [1, 2]]], $commands->calls[7][1]);
-        self::assertSame(['z', ['member' => 1.5]], $commands->calls[8][1]);
-        self::assertSame(['z', ['member']], $commands->calls[9][1]);
-        self::assertSame(['return {}', 2, 'k1', 'k2', 'a1'], $commands->calls[10][1]);
+        self::assertSame(['key', 10, 'value'], $commands->calls[6][1]);
+        self::assertStringContainsString("redis.call('GET', KEYS[1])", (string) $commands->calls[7][1][0]);
+        self::assertSame(1, $commands->calls[7][1][1]);
+        self::assertSame('key', $commands->calls[7][1][2]);
+        self::assertSame('value', $commands->calls[7][1][3]);
+        self::assertSame(['z', '-inf', '+inf', ['limit' => [1, 2]]], $commands->calls[8][1]);
+        self::assertSame(['z', ['member' => 1.5]], $commands->calls[9][1]);
+        self::assertSame(['z', ['member']], $commands->calls[10][1]);
+        self::assertSame(['return {}', 2, 'k1', 'k2', 'a1'], $commands->calls[11][1]);
     }
 
     public function testNormalizesMissingValuesAndFailedSet(): void
@@ -98,6 +101,7 @@ final class PredisRedisClientTest extends TestCase
             'expire' => 0,
             'get' => null,
             'set' => null,
+            'setex' => null,
             'zrangebyscore' => 'not-list',
             'eval' => 'not-list',
         ]);
@@ -107,6 +111,7 @@ final class PredisRedisClientTest extends TestCase
         self::assertFalse($client->expire('key', 60));
         self::assertFalse($client->get('key'));
         self::assertFalse($client->setNxEx('key', 'value', 10));
+        self::assertFalse($client->setEx('key', 'value', 10));
         self::assertFalse($client->deleteIfValue('key', 'value'));
         self::assertSame([], $client->zRangeByScore('z', '-inf', '+inf', 0, 1));
         self::assertSame([], $client->eval('return {}', [], []));

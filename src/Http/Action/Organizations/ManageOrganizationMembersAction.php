@@ -9,6 +9,7 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use VertoAD\Http\Action\Campaigns\CampaignRequestGuards;
 use VertoAD\Http\Auth\RequestUserContext;
+use VertoAD\Http\RequestIdContext;
 use VertoAD\Infrastructure\Security\ClientIpResolver;
 use VertoAD\Repository\OrganizationMemberManagementRepositoryInterface;
 use VertoAD\Repository\OrganizationMembershipRepositoryInterface;
@@ -200,6 +201,7 @@ final readonly class ManageOrganizationMembersAction
             organizationId: (int) $member['organization_id'],
             ipAddress: $this->ipResolver->resolve($request),
             userAgent: $request->getHeaderLine('User-Agent') ?: null,
+            requestId: RequestIdContext::fromRequest($request),
             metadata: [
                 'email' => $member['email'],
                 'roles' => $member['roles'],

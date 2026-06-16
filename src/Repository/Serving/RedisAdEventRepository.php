@@ -82,25 +82,65 @@ final readonly class RedisAdEventRepository implements AdEventRepositoryInterfac
         return $this->hasIndexedEvent($this->validClickIndex($decisionId, $viewerId), (string) $from, (string) $to);
     }
 
-    public function recordImpression(AdDecision $decision, string $eventId, float $visibleRatio, int $visibleMs, DateTimeImmutable $occurredAt): void
+    public function recordImpression(AdDecision $decision, string $eventId, float $visibleRatio, int $visibleMs, DateTimeImmutable $occurredAt, ?string $requestId = null): void
     {
-        $event = $this->event('impression', $decision, $eventId, $occurredAt, true, null, $visibleRatio, $visibleMs);
+        $event = $this->event('impression', $decision, $eventId, $occurredAt, true, null, $visibleRatio, $visibleMs, $requestId);
         $this->record($event);
         $this->index($this->validImpressionIndex($decision->decisionId, $decision->viewerId), $event);
     }
 
-    public function recordClick(AdDecision $decision, string $eventId, DateTimeImmutable $occurredAt): void
+    public function recordClick(AdDecision $decision, string $eventId, DateTimeImmutable $occurredAt, ?string $requestId = null): void
     {
-        $event = $this->event('click', $decision, $eventId, $occurredAt, true, null);
+        $event = $this->event('click', $decision, $eventId, $occurredAt, true, null, null, null, $requestId);
         $this->record($event);
         $this->index($this->validClickIndex($decision->decisionId, $decision->viewerId), $event);
     }
 
-    public function recordInvalidClick(AdDecision $decision, string $eventId, DateTimeImmutable $occurredAt, string $reason): void
+    public function recordInvalidClick(AdDecision $decision, string $eventId, DateTimeImmutable $occurredAt, string $reason, ?string $requestId = null): void
     {
-        $event = $this->event('click', $decision, $eventId, $occurredAt, false, trim($reason));
+        $event = $this->event('click', $decision, $eventId, $occurredAt, false, trim($reason), null, null, $requestId);
         $this->record($event);
         $this->index($this->validClickIndex($decision->decisionId, $decision->viewerId), $event);
+    }
+
+    public function searchEvents(array $filters): array
+    {
+        $index = null;
+        if (isset($filters['request_id']) && trim((string) $filters['request_id']) !== '') {
+            $index = $this->requestIdIndex(trim((string) $filters['request_id']));
+        } elseif (isset($filters['ip_address']) && trim((string) $filters['ip_address']) !== '') {
+            $index = $this->ipAddressIndex(trim((string) $filters['ip_address']));
+        } else {
+            return [];
+        }
+
+        $from = isset($filters['occurred_from']) && trim((string) $filters['occurred_from']) !== ''
+            ? (string) (new DateTimeImmutable((string) $filters['occurred_from']))->getTimestamp()
+            : '-inf';
+        $to = isset($filters['occurred_to']) && trim((string) $filters['occurred_to']) !== ''
+            ? (string) (new DateTimeImmutable((string) $filters['occurred_to']))->getTimestamp()
+            : '+inf';
+        $limit = isset($filters['limit']) && is_int($filters['limit']) && $filters['limit'] > 0 ? $filters['limit'] : 100;
+        $keys = $this->client->zRangeByScore($index, $from, $to, 0, $limit);
+        $events = [];
+        foreach (is_array($keys) ? $keys : [] as $key) {
+            $event = $this->load((string) $key);
+            if ($event === null) {
+                continue;
+            }
+            if (isset($filters['request_id']) && trim((string) $filters['request_id']) !== '' && $event->requestId !== trim((string) $filters['request_id'])) {
+                continue;
+            }
+            if (isset($filters['ip_address']) && trim((string) $filters['ip_address']) !== '' && $event->ipAddress !== trim((string) $filters['ip_address'])) {
+                continue;
+            }
+            if (isset($filters['event_type']) && trim((string) $filters['event_type']) !== '' && $event->eventType !== trim((string) $filters['event_type'])) {
+                continue;
+            }
+            $events[] = $event;
+        }
+
+        return $events;
     }
 
     public function lease(int $limit): array
@@ -179,6 +219,8 @@ LUA,
         }
 
         $this->client->zAdd($this->pendingKey(), $event->occurredAt->getTimestamp(), $key);
+        $this->indexNullable($event->requestId, fn (string $value): string => $this->requestIdIndex($value), $event);
+        $this->indexNullable($event->ipAddress, fn (string $value): string => $this->ipAddressIndex($value), $event);
     }
 
     private function index(string $indexKey, AdEvent $event): void
@@ -189,6 +231,20 @@ LUA,
 
         $this->client->zAdd($indexKey, $event->occurredAt->getTimestamp(), $this->eventKey($event->eventType, $event->eventId));
         $this->client->expire($indexKey, $this->eventRetentionSeconds);
+    }
+
+    /**
+     * @param callable(string): string $indexKey
+     */
+    private function indexNullable(?string $value, callable $indexKey, AdEvent $event): void
+    {
+        if ($value === null || trim($value) === '') {
+            return;
+        }
+
+        $key = $indexKey(trim($value));
+        $this->client->zAdd($key, $event->occurredAt->getTimestamp(), $this->eventKey($event->eventType, $event->eventId));
+        $this->client->expire($key, $this->eventRetentionSeconds);
     }
 
     private function hasIndexedEvent(string $indexKey, string $from, string $to): bool
@@ -225,6 +281,10 @@ LUA,
             reason: $data['reason'] === null ? null : (string) $data['reason'],
             visibleRatio: $data['visible_ratio'] === null ? null : (float) $data['visible_ratio'],
             visibleMs: $data['visible_ms'] === null ? null : (int) $data['visible_ms'],
+            requestId: ($data['request_id'] ?? null) === null ? null : (string) $data['request_id'],
+            ipAddress: ($data['ip_address'] ?? null) === null ? null : (string) $data['ip_address'],
+            userAgent: ($data['user_agent'] ?? null) === null ? null : (string) $data['user_agent'],
+            geoCode: ($data['geo_code'] ?? null) === null ? null : (string) $data['geo_code'],
         );
     }
 
@@ -247,6 +307,10 @@ LUA,
             'reason' => $event->reason,
             'visible_ratio' => $event->visibleRatio,
             'visible_ms' => $event->visibleMs,
+            'request_id' => $event->requestId,
+            'ip_address' => $event->ipAddress,
+            'user_agent' => $event->userAgent,
+            'geo_code' => $event->geoCode,
         ], JSON_THROW_ON_ERROR);
     }
 
@@ -259,6 +323,7 @@ LUA,
         ?string $reason,
         ?float $visibleRatio = null,
         ?int $visibleMs = null,
+        ?string $requestId = null,
     ): AdEvent {
         return new AdEvent(
             eventType: $eventType,
@@ -277,6 +342,10 @@ LUA,
             reason: $reason,
             visibleRatio: $visibleRatio,
             visibleMs: $visibleMs,
+            requestId: $requestId,
+            ipAddress: $decision->ipAddress,
+            userAgent: $decision->userAgent,
+            geoCode: $decision->geoCode,
         );
     }
 
@@ -313,5 +382,15 @@ LUA,
     private function validClickIndex(string $decisionId, string $viewerId): string
     {
         return $this->prefix . 'serving-events:index:valid-click:' . hash('sha256', trim($decisionId) . ':' . trim($viewerId));
+    }
+
+    private function requestIdIndex(string $requestId): string
+    {
+        return $this->prefix . 'serving-events:index:request:' . hash('sha256', trim($requestId));
+    }
+
+    private function ipAddressIndex(string $ipAddress): string
+    {
+        return $this->prefix . 'serving-events:index:ip:' . hash('sha256', trim($ipAddress));
     }
 }

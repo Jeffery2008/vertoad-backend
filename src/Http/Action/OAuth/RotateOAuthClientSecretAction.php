@@ -8,6 +8,7 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use VertoAD\Http\Action\Campaigns\CampaignRequestGuards;
 use VertoAD\Http\Auth\RequestUserContext;
+use VertoAD\Http\RequestIdContext;
 use VertoAD\Infrastructure\Security\ClientIpResolver;
 use VertoAD\Repository\OAuthClientRepositoryInterface;
 use VertoAD\Service\AuditLogService;
@@ -55,6 +56,7 @@ final readonly class RotateOAuthClientSecretAction
                 organizationId: $client->organizationId,
                 ipAddress: $this->ipResolver->resolve($request),
                 userAgent: $request->getHeaderLine('User-Agent') ?: null,
+                requestId: RequestIdContext::fromRequest($request),
                 metadata: [
                     'client_id' => $client->clientIdentifier,
                     'grant_types' => $client->grantTypes,

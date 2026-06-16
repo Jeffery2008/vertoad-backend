@@ -33,10 +33,10 @@ final readonly class ConfigCacheRefreshJob implements CronJobInterface
     {
         $refreshed = 0;
         foreach ($this->configs->listLatestValues() as $key => $value) {
-            $this->redis->eval(
-                "return {redis.call('SETEX', KEYS[1], ARGV[1], ARGV[2])}",
-                [$this->cachePrefix . 'config:' . $key],
-                [(string) $this->ttlSeconds, json_encode($value, JSON_THROW_ON_ERROR)],
+            $this->redis->setEx(
+                $this->cachePrefix . 'config:' . $key,
+                json_encode($value, JSON_THROW_ON_ERROR),
+                $this->ttlSeconds,
             );
             ++$refreshed;
         }

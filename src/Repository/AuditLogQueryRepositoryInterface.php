@@ -15,6 +15,7 @@ interface AuditLogQueryRepositoryInterface
      *     actor_user_id?: int,
      *     subject_type?: string,
      *     subject_id?: int,
+     *     request_id?: string,
      *     created_from?: string,
      *     created_to?: string,
      *     limit: int,

@@ -14,6 +14,7 @@ use Slim\Factory\AppFactory as SlimAppFactory;
 use Slim\Psr7\Factory\ServerRequestFactory;
 use VertoAD\Domain\Serving\AdCandidate;
 use VertoAD\Domain\Serving\AdDecision;
+use VertoAD\Domain\Serving\ServingRequestContext;
 use VertoAD\Domain\Security\TurnstilePolicy;
 use VertoAD\Http\Action\Serving\ClickAction;
 use VertoAD\Http\Action\Serving\ServeAction;
@@ -22,11 +23,13 @@ use VertoAD\Http\Action\Serving\TrackAction;
 use VertoAD\Http\Middleware\ApiEnvelopeMiddleware;
 use VertoAD\Http\Middleware\TurnstileMiddleware;
 use VertoAD\Infrastructure\Security\TurnstileVerifier;
+use VertoAD\Infrastructure\Security\ClientIpResolver;
 use VertoAD\Repository\Serving\InMemoryAdDecisionRepository;
 use VertoAD\Repository\Serving\InMemoryAdEventRepository;
 use VertoAD\Repository\Serving\StaticAdCandidateRepository;
 use VertoAD\Repository\Serving\StaticServingInventoryRepository;
 use VertoAD\Service\Serving\AdServingService;
+use VertoAD\Service\Serving\GeoResolverInterface;
 
 final class ServingRouteIntegrationTest extends TestCase
 {
@@ -96,6 +99,125 @@ final class ServingRouteIntegrationTest extends TestCase
             'debug' => 'yes',
         ]);
         self::assertSame('invalid_request', $invalidDebug['error']['code']);
+    }
+
+    public function testServeUsesTrustedCloudflareIpForGeoTargeting(): void
+    {
+        $resolver = new RecordingGeoResolver(['198.51.100.10' => 'CN-SH']);
+        $app = $this->createApp([
+            new AdCandidate(
+                adId: 'ad-shanghai',
+                campaignId: 30,
+                advertiserOrganizationId: 40,
+                creativeHtml: '<strong>VertoAD creative</strong>',
+                landingUrl: 'https://advertiser.example/shanghai',
+                width: 300,
+                height: 250,
+                impressionCostPoints: 10,
+                clickCostPoints: 20,
+                assetType: 'image',
+                assetObjectKey: 'organizations/40/assets/shanghai.png',
+                assetContentType: 'image/png',
+                geos: ['CN-SH'],
+            ),
+        ], geoResolver: $resolver);
+
+        $decoded = $this->handleJson(
+            $app,
+            'POST',
+            '/api/v1/ads/serve',
+            [
+                'site_id' => 10,
+                'slot_id' => 20,
+                'viewer_id' => 'viewer-geo',
+                'size' => ['width' => 300, 'height' => 250],
+            ],
+            [
+                'CF-Connecting-IP' => '198.51.100.10',
+                'User-Agent' => 'Geo test browser',
+            ],
+            ['REMOTE_ADDR' => '203.0.113.9'],
+        );
+
+        self::assertTrue($decoded['data']['filled']);
+        self::assertSame('ad-shanghai', $decoded['data']['ad']['id']);
+        self::assertSame([['198.51.100.10', 'Geo test browser']], $resolver->calls);
+    }
+
+    public function testServeAllowsUnknownAsyncGeoAndQueuesIpForLaterResolution(): void
+    {
+        $repository = new \VertoAD\Repository\IpGeo\InMemoryIpGeoRepository();
+        $app = $this->createApp(
+            [$this->safeCandidate()],
+            geoResolver: new \VertoAD\Service\IpGeo\AsyncIpGeoResolver($repository, 'serving'),
+            useIpGeoMiddleware: true,
+        );
+
+        $decoded = $this->handleJson(
+            $app,
+            'POST',
+            '/api/v1/ads/serve',
+            [
+                'site_id' => 10,
+                'slot_id' => 20,
+                'viewer_id' => 'viewer-async-geo',
+                'size' => ['width' => 300, 'height' => 250],
+            ],
+            [
+                'CF-Connecting-IP' => '198.51.100.30',
+                'CF-IPCountry' => 'US',
+                'User-Agent' => 'Async geo browser',
+            ],
+            ['REMOTE_ADDR' => '203.0.113.9'],
+        );
+
+        self::assertTrue($decoded['data']['filled']);
+        self::assertSame('ad-1', $decoded['data']['ad']['id']);
+
+        $row = array_values($repository->rows())[0];
+        self::assertSame('pending', $row['status']);
+        self::assertSame('198.51.100.30', $row['ip_address']);
+        self::assertSame('US', $row['region_hint']);
+    }
+
+    public function testServeIgnoresUntrustedForwardedIpForGeoTargeting(): void
+    {
+        $resolver = new RecordingGeoResolver(['203.0.113.9' => 'CN-BJ']);
+        $app = $this->createApp([
+            new AdCandidate(
+                adId: 'ad-shanghai',
+                campaignId: 30,
+                advertiserOrganizationId: 40,
+                creativeHtml: '<strong>VertoAD creative</strong>',
+                landingUrl: 'https://advertiser.example/shanghai',
+                width: 300,
+                height: 250,
+                impressionCostPoints: 10,
+                clickCostPoints: 20,
+                assetType: 'image',
+                assetObjectKey: 'organizations/40/assets/shanghai.png',
+                assetContentType: 'image/png',
+                geos: ['CN-SH'],
+            ),
+        ], geoResolver: $resolver, trustedProxies: ['198.51.100.0/24']);
+
+        $decoded = $this->handleJson(
+            $app,
+            'POST',
+            '/api/v1/ads/serve',
+            [
+                'site_id' => 10,
+                'slot_id' => 20,
+                'viewer_id' => 'viewer-untrusted-geo',
+                'size' => ['width' => 300, 'height' => 250],
+            ],
+            ['CF-Connecting-IP' => '198.51.100.10'],
+            ['REMOTE_ADDR' => '203.0.113.9'],
+        );
+
+        self::assertFalse($decoded['data']['filled']);
+        self::assertSame('geo_target_mismatch', $decoded['data']['reason']);
+        self::assertSame([['203.0.113.9', null]], $resolver->calls);
     }
 
     public function testServeFrameReturnsSandboxedHtmlForSdkIframe(): void
@@ -406,6 +528,9 @@ final class ServingRouteIntegrationTest extends TestCase
         array $candidates,
         ?InMemoryAdEventRepository $events = null,
         ?TurnstileVerifier $turnstileVerifier = null,
+        ?GeoResolverInterface $geoResolver = null,
+        array $trustedProxies = ['203.0.113.9'],
+        bool $useIpGeoMiddleware = false,
     ): App
     {
         $decisions = new InMemoryAdDecisionRepository();
@@ -417,15 +542,39 @@ final class ServingRouteIntegrationTest extends TestCase
                 $decisions,
                 $events,
             ),
+            ClientIpResolver::class => static fn (): ClientIpResolver => new ClientIpResolver('CF-Connecting-IP', $trustedProxies),
+            GeoResolverInterface::class => static fn (): GeoResolverInterface => $geoResolver ?? new RecordingGeoResolver([]),
+            ServeAction::class => static fn (
+                AdServingService $serving,
+                ClientIpResolver $ipResolver,
+                GeoResolverInterface $geoResolver,
+            ): ServeAction => new ServeAction($serving, $ipResolver, $geoResolver),
+            ServeFrameAction::class => static fn (
+                AdServingService $serving,
+                ClientIpResolver $ipResolver,
+                GeoResolverInterface $geoResolver,
+            ): ServeFrameAction => new ServeFrameAction($serving, $ipResolver, $geoResolver),
         ])->build();
 
         SlimAppFactory::setContainer($container);
         $app = SlimAppFactory::create();
         $app->addBodyParsingMiddleware();
-        $app->get('/api/v1/ads/serve', ServeFrameAction::class);
-        $app->post('/api/v1/ads/serve', ServeAction::class);
+        $serveFrame = $app->get('/api/v1/ads/serve', ServeFrameAction::class);
+        $serve = $app->post('/api/v1/ads/serve', ServeAction::class);
         $track = $app->post('/api/v1/ads/track', TrackAction::class);
         $click = $app->get('/api/v1/ads/click', ClickAction::class);
+        if ($useIpGeoMiddleware) {
+            $ipGeo = new \VertoAD\Http\Middleware\IpGeoMiddleware(
+                $app->getResponseFactory(),
+                new ClientIpResolver('CF-Connecting-IP', $trustedProxies),
+                $geoResolver ?? new RecordingGeoResolver([]),
+                [],
+            );
+            $serveFrame->add($ipGeo);
+            $serve->add($ipGeo);
+            $track->add($ipGeo);
+            $click->add($ipGeo);
+        }
         if ($turnstileVerifier !== null) {
             $turnstile = new TurnstileMiddleware(
                 $app->getResponseFactory(),
@@ -457,9 +606,9 @@ final class ServingRouteIntegrationTest extends TestCase
      * @param array<string, mixed>|null $payload
      * @return array<string, mixed>
      */
-    private function handleJson(App $app, string $method, string $uri, ?array $payload = null, array $headers = []): array
+    private function handleJson(App $app, string $method, string $uri, ?array $payload = null, array $headers = [], array $serverParams = []): array
     {
-        $response = $this->handleRaw($app, $method, $uri, $payload, $headers);
+        $response = $this->handleRaw($app, $method, $uri, $payload, $headers, $serverParams);
         $decoded = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
         self::assertIsArray($decoded);
 
@@ -470,9 +619,9 @@ final class ServingRouteIntegrationTest extends TestCase
      * @param array<string, mixed>|null $payload
      * @param array<string, string> $headers
      */
-    private function handleRaw(App $app, string $method, string $uri, ?array $payload = null, array $headers = []): ResponseInterface
+    private function handleRaw(App $app, string $method, string $uri, ?array $payload = null, array $headers = [], array $serverParams = []): ResponseInterface
     {
-        $request = (new ServerRequestFactory())->createServerRequest($method, $uri);
+        $request = (new ServerRequestFactory())->createServerRequest($method, $uri, $serverParams);
         if ($payload !== null) {
             $request = $request->withParsedBody($payload);
         }
@@ -523,5 +672,28 @@ final class ServingRouteIntegrationTest extends TestCase
             landingUrl: 'https://advertiser.example/landing',
             decidedAt: new DateTimeImmutable('2026-06-09T00:00:00+00:00'),
         );
+    }
+}
+
+final class RecordingGeoResolver implements GeoResolverInterface
+{
+    /** @var list<array{0:?string,1:?string}> */
+    public array $calls = [];
+
+    /** @param array<string, string> $geoByIp */
+    public function __construct(private readonly array $geoByIp)
+    {
+    }
+
+    public function resolve(?string $ipAddress, ?string $userAgent = null): ?string
+    {
+        $this->calls[] = [$ipAddress, $userAgent];
+
+        return $ipAddress === null ? null : ($this->geoByIp[$ipAddress] ?? null);
+    }
+
+    public function contextForRequest(?string $ipAddress, ?string $userAgent = null, ?string $requestId = null): ServingRequestContext
+    {
+        return new ServingRequestContext($ipAddress, $userAgent, $this->resolve($ipAddress, $userAgent));
     }
 }

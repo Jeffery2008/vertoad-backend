@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use DateTimeZone;
 use VertoAD\Domain\Webhooks\WebhookDelivery;
 use VertoAD\Domain\Webhooks\WebhookEndpoint;
+use VertoAD\Http\RequestIdContext;
 
 final class InMemoryWebhookDeliveryRepository implements WebhookDeliveryRepositoryInterface
 {
@@ -23,6 +24,7 @@ final class InMemoryWebhookDeliveryRepository implements WebhookDeliveryReposito
             throw new \InvalidArgumentException('Webhook endpoint internal ID is required to queue a delivery.');
         }
 
+        $requestId = $this->requestIdFromPayload($payload) ?? RequestIdContext::current();
         $payloadJson = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
         $delivery = new WebhookDelivery(
@@ -33,6 +35,7 @@ final class InMemoryWebhookDeliveryRepository implements WebhookDeliveryReposito
             endpoint_url: $endpoint->endpointUrl,
             event_type: trim($eventType),
             payload_json: $payloadJson,
+            request_id: $requestId,
             status: 'queued',
             retry_count: 0,
             next_attempt_at: $now,
@@ -113,6 +116,7 @@ final class InMemoryWebhookDeliveryRepository implements WebhookDeliveryReposito
                 endpoint_url: $delivery->endpoint_url,
                 event_type: $delivery->event_type,
                 payload_json: $delivery->payload_json,
+                request_id: $delivery->request_id,
                 status: 'exhausted',
                 retry_count: $delivery->retry_count,
                 next_attempt_at: $terminalAt,
@@ -168,5 +172,20 @@ final class InMemoryWebhookDeliveryRepository implements WebhookDeliveryReposito
     public function attemptsForDelivery(string $deliveryId): array
     {
         return $this->attempts[$deliveryId] ?? [];
+    }
+
+    /**
+     * @param array<string,mixed> $payload
+     */
+    private function requestIdFromPayload(array $payload): ?string
+    {
+        $requestId = $payload['request_id'] ?? null;
+        if (!is_scalar($requestId)) {
+            return null;
+        }
+
+        $requestId = trim((string) $requestId);
+
+        return $requestId === '' ? null : $requestId;
     }
 }

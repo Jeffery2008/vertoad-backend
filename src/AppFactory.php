@@ -10,15 +10,22 @@ use Dotenv\Dotenv;
 use Slim\App;
 use Slim\Factory\AppFactory as SlimAppFactory;
 use VertoAD\Domain\Security\TurnstilePolicy;
+use VertoAD\Domain\IpGeo\IpGeoProviderPolicy;
+use VertoAD\Domain\Serving\ServingGeoTargetingPolicy;
 use VertoAD\Http\Action\Cron\CronStatusAction;
 use VertoAD\Http\Action\Cron\CronRunAction;
 use VertoAD\Http\Action\HealthAction;
+use VertoAD\Http\Action\Serving\ServeAction;
+use VertoAD\Http\Action\Serving\ServeFrameAction;
 use VertoAD\Http\Error\OperationErrorHandler;
 use VertoAD\Http\Auth\BearerTokenAuthenticator;
 use VertoAD\Http\Middleware\AuthenticateRequestMiddleware;
 use VertoAD\Http\Middleware\CronAuthMiddleware;
 use VertoAD\Http\Middleware\ApiEnvelopeMiddleware;
+use VertoAD\Http\Middleware\IpGeoMiddleware;
+use VertoAD\Http\Middleware\LazyContainerMiddleware;
 use VertoAD\Http\Middleware\RateLimitMiddleware;
+use VertoAD\Http\Middleware\RequestIdMiddleware;
 use VertoAD\Http\Middleware\TurnstileMiddleware;
 use VertoAD\Infrastructure\Database\ConnectionFactory;
 use VertoAD\Infrastructure\OAuth\LeagueOAuthRepository;
@@ -73,6 +80,9 @@ use VertoAD\Repository\Cron\ServingEventBufferInterface;
 use VertoAD\Repository\FirstPartySessionRepository;
 use VertoAD\Repository\FirstPartySessionRepositoryInterface;
 use VertoAD\Repository\Fraud\DatabaseFraudRiskFeatureRepository;
+use VertoAD\Repository\IpGeo\InMemoryIpGeoRepository;
+use VertoAD\Repository\IpGeo\IpGeoRepositoryInterface;
+use VertoAD\Repository\IpGeo\RedisIpGeoRepository;
 use VertoAD\Repository\OAuthClientRepository;
 use VertoAD\Repository\OAuthClientRepositoryInterface;
 use VertoAD\Repository\OAuthConsentRepository;
@@ -148,23 +158,37 @@ use VertoAD\Service\Cron\EventConsumptionJob;
 use VertoAD\Service\Cron\ExpiredTokenCleanupJob;
 use VertoAD\Service\Cron\FraudFeatureComputeJob;
 use VertoAD\Service\Cron\InMemoryCronLockStore;
+use VertoAD\Service\Cron\IpGeoLookupJob;
 use VertoAD\Service\Cron\NoOpCronJob;
 use VertoAD\Service\Cron\PartitionMaintenanceJob;
 use VertoAD\Service\Cron\RedisCronLockStore;
 use VertoAD\Service\DefuseRechargeKeyPlaintextCipher;
 use VertoAD\Service\FeatureFlags\FeatureFlagService;
+use VertoAD\Service\IpGeo\AsyncIpGeoResolver;
+use VertoAD\Service\IpGeo\DisabledIpGeoRequestContextResolver;
+use VertoAD\Service\IpGeo\IpGeoRequestContextResolverInterface;
+use VertoAD\Service\IpGeo\IpGeoProviderSelector;
+use VertoAD\Service\IpGeo\MappedHttpIpGeoProviderClient;
+use VertoAD\Service\IpGeo\MappedIpGeoResponseNormalizer;
 use VertoAD\Service\OAuthClientSecretHasher;
 use VertoAD\Service\OAuthTokenService;
 use VertoAD\Service\Operations\ConfigVersionService;
 use VertoAD\Service\Operations\OperationErrorCaptureService;
+use VertoAD\Service\Operations\OperationRequestCorrelationService;
 use VertoAD\Service\Operations\OperationsSummaryService;
+use VertoAD\Service\Operations\RealTimeGeoLookupInterface;
+use VertoAD\Service\Operations\RepositoryRealTimeGeoLookup;
 use VertoAD\Service\Partition\EventTablePartitionMaintainer;
 use VertoAD\Service\Serving\AdServingService;
 use VertoAD\Service\Serving\AdSelectionPolicyInterface;
 use VertoAD\Service\Serving\CampaignSpendEligibilityInterface;
 use VertoAD\Service\Serving\DatabaseServingRiskAssessor;
 use VertoAD\Service\Serving\DefaultAdSelectionPolicy;
+use VertoAD\Service\Serving\GeoResolver;
+use VertoAD\Service\Serving\GeoResolverInterface;
 use VertoAD\Service\Serving\InMemoryServingFrequencyCapStore;
+use VertoAD\Service\Serving\NullGeoResolver;
+use VertoAD\Service\Serving\PconlineGeoProvider;
 use VertoAD\Service\Serving\RedisServingFrequencyCapStore;
 use VertoAD\Service\Serving\ServingFrequencyCapStoreInterface;
 use VertoAD\Service\Serving\ServingRiskAssessorInterface;
@@ -338,6 +362,43 @@ final class AppFactory
                     ServingFrequencyCapStoreInterface $frequencyCaps,
                     ServingRiskAssessorInterface $riskAssessor,
                 ): AdSelectionPolicyInterface => new DefaultAdSelectionPolicy($frequencyCaps, $riskAssessor),
+                IpGeoRepositoryInterface::class => static fn (): IpGeoRepositoryInterface =>
+                    self::ipGeoRepository($settings),
+                IpGeoProviderPolicy::class => static fn (SystemConfigService $configs): IpGeoProviderPolicy =>
+                    $configs->ipGeoProviderPolicy(),
+                IpGeoProviderSelector::class => static fn (IpGeoProviderPolicy $policy): IpGeoProviderSelector =>
+                    new IpGeoProviderSelector($policy),
+                MappedIpGeoResponseNormalizer::class => static fn (): MappedIpGeoResponseNormalizer =>
+                    new MappedIpGeoResponseNormalizer(),
+                MappedHttpIpGeoProviderClient::class => static fn (
+                    MappedIpGeoResponseNormalizer $normalizer,
+                ): MappedHttpIpGeoProviderClient => new MappedHttpIpGeoProviderClient($normalizer),
+                GeoResolverInterface::class => static fn (
+                    IpGeoRepositoryInterface $repository,
+                    IpGeoProviderPolicy $policy,
+                ): GeoResolverInterface => self::geoResolver($repository, $policy),
+                IpGeoRequestContextResolverInterface::class => static fn (
+                    IpGeoRepositoryInterface $repository,
+                    IpGeoProviderPolicy $policy,
+                ): IpGeoRequestContextResolverInterface => self::ipGeoRequestContextResolver($repository, $policy),
+                IpGeoMiddleware::class => static fn (
+                    ClientIpResolver $ipResolver,
+                    IpGeoRequestContextResolverInterface $geoResolver,
+                ): IpGeoMiddleware => new IpGeoMiddleware(
+                    SlimAppFactory::determineResponseFactory(),
+                    $ipResolver,
+                    $geoResolver,
+                ),
+                ServeAction::class => static fn (
+                    AdServingService $serving,
+                    ClientIpResolver $ipResolver,
+                    GeoResolverInterface $geoResolver,
+                ): ServeAction => new ServeAction($serving, $ipResolver, $geoResolver),
+                ServeFrameAction::class => static fn (
+                    AdServingService $serving,
+                    ClientIpResolver $ipResolver,
+                    GeoResolverInterface $geoResolver,
+                ): ServeFrameAction => new ServeFrameAction($serving, $ipResolver, $geoResolver),
                 ReportQueryService::class => static fn (
                     ReportAggregateRepositoryInterface $aggregates,
                 ): ReportQueryService => new ReportQueryService($aggregates),
@@ -386,6 +447,23 @@ final class AppFactory
                     OperationErrorLogRepositoryInterface $errors,
                     AuditLogService $audit,
                 ): OperationErrorCaptureService => new OperationErrorCaptureService($errors, $audit),
+                OperationRequestCorrelationService::class => static fn (
+                    OperationErrorCaptureService $errors,
+                    AuditLogService $auditLogs,
+                    WebhookDeliveryRepositoryInterface $webhooks,
+                    IpGeoRepositoryInterface $ipGeoRepository,
+                    AdDecisionRepositoryInterface $servingDecisions,
+                    AdEventRepositoryInterface $servingEvents,
+                    DatabaseAdEventRepository $servingEventHistory,
+                ): OperationRequestCorrelationService => new OperationRequestCorrelationService(
+                    $errors,
+                    $auditLogs,
+                    $webhooks,
+                    $ipGeoRepository,
+                    $servingDecisions,
+                    $servingEvents,
+                    $servingEventHistory,
+                ),
                 OperationErrorHandler::class => static fn (
                     OperationErrorCaptureService $errors,
                 ): OperationErrorHandler => new OperationErrorHandler(SlimAppFactory::determineResponseFactory(), $errors),
@@ -441,6 +519,12 @@ final class AppFactory
                         $policy->retryBaseBackoffSeconds,
                     );
                 },
+                RealTimeGeoLookupInterface::class => static fn (
+                    IpGeoRepositoryInterface $repository,
+                    IpGeoProviderSelector $selector,
+                    MappedHttpIpGeoProviderClient $client,
+                    IpGeoProviderPolicy $policy,
+                ): RealTimeGeoLookupInterface => new RepositoryRealTimeGeoLookup($repository, $selector, $client, $policy),
                 SupportTicketRepositoryInterface::class => static fn (Connection $connection): SupportTicketRepositoryInterface =>
                     new DatabaseSupportTicketRepository($connection),
                 SupportTicketService::class => static fn (
@@ -600,6 +684,12 @@ final class AppFactory
                 PartitionMaintenanceJob::class => static fn (
                     EventTablePartitionMaintainer $maintainer,
                 ): PartitionMaintenanceJob => new PartitionMaintenanceJob($maintainer),
+                IpGeoLookupJob::class => static fn (
+                    IpGeoRepositoryInterface $repository,
+                    IpGeoProviderSelector $selector,
+                    MappedHttpIpGeoProviderClient $client,
+                    IpGeoProviderPolicy $policy,
+                ): IpGeoLookupJob => new IpGeoLookupJob($repository, $selector, $client, $policy),
                 CronJobRegistry::class => static function (
                     EventConsumptionJob $eventConsumption,
                     WebhookDeliveryJob $webhookDelivery,
@@ -612,6 +702,7 @@ final class AppFactory
                     DuckDbColdQueryJob $duckDbColdQuery,
                     BackupCheckJob $backupCheck,
                     PartitionMaintenanceJob $partitionMaintenance,
+                    IpGeoLookupJob $ipGeoLookup,
                 ) use ($settings): CronJobRegistry {
                     $jobs = [
                         $eventConsumption,
@@ -625,6 +716,7 @@ final class AppFactory
                         $duckDbColdQuery,
                         $backupCheck,
                         $partitionMaintenance,
+                        $ipGeoLookup,
                     ];
                     $registeredNames = array_fill_keys(array_map(
                         static fn (CronJobInterface $job): string => $job->name(),
@@ -704,6 +796,12 @@ final class AppFactory
         SlimAppFactory::setContainer($container);
         $app = SlimAppFactory::create();
         $app->addBodyParsingMiddleware();
+        $app->add(new LazyContainerMiddleware($container, IpGeoMiddleware::class, [
+            'GET:/api/v1/ads/serve',
+            'POST:/api/v1/ads/serve',
+            'POST:/api/v1/ads/track',
+            'GET:/api/v1/ads/click',
+        ]));
 
         $routes = require $rootPath . '/config/routes.php';
         $routes($app);
@@ -712,6 +810,7 @@ final class AppFactory
         $app->addRoutingMiddleware();
         $errorMiddleware = $app->addErrorMiddleware((bool) $settings['app']['debug'], true, true);
         $errorMiddleware->setDefaultErrorHandler($container->get(OperationErrorHandler::class));
+        $app->add(new RequestIdMiddleware());
 
         return $app;
     }
@@ -959,6 +1058,39 @@ final class AppFactory
             RedisClientFactory::fromSettings($redis),
             (string) ($redis['prefix'] ?? 'vertoad:'),
         );
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function ipGeoRepository(array $settings): IpGeoRepositoryInterface
+    {
+        $redis = $settings['redis'] ?? [];
+        if (!is_array($redis) || (string) ($redis['password'] ?? '') === '') {
+            if (self::redisRequired($settings)) {
+                throw new \RuntimeException('REDIS_PASSWORD is required for IP geo queue storage.');
+            }
+
+            return new InMemoryIpGeoRepository();
+        }
+
+        return RedisIpGeoRepository::fromSettings($redis);
+    }
+
+    private static function geoResolver(IpGeoRepositoryInterface $repository, IpGeoProviderPolicy $policy): GeoResolverInterface
+    {
+        if (!$policy->enabled) {
+            return new NullGeoResolver();
+        }
+
+        return new AsyncIpGeoResolver($repository, $policy->queueSource);
+    }
+
+    private static function ipGeoRequestContextResolver(IpGeoRepositoryInterface $repository, IpGeoProviderPolicy $policy): IpGeoRequestContextResolverInterface
+    {
+        if (!$policy->enabled) {
+            return new DisabledIpGeoRequestContextResolver();
+        }
+
+        return new AsyncIpGeoResolver($repository, $policy->queueSource);
     }
 
     /** @param array<string, mixed> $settings */

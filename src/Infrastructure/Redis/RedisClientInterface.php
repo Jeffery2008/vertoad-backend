@@ -20,6 +20,8 @@ interface RedisClientInterface
 
     public function setNxEx(string $key, string $value, int $seconds): bool;
 
+    public function setEx(string $key, string $value, int $seconds): bool;
+
     /**
      * @return list<string>
      */

@@ -10,6 +10,7 @@ use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\ParameterType;
 use VertoAD\Domain\Webhooks\WebhookDelivery;
 use VertoAD\Domain\Webhooks\WebhookEndpoint;
+use VertoAD\Http\RequestIdContext;
 
 final readonly class DatabaseWebhookDeliveryRepository implements WebhookDeliveryRepositoryInterface
 {
@@ -23,6 +24,7 @@ final readonly class DatabaseWebhookDeliveryRepository implements WebhookDeliver
             throw new \InvalidArgumentException('Webhook endpoint internal ID is required to queue a delivery.');
         }
 
+        $requestId = $this->requestIdFromPayload($payload) ?? RequestIdContext::current();
         $payloadJson = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
         $delivery = new WebhookDelivery(
@@ -33,6 +35,7 @@ final readonly class DatabaseWebhookDeliveryRepository implements WebhookDeliver
             endpoint_url: $endpoint->endpointUrl,
             event_type: trim($eventType),
             payload_json: $payloadJson,
+            request_id: $requestId,
             status: 'queued',
             retry_count: 0,
             next_attempt_at: $now,
@@ -142,6 +145,7 @@ final readonly class DatabaseWebhookDeliveryRepository implements WebhookDeliver
                 endpoint_url: $delivery->endpoint_url,
                 event_type: $delivery->event_type,
                 payload_json: $delivery->payload_json,
+                request_id: $delivery->request_id,
                 status: 'exhausted',
                 retry_count: $delivery->retry_count,
                 next_attempt_at: $terminalAt,
@@ -246,6 +250,7 @@ final readonly class DatabaseWebhookDeliveryRepository implements WebhookDeliver
                 'wd.endpoint_url',
                 'wd.event_type',
                 'wd.payload_json',
+                'wd.request_id',
                 'wd.status',
                 'wd.retry_count',
                 'wd.next_attempt_at',
@@ -272,6 +277,7 @@ final readonly class DatabaseWebhookDeliveryRepository implements WebhookDeliver
             'endpoint_url' => $delivery->endpoint_url,
             'event_type' => $delivery->event_type,
             'payload_json' => $delivery->payload_json,
+            'request_id' => $delivery->request_id,
             'status' => $delivery->status,
             'retry_count' => $delivery->retry_count,
             'next_attempt_at' => $this->formatDate($delivery->next_attempt_at),
@@ -297,6 +303,7 @@ final readonly class DatabaseWebhookDeliveryRepository implements WebhookDeliver
             endpoint_url: (string) $row['endpoint_url'],
             event_type: (string) $row['event_type'],
             payload_json: (string) $row['payload_json'],
+            request_id: $row['request_id'] === null ? null : (string) $row['request_id'],
             status: (string) $row['status'],
             retry_count: (int) $row['retry_count'],
             next_attempt_at: $this->parseDate((string) $row['next_attempt_at']),
@@ -317,5 +324,20 @@ final readonly class DatabaseWebhookDeliveryRepository implements WebhookDeliver
     private function parseDate(string $value): DateTimeImmutable
     {
         return new DateTimeImmutable($value, new DateTimeZone('UTC'));
+    }
+
+    /**
+     * @param array<string,mixed> $payload
+     */
+    private function requestIdFromPayload(array $payload): ?string
+    {
+        $requestId = $payload['request_id'] ?? null;
+        if (!is_scalar($requestId)) {
+            return null;
+        }
+
+        $requestId = trim((string) $requestId);
+
+        return $requestId === '' ? null : $requestId;
     }
 }

@@ -10,11 +10,18 @@ use Doctrine\DBAL\DriverManager;
 use PHPUnit\Framework\TestCase;
 use VertoAD\Domain\Webhooks\WebhookDelivery;
 use VertoAD\Domain\Webhooks\WebhookEndpoint;
+use VertoAD\Http\RequestIdContext;
 use VertoAD\Repository\Webhooks\DatabaseWebhookDeliveryRepository;
 use VertoAD\Repository\Webhooks\DatabaseWebhookEndpointRepository;
+use Slim\Psr7\Factory\ServerRequestFactory;
 
 final class DatabaseWebhookDeliveryRepositoryTest extends TestCase
 {
+    protected function tearDown(): void
+    {
+        RequestIdContext::clear();
+    }
+
     public function testEndpointScopedDeliveriesSurviveRepositoryInstancesAndSupportRetryLifecycle(): void
     {
         $connection = $this->createConnection();
@@ -33,7 +40,7 @@ final class DatabaseWebhookDeliveryRepositoryTest extends TestCase
             events: ['billing.points_changed'],
         );
 
-        $first = $repository->queueForEndpoint($reviewEndpoint, 'review.approved', ['review_id' => 10]);
+        $first = $repository->queueForEndpoint($reviewEndpoint, 'review.approved', ['review_id' => 10, 'request_id' => 'req-webhook-ctx']);
         $second = $repository->queueForEndpoint($billingEndpoint, 'billing.points_changed', ['ledger_id' => 20]);
 
         $fresh = new DatabaseWebhookDeliveryRepository($connection);
@@ -42,7 +49,8 @@ final class DatabaseWebhookDeliveryRepositoryTest extends TestCase
         self::assertSame(99, $fresh->find($first->delivery_id)?->organization_id);
         self::assertSame('whe_review_delivery', $fresh->find($first->delivery_id)?->endpoint_id);
         self::assertSame('https://hooks.example/review', $fresh->find($first->delivery_id)?->endpoint_url);
-        self::assertSame('{"review_id":10}', $fresh->find($first->delivery_id)?->payload_json);
+        self::assertSame('{"review_id":10,"request_id":"req-webhook-ctx"}', $fresh->find($first->delivery_id)?->payload_json);
+        self::assertSame('req-webhook-ctx', $fresh->find($first->delivery_id)?->request_id);
         self::assertSame([$first->delivery_id], array_map(
             static fn (WebhookDelivery $delivery): string => $delivery->delivery_id,
             $fresh->listForOrganization(99, endpointId: 'whe_review_delivery', status: 'queued', limit: 10),
@@ -56,6 +64,7 @@ final class DatabaseWebhookDeliveryRepositoryTest extends TestCase
             endpoint_url: $first->endpoint_url,
             event_type: $first->event_type,
             payload_json: $first->payload_json,
+            request_id: $first->request_id,
             status: 'delivered',
             retry_count: 1,
             next_attempt_at: $first->next_attempt_at,
@@ -98,6 +107,7 @@ final class DatabaseWebhookDeliveryRepositoryTest extends TestCase
             endpoint_url: $second->endpoint_url,
             event_type: $second->event_type,
             payload_json: $second->payload_json,
+            request_id: $second->request_id,
             status: 'exhausted',
             retry_count: 3,
             next_attempt_at: new DateTimeImmutable('2026-06-09T02:05:00+00:00'),
@@ -136,6 +146,27 @@ final class DatabaseWebhookDeliveryRepositoryTest extends TestCase
             $fresh->attemptsForDelivery($first->delivery_id),
         ));
         self::assertSame(2, count($fresh->all()));
+    }
+
+    public function testQueueForEndpointInheritsCurrentRequestIdWhenPayloadDoesNotProvideOne(): void
+    {
+        $connection = $this->createConnection();
+        $endpointRepository = new DatabaseWebhookEndpointRepository($connection);
+        $repository = new DatabaseWebhookDeliveryRepository($connection);
+        $endpoint = $this->storeEndpoint(
+            $endpointRepository,
+            endpointId: 'whe_inherit_request',
+            endpointUrl: 'https://hooks.example/request',
+            events: ['review.approved'],
+        );
+        RequestIdContext::begin((new ServerRequestFactory())
+            ->createServerRequest('POST', '/webhooks')
+            ->withHeader('X-Request-Id', 'req-webhook-inherit'));
+
+        $delivery = $repository->queueForEndpoint($endpoint, 'review.approved', ['review_id' => 11]);
+
+        self::assertSame('req-webhook-inherit', $delivery->request_id);
+        self::assertSame('req-webhook-inherit', $repository->find($delivery->delivery_id)?->request_id);
     }
 
     public function testPendingRetryRejectsNonPositiveLimit(): void
@@ -282,6 +313,7 @@ final class DatabaseWebhookDeliveryRepositoryTest extends TestCase
             'webhook_endpoint_id bigint unsigned not null',
             'endpoint_url varchar(2048) not null',
             'payload_json json not null',
+            'request_id varchar(160) null',
             'status varchar(32) not null',
             'retry_count int unsigned not null',
             'next_attempt_at datetime(6) not null',
@@ -291,6 +323,7 @@ final class DatabaseWebhookDeliveryRepositoryTest extends TestCase
             'signature_header varchar(255) null',
             'delivered_at datetime(6) null',
             'idx_webhook_deliveries_retry',
+            'idx_webhook_deliveries_request_time',
             'constraint chk_webhook_deliveries_status check (status in (\'queued\', \'delivered\', \'failed\', \'exhausted\'))',
             'create table webhook_delivery_attempts',
             'attempt_number int unsigned not null',
@@ -343,6 +376,7 @@ final class DatabaseWebhookDeliveryRepositoryTest extends TestCase
             endpoint_url: $delivery->endpoint_url,
             event_type: $delivery->event_type,
             payload_json: $delivery->payload_json,
+            request_id: $delivery->request_id,
             status: $status,
             retry_count: $retryCount,
             next_attempt_at: $nextAttemptAt,
@@ -389,6 +423,7 @@ final class DatabaseWebhookDeliveryRepositoryTest extends TestCase
                 endpoint_url TEXT NOT NULL,
                 event_type VARCHAR(120) NOT NULL,
                 payload_json TEXT NOT NULL,
+                request_id TEXT NULL,
                 status VARCHAR(32) NOT NULL,
                 retry_count INTEGER NOT NULL,
                 next_attempt_at DATETIME NOT NULL,

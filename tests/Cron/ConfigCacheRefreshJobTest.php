@@ -88,37 +88,13 @@ final class ConfigCacheRefreshJobTest extends TestCase
         self::assertSame('completed', $result->status);
         self::assertSame(6, $result->metrics['refreshed'] ?? null);
         self::assertSame([
-            [
-                "return {redis.call('SETEX', KEYS[1], ARGV[1], ARGV[2])}",
-                ['vertoad:test:config:billing.default_revenue_share'],
-                ['3600', '{"publisher_percent":70}'],
-            ],
-            [
-                "return {redis.call('SETEX', KEYS[1], ARGV[1], ARGV[2])}",
-                ['vertoad:test:config:attribution.default_window_seconds'],
-                ['3600', '{"seconds":604800}'],
-            ],
-            [
-                "return {redis.call('SETEX', KEYS[1], ARGV[1], ARGV[2])}",
-                ['vertoad:test:config:security.rate_limit'],
-                ['3600', '{"limit":60,"window_seconds":60}'],
-            ],
-            [
-                "return {redis.call('SETEX', KEYS[1], ARGV[1], ARGV[2])}",
-                ['vertoad:test:config:serving.event_validation'],
-                ['3600', '{"min_visible_ratio":0.5,"min_visible_ms":1000,"repeat_click_window_seconds":30}'],
-            ],
-            [
-                "return {redis.call('SETEX', KEYS[1], ARGV[1], ARGV[2])}",
-                ['vertoad:test:config:review.ai_policy'],
-                ['3600', '{"enabled":true,"provider":"openai_compatible","base_url":"https:\/\/api.openai.example\/v1","model":"review-model","prompt":"Return strict JSON.","timeout_seconds":60,"max_input_tokens":12000,"max_output_tokens":2000,"temperature":0.2}'],
-            ],
-            [
-                "return {redis.call('SETEX', KEYS[1], ARGV[1], ARGV[2])}",
-                ['vertoad:test:config:assets.upload_policy'],
-                ['3600', json_encode($assetPolicy, JSON_THROW_ON_ERROR)],
-            ],
-        ], $redis->evalCalls);
+            ['vertoad:test:config:billing.default_revenue_share', '{"publisher_percent":70}', 3600],
+            ['vertoad:test:config:attribution.default_window_seconds', '{"seconds":604800}', 3600],
+            ['vertoad:test:config:security.rate_limit', '{"limit":60,"window_seconds":60}', 3600],
+            ['vertoad:test:config:serving.event_validation', '{"min_visible_ratio":0.5,"min_visible_ms":1000,"repeat_click_window_seconds":30}', 3600],
+            ['vertoad:test:config:review.ai_policy', '{"enabled":true,"provider":"openai_compatible","base_url":"https:\/\/api.openai.example\/v1","model":"review-model","prompt":"Return strict JSON.","timeout_seconds":60,"max_input_tokens":12000,"max_output_tokens":2000,"temperature":0.2}', 3600],
+            ['vertoad:test:config:assets.upload_policy', json_encode($assetPolicy, JSON_THROW_ON_ERROR), 3600],
+        ], $redis->setExCalls);
     }
 
     public function testRejectsInvalidTtlAndCachePrefix(): void
@@ -164,6 +140,8 @@ final class RecordingRedisClient implements RedisClientInterface
 {
     /** @var list<array{0: string, 1: list<string>, 2: list<string>}> */
     public array $evalCalls = [];
+    /** @var list<array{0: string, 1: string, 2: int}> */
+    public array $setExCalls = [];
 
     public function exists(string $key): bool
     {
@@ -197,6 +175,13 @@ final class RecordingRedisClient implements RedisClientInterface
 
     public function setNxEx(string $key, string $value, int $seconds): bool
     {
+        return true;
+    }
+
+    public function setEx(string $key, string $value, int $seconds): bool
+    {
+        $this->setExCalls[] = [$key, $value, $seconds];
+
         return true;
     }
 

@@ -46,6 +46,37 @@ final class DatabaseOperationErrorLogRepositoryTest extends TestCase
         self::assertNull($fresh->find('missing'));
     }
 
+    public function testOperationErrorsCanBeFilteredByRequestId(): void
+    {
+        $connection = $this->createConnection();
+        $repository = new DatabaseOperationErrorLogRepository($connection);
+        $repository->append(new OperationErrorLog(
+            error_id: 'operr_db_1',
+            request_id: 'req-db-match',
+            severity: 'critical',
+            message: 'Matched request',
+            redacted_context: [],
+            raw_context: null,
+            source: 'api',
+            occurred_at: new DateTimeImmutable('2026-06-09T03:00:00+00:00'),
+        ));
+        $repository->append(new OperationErrorLog(
+            error_id: 'operr_db_2',
+            request_id: 'req-db-other',
+            severity: 'warning',
+            message: 'Other request',
+            redacted_context: [],
+            raw_context: null,
+            source: 'cron',
+            occurred_at: new DateTimeImmutable('2026-06-09T04:00:00+00:00'),
+        ));
+
+        $filtered = $repository->all('req-db-match');
+
+        self::assertCount(1, $filtered);
+        self::assertSame('operr_db_1', $filtered[0]->error_id);
+    }
+
     public function testOperationErrorMigrationDefinesDurableErrorLog(): void
     {
         $path = dirname(__DIR__, 2) . '/db/migrations/20260609100000_create_operation_error_log_tables.php';

@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use InvalidArgumentException;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
+use VertoAD\Http\RequestIdContext;
 use VertoAD\Service\Serving\AdServingService;
 
 final readonly class TrackAction
@@ -27,6 +28,7 @@ final readonly class TrackAction
                 visibleMs: $this->intField($body, 'visible_ms'),
                 eventId: $this->stringField($body, 'event_id'),
                 occurredAt: new DateTimeImmutable(),
+                requestId: RequestIdContext::fromRequest($request),
             );
         } catch (InvalidArgumentException $exception) {
             return $this->json($response, ['code' => 'invalid_request', 'message' => $exception->getMessage()], 422);

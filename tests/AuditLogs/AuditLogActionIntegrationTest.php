@@ -61,6 +61,21 @@ final class AuditLogActionIntegrationTest extends TestCase
         }
     }
 
+    public function testListAuditLogsAcceptsRequestIdFilter(): void
+    {
+        $repository = new AuditLogActionRepositoryStub();
+        $app = $this->createApp($repository);
+
+        $response = $this->handle(
+            $app,
+            '/api/v1/audit-logs?request_id=req-action-1',
+            new RequestUserContext(new AuthenticatedUser(1, 'root@example.com', true), null),
+        );
+
+        self::assertSame(200, $response['status']);
+        self::assertSame('req-action-1', $repository->lastFilters['request_id'] ?? null);
+    }
+
     public function testListAuditLogsIncludesMetadataForSuperAdmins(): void
     {
         $app = $this->createApp(new AuditLogActionRepositoryStub());
@@ -149,6 +164,7 @@ final class AuditLogActionRepositoryStub implements AuditLogRepositoryInterface,
                     subjectId: 123,
                     ipAddress: '203.0.113.55',
                     userAgent: 'PHPUnit',
+                    requestId: 'req-action-stub',
                     metadata: ['secret' => 'raw-value'],
                     createdAt: '2026-06-15T10:00:00Z',
                 ),

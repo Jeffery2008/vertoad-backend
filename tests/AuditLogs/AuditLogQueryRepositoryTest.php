@@ -66,6 +66,26 @@ final class AuditLogQueryRepositoryTest extends TestCase
         self::assertSame(11, $result['items'][0]->subjectId);
     }
 
+    public function testSearchFiltersByRequestIdInAuditMetadata(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        self::createAuditLogsTable($connection);
+        $repository = new AuditLogRepository($connection);
+
+        $this->insertAuditLog($connection, $repository, 'billing.ledger.adjusted', 'ledger_entry', 10, 7, 3, '2026-06-15 10:00:00');
+        $this->insertAuditLog($connection, $repository, 'billing.ledger.adjusted', 'ledger_entry', 11, 7, 3, '2026-06-15 11:00:00');
+
+        $result = $repository->search([
+            'request_id' => 'req-10',
+            'limit' => 50,
+            'offset' => 0,
+        ]);
+
+        self::assertSame(1, $result['total']);
+        self::assertCount(1, $result['items']);
+        self::assertSame(10, $result['items'][0]->subjectId);
+    }
+
     public function testSearchReportsHasMoreAndHydratesMissingRawContextAsNull(): void
     {
         $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
@@ -110,6 +130,7 @@ CREATE TABLE audit_logs (
     subject_id INTEGER NULL,
     ip_address BLOB NULL,
     user_agent VARCHAR(512) NULL,
+    request_id VARCHAR(160) NULL,
     metadata_json TEXT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 )

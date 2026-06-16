@@ -43,6 +43,10 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
         self::assertSame($decision->clickCostPoints, $stored->clickCostPoints);
         self::assertSame($decision->landingUrl, $stored->landingUrl);
         self::assertSame($decision->decidedAt->getTimestamp(), $stored->decidedAt->getTimestamp());
+        self::assertSame($decision->requestId, $stored->requestId);
+        self::assertSame($decision->ipAddress, $stored->ipAddress);
+        self::assertSame($decision->userAgent, $stored->userAgent);
+        self::assertSame($decision->geoCode, $stored->geoCode);
     }
 
     public function testUpdatingDecisionDoesNotDeleteExistingEvents(): void
@@ -89,6 +93,62 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
         self::assertFalse($invalid->valid);
         self::assertSame('repeat_click_window', $invalid->reason);
         self::assertSame($decision->clickCostPoints, $invalid->costPoints);
+    }
+
+    public function testServingDecisionsAndEventsPersistRequestCorrelationFields(): void
+    {
+        $connection = $this->createConnection();
+        $decision = new AdDecision(
+            decisionId: 'ad:decision-correlated',
+            siteId: 10,
+            slotId: 20,
+            viewerId: 'viewer-correlated',
+            filled: true,
+            reason: null,
+            iframeHtml: '<iframe title="Advertisement"></iframe>',
+            width: 300,
+            height: 250,
+            adId: 'ad-1',
+            campaignId: 30,
+            advertiserOrganizationId: 40,
+            publisherOrganizationId: 50,
+            impressionCostPoints: 10,
+            clickCostPoints: 20,
+            landingUrl: 'https://advertiser.example/landing',
+            decidedAt: new DateTimeImmutable('2026-06-08T09:59:00+00:00'),
+            requestId: 'req-serve-db',
+            ipAddress: '198.51.100.8',
+            userAgent: 'DB correlation browser',
+            geoCode: 'CN-SH',
+        );
+
+        $decisions = new DatabaseAdDecisionRepository($connection);
+        $decisions->save($decision);
+        $events = new DatabaseAdEventRepository($connection);
+        $events->recordImpression($decision, 'imp-correlated', 0.75, 1500, new DateTimeImmutable('2026-06-08T10:00:00+00:00'), 'req-track-db');
+
+        $storedDecision = $decisions->find($decision->decisionId);
+        $storedEvent = $events->findEvent('impression', 'imp-correlated');
+        $decisionMatches = $decisions->searchDecisions(['request_id' => 'req-serve-db']);
+        $servingMatches = $events->searchEvents(['request_id' => 'req-track-db']);
+        $rawPayload = json_decode((string) $connection->fetchOne("SELECT payload_json FROM raw_events WHERE event_uuid = 'impression:imp-correlated'"), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame('req-serve-db', $storedDecision?->requestId);
+        self::assertSame('198.51.100.8', $storedDecision?->ipAddress);
+        self::assertSame('DB correlation browser', $storedDecision?->userAgent);
+        self::assertSame('CN-SH', $storedDecision?->geoCode);
+        self::assertCount(1, $decisionMatches);
+        self::assertSame('ad:decision-correlated', $decisionMatches[0]->decisionId);
+        self::assertSame('req-track-db', $storedEvent?->requestId);
+        self::assertSame('198.51.100.8', $storedEvent?->ipAddress);
+        self::assertSame('CN-SH', $storedEvent?->geoCode);
+        self::assertCount(1, $servingMatches);
+        self::assertSame('imp-correlated', $servingMatches[0]->eventId);
+        self::assertSame('req-track-db', $connection->fetchOne("SELECT request_id FROM ad_serving_events WHERE event_id = 'imp-correlated'"));
+        self::assertSame('req-track-db', $connection->fetchOne("SELECT request_id FROM raw_events WHERE event_uuid = 'impression:imp-correlated'"));
+        self::assertSame('req-track-db', $rawPayload['request_id']);
+        self::assertSame('198.51.100.8', $rawPayload['ip_address']);
+        self::assertSame('CN-SH', $rawPayload['geo_code']);
     }
 
     public function testPendingDuplicateLookupDistinguishesProcessedAndMissingEvents(): void
@@ -404,7 +464,11 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
                 impression_cost_points INTEGER NULL,
                 click_cost_points INTEGER NULL,
                 landing_url TEXT NULL,
-                decided_at DATETIME NOT NULL
+                decided_at DATETIME NOT NULL,
+                request_id VARCHAR(160) NULL,
+                ip_address VARCHAR(45) NULL,
+                user_agent VARCHAR(512) NULL,
+                geo_code VARCHAR(64) NULL
             )',
         );
         $connection->executeStatement(
@@ -426,6 +490,10 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
                 reason VARCHAR(120) NULL,
                 visible_ratio NUMERIC NULL,
                 visible_ms INTEGER NULL,
+                request_id VARCHAR(160) NULL,
+                ip_address VARCHAR(45) NULL,
+                user_agent VARCHAR(512) NULL,
+                geo_code VARCHAR(64) NULL,
                 billing_status VARCHAR(32) NOT NULL DEFAULT "pending",
                 billed_points INTEGER NOT NULL DEFAULT 0,
                 publisher_earning_points INTEGER NOT NULL DEFAULT 0,
@@ -456,6 +524,7 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
                 event_type VARCHAR(64) NOT NULL,
                 occurred_at DATETIME NOT NULL,
                 received_at DATETIME NOT NULL,
+                request_id VARCHAR(160) NULL,
                 request_ip BLOB NULL,
                 user_agent VARCHAR(512) NULL,
                 payload_json TEXT NOT NULL,
@@ -511,6 +580,10 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
             clickCostPoints: 20,
             landingUrl: 'https://advertiser.example/landing',
             decidedAt: new DateTimeImmutable('2026-06-08T09:59:00+00:00'),
+            requestId: 'req-decision-1',
+            ipAddress: '198.51.100.8',
+            userAgent: 'DB test browser',
+            geoCode: 'CN-SH',
         );
     }
 
@@ -531,6 +604,10 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
             occurredAt: $occurredAt,
             valid: true,
             reason: null,
+            requestId: 'req-event-1',
+            ipAddress: '198.51.100.8',
+            userAgent: 'DB test browser',
+            geoCode: 'CN-SH',
         );
     }
 }

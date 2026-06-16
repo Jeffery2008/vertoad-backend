@@ -342,6 +342,7 @@ final class WebhookEndpointRepositoryTest extends TestCase
                 endpoint_url TEXT NOT NULL,
                 event_type VARCHAR(120) NOT NULL,
                 payload_json TEXT NOT NULL,
+                request_id TEXT NULL,
                 status VARCHAR(32) NOT NULL,
                 retry_count INTEGER NOT NULL,
                 next_attempt_at DATETIME NOT NULL,

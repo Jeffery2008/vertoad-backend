@@ -90,6 +90,7 @@ use VertoAD\Service\RechargeKeyService;
 use VertoAD\Service\Review\CreativeReviewProviderInterface;
 use VertoAD\Service\Review\DeterministicCreativeReviewProvider;
 use VertoAD\Service\Review\OpenAiCompatibleCreativeReviewProvider;
+use VertoAD\Service\Operations\OperationRequestCorrelationService;
 use VertoAD\Service\Serving\AdSelectionPolicyInterface;
 use VertoAD\Service\Serving\AdServingService;
 use VertoAD\Service\Serving\CampaignSpendEligibilityInterface;
@@ -222,6 +223,11 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(DatabaseOperationErrorLogRepository::class, $container->get(OperationErrorLogRepositoryInterface::class));
             self::assertInstanceOf(ConfigVersionRepositoryInterface::class, $container->get(ConfigVersionRepositoryInterface::class));
             self::assertInstanceOf(DatabaseConfigVersionRepository::class, $container->get(ConfigVersionRepositoryInterface::class));
+            $correlations = $container->get(OperationRequestCorrelationService::class);
+            self::assertInstanceOf(OperationRequestCorrelationService::class, $correlations);
+            self::assertSame($container->get(AdDecisionRepositoryInterface::class), $this->privateProperty($correlations, 'servingDecisions'));
+            self::assertSame($container->get(AdEventRepositoryInterface::class), $this->privateProperty($correlations, 'servingEvents'));
+            self::assertSame($container->get(DatabaseAdEventRepository::class), $this->privateProperty($correlations, 'servingEventHistory'));
             self::assertInstanceOf(OperationErrorHandler::class, $container->get(OperationErrorHandler::class));
             self::assertInstanceOf(CronJobRegistry::class, $container->get(CronJobRegistry::class));
             self::assertInstanceOf(WebhookDeliveryJob::class, $container->get(CronJobRegistry::class)->get('webhook-retry'));
@@ -1321,6 +1327,7 @@ PHP);
                 'min_visible_ms' => 1000,
                 'repeat_click_window_seconds' => 30,
             ]);
+            $this->insertSystemConfig($connection, 'serving.geo_provider', 1, $this->servingGeoProviderConfig());
             $this->insertSystemConfig($connection, 'review.ai_policy', 1, [
                 'enabled' => true,
                 'provider' => 'openai_compatible',
@@ -1420,6 +1427,7 @@ PHP);
                 'min_visible_ms' => 1000,
                 'repeat_click_window_seconds' => 30,
             ]);
+            $this->insertSystemConfig($connection, 'serving.geo_provider', 1, $this->servingGeoProviderConfig());
             $this->insertSystemConfig($connection, 'review.ai_policy', 1, [
                 'enabled' => true,
                 'provider' => 'openai_compatible',
@@ -1516,6 +1524,7 @@ PHP);
                 'min_visible_ms' => 1000,
                 'repeat_click_window_seconds' => 30,
             ]);
+            $this->insertSystemConfig($connection, 'serving.geo_provider', 1, $this->servingGeoProviderConfig());
             $this->insertSystemConfig($connection, 'review.ai_policy', 1, [
                 'enabled' => true,
                 'provider' => 'openai_compatible',
@@ -1616,6 +1625,7 @@ PHP);
                 'min_visible_ms' => 1000,
                 'repeat_click_window_seconds' => 30,
             ]);
+            $this->insertSystemConfig($connection, 'serving.geo_provider', 1, $this->servingGeoProviderConfig());
             $this->insertSystemConfig($connection, 'review.ai_policy', 1, [
                 'enabled' => true,
                 'provider' => 'openai_compatible',
@@ -1707,6 +1717,7 @@ PHP);
             ]);
             $this->createSystemConfigSchema($connection);
             $this->createAuditLogSchema($connection);
+            $this->createOperationErrorLogSchema($connection);
             $this->insertSystemConfig($connection, 'security.turnstile_policy', 1, $this->turnstilePolicyConfig());
 
             $configPath = $basePath . '/config/routes.php';
@@ -1793,6 +1804,7 @@ PHP);
             ]);
             $this->createSystemConfigSchema($connection);
             $this->createAuditLogSchema($connection);
+            $this->createOperationErrorLogSchema($connection);
             $this->insertSystemConfig($connection, 'security.turnstile_policy', 1, [
                 'enabled' => false,
                 'timeout_seconds' => 5,
@@ -1889,6 +1901,7 @@ PHP);
                 'min_visible_ms' => 1000,
                 'repeat_click_window_seconds' => 30,
             ]);
+            $this->insertSystemConfig($connection, 'serving.geo_provider', 1, $this->servingGeoProviderConfig());
             $this->insertSystemConfig($connection, 'review.ai_policy', 1, [
                 'enabled' => false,
                 'provider' => 'openai_compatible',
@@ -1989,6 +2002,7 @@ PHP);
                 'min_visible_ms' => 1000,
                 'repeat_click_window_seconds' => 30,
             ]);
+            $this->insertSystemConfig($connection, 'serving.geo_provider', 1, $this->servingGeoProviderConfig());
             $this->insertSystemConfig($connection, 'review.ai_policy', 1, [
                 'enabled' => true,
                 'provider' => 'openai_compatible',
@@ -2833,6 +2847,17 @@ PHP);
         return (float) $reflection->getValue($object);
     }
 
+    /**
+     * @return mixed
+     */
+    private function privateProperty(object $object, string $property)
+    {
+        $reflection = new \ReflectionProperty($object, $property);
+        $reflection->setAccessible(true);
+
+        return $reflection->getValue($object);
+    }
+
     private function createSystemConfigSchema(Connection $connection): void
     {
         $connection->executeStatement(
@@ -2877,8 +2902,25 @@ PHP);
                 subject_id INTEGER NULL,
                 ip_address BLOB NULL,
                 user_agent VARCHAR(512) NULL,
+                request_id VARCHAR(160) NULL,
                 metadata_json TEXT NULL,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )',
+        );
+    }
+
+    private function createOperationErrorLogSchema(Connection $connection): void
+    {
+        $connection->executeStatement(
+            'CREATE TABLE operation_error_logs (
+                error_id VARCHAR(160) PRIMARY KEY,
+                request_id VARCHAR(160) NOT NULL,
+                severity VARCHAR(32) NOT NULL,
+                message VARCHAR(1024) NOT NULL,
+                redacted_context_json TEXT NOT NULL,
+                raw_context_json TEXT NULL,
+                source VARCHAR(32) NOT NULL,
+                occurred_at DATETIME NOT NULL
             )',
         );
     }
@@ -2908,6 +2950,7 @@ PHP);
             'min_visible_ms' => 1000,
             'repeat_click_window_seconds' => 30,
         ]);
+        $this->insertSystemConfig($connection, 'serving.geo_provider', 1, $this->servingGeoProviderConfig());
         $this->insertSystemConfig($connection, 'review.ai_policy', 1, [
             'enabled' => true,
             'provider' => 'openai_compatible',
@@ -2922,6 +2965,22 @@ PHP);
         $this->insertSystemConfig($connection, 'assets.upload_policy', 1, $this->assetUploadPolicyConfig());
         $this->insertSystemConfig($connection, 'webhook.delivery_policy', 1, $this->webhookDeliveryPolicyConfig());
         $this->insertSystemConfig($connection, 'security.turnstile_policy', 1, $this->turnstilePolicyConfig());
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function servingGeoProviderConfig(): array
+    {
+        return [
+            'enabled' => true,
+            'include_builtins' => true,
+            'batch_size' => 100,
+            'max_attempts' => 3,
+            'retry_backoff_seconds' => 300,
+            'cache_ttl_seconds' => 86400,
+            'queue_source' => 'serving',
+        ];
     }
 
     private function insertGlobalRevenueShareRule(Connection $connection, int $shareRatioBps): void

@@ -9,14 +9,23 @@ use InvalidArgumentException;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use VertoAD\Domain\Serving\AdDecision;
+use VertoAD\Domain\Serving\ServingRequestContext;
+use VertoAD\Http\RequestIdContext;
+use VertoAD\Infrastructure\Security\ClientIpResolver;
 use VertoAD\Service\Serving\AdServingService;
+use VertoAD\Service\Serving\GeoResolverInterface;
+use VertoAD\Service\Serving\NullGeoResolver;
 
 final readonly class ServeFrameAction
 {
     private const TRACK_PATH = '/api/v1/ads/track';
     private const CLICK_PATH = '/api/v1/ads/click';
 
-    public function __construct(private AdServingService $serving)
+    public function __construct(
+        private AdServingService $serving,
+        private ?ClientIpResolver $ipResolver = null,
+        private ?GeoResolverInterface $geoResolver = null,
+    )
     {
     }
 
@@ -31,6 +40,7 @@ final readonly class ServeFrameAction
                 size: $this->size($query),
                 debug: $this->boolField($query, 'debug', false),
                 now: new DateTimeImmutable(),
+                context: $this->requestContext($request),
             );
         } catch (InvalidArgumentException $exception) {
             return $this->json($response, ['code' => 'invalid_request', 'message' => $exception->getMessage()], 422);
@@ -48,6 +58,23 @@ final readonly class ServeFrameAction
         $response->getBody()->write($this->frameDocument($decision, $nonce));
 
         return $response;
+    }
+
+    private function requestContext(ServerRequestInterface $request): ServingRequestContext
+    {
+        $context = $request->getAttribute(ServingRequestContext::class);
+        if ($context instanceof ServingRequestContext) {
+            return $context;
+        }
+
+        $ip = ($this->ipResolver ?? new ClientIpResolver())->resolve($request);
+        $userAgent = trim($request->getHeaderLine('User-Agent')) ?: null;
+
+        return ($this->geoResolver ?? new NullGeoResolver())->contextForRequest(
+            $ip,
+            $userAgent,
+            RequestIdContext::fromRequest($request),
+        );
     }
 
     private function frameDocument(AdDecision $decision, ?string $nonce = null): string

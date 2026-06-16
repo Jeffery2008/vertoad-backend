@@ -44,6 +44,19 @@ final class ConfigVersionServiceTest extends TestCase
         self::assertSame(1, $auditRepository->entries[0]->metadata['version_number'] ?? null);
     }
 
+    public function testConfigVersionAuditsUseExplicitRequestId(): void
+    {
+        $auditRepository = new ConfigAuditRepository();
+        $service = new ConfigVersionService(new InMemoryConfigVersionRepository(), new AuditLogService($auditRepository));
+
+        $first = $service->createVersion('attribution.default_window_seconds', ['seconds' => 3600], 7, 'req-config-create');
+        $service->rollback((string) $this->value($first, 'version_id'), 11, 'req-config-rollback');
+
+        self::assertSame('req-config-create', $auditRepository->entries[0]->requestId);
+        self::assertSame('req-config-rollback', $auditRepository->entries[2]->requestId);
+        self::assertSame('operations.config.rollback', $auditRepository->entries[2]->action);
+    }
+
     public function testRejectsInvalidConfigKeysAndValues(): void
     {
         $repositoryClass = 'VertoAD\\Repository\\Operations\\InMemoryConfigVersionRepository';
@@ -112,6 +125,7 @@ final class ConfigVersionServiceTest extends TestCase
                     'min_visible_ms' => 1000,
                     'repeat_click_window_seconds' => 30,
                 ],
+                'serving.geo_provider' => $this->validServingGeoProviderConfig(),
             ] as $key => $value
         ) {
             $created = $service->createVersion($key, $value, 7);
@@ -175,6 +189,31 @@ final class ConfigVersionServiceTest extends TestCase
                     ],
                     'Invalid serving.event_validation ',
                 ],
+                'serving geo unknown field' => [
+                    'serving.geo_provider',
+                    [...$this->validServingGeoProviderConfig(), 'unexpected' => true],
+                    'Invalid serving.geo_provider ',
+                ],
+                'serving geo disabled wrong type' => [
+                    'serving.geo_provider',
+                    [...$this->validServingGeoProviderConfig(), 'enabled' => 'true'],
+                    'Invalid serving.geo_provider ',
+                ],
+                'serving geo provider unsupported' => [
+                    'serving.geo_provider',
+                    [...$this->validServingGeoProviderConfig(), 'provider' => 'other'],
+                    'Invalid serving.geo_provider ',
+                ],
+                'serving geo endpoint not https' => [
+                    'serving.geo_provider',
+                    [...$this->validServingGeoProviderConfig(), 'endpoint' => 'http://geo.example.test'],
+                    'Invalid serving.geo_provider ',
+                ],
+                'serving geo non-integer ttl' => [
+                    'serving.geo_provider',
+                    [...$this->validServingGeoProviderConfig(), 'cache_ttl_seconds' => '60'],
+                    'Invalid serving.geo_provider ',
+                ],
             ] as $case => [$key, $value, $messagePrefix]
         ) {
             try {
@@ -182,6 +221,63 @@ final class ConfigVersionServiceTest extends TestCase
                 self::fail('Invalid documented config schema must be rejected: ' . $case);
             } catch (\InvalidArgumentException $exception) {
                 self::assertStringStartsWith($messagePrefix, $exception->getMessage());
+            }
+        }
+    }
+
+    public function testServingGeoProviderVersionAcceptsAsyncProviderRegistryWithoutPlaintextSecrets(): void
+    {
+        $service = new ConfigVersionService(new InMemoryConfigVersionRepository(), new AuditLogService(new ConfigAuditRepository()));
+        $valid = [
+            'enabled' => true,
+            'batch_size' => 50,
+            'max_attempts' => 3,
+            'retry_backoff_seconds' => 120,
+            'cache_ttl_seconds' => 86400,
+            'providers' => [[
+                'id' => 'custom-us',
+                'endpoint_template' => 'https://geo.example/lookup/{ip}?key={api_key}',
+                'regions' => ['US'],
+                'weight' => 2,
+                'api_key_env_var' => 'IP_GEO_CUSTOM_KEY',
+                'fields' => [
+                    'country_code' => 'country_code',
+                    'region_code' => 'region.code',
+                ],
+            ]],
+        ];
+
+        $created = $service->createVersion('serving.geo_provider', $valid, 7);
+
+        self::assertSame($valid, $this->value($created, 'value'));
+
+        foreach (
+            [
+                'plaintext api key' => [
+                    ...$valid,
+                    'providers' => [[
+                        ...$valid['providers'][0],
+                        'api_key' => 'must-not-store',
+                    ]],
+                ],
+                'http endpoint' => [
+                    ...$valid,
+                    'providers' => [[
+                        ...$valid['providers'][0],
+                        'endpoint_template' => 'http://geo.example/lookup/{ip}',
+                    ]],
+                ],
+            ] as $case => $value
+        ) {
+            try {
+                $service->createVersion('serving.geo_provider', $value, 7);
+                self::fail('Invalid async serving.geo_provider config must be rejected: ' . $case);
+            } catch (\InvalidArgumentException $exception) {
+                if ($case === 'plaintext api key') {
+                    self::assertSame('Secret config values must stay in environment secrets.', $exception->getMessage());
+                } else {
+                    self::assertStringStartsWith('Invalid serving.geo_provider ', $exception->getMessage());
+                }
             }
         }
     }
@@ -550,6 +646,22 @@ final class ConfigVersionServiceTest extends TestCase
             'max_input_tokens' => 12000,
             'max_output_tokens' => 2000,
             'temperature' => 0.2,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function validServingGeoProviderConfig(): array
+    {
+        return [
+            'enabled' => true,
+            'provider' => 'pconline',
+            'endpoint' => 'https://whois.pconline.com.cn/ipJson.jsp',
+            'timeout_seconds' => 2,
+            'cache_ttl_seconds' => 86400,
+            'cache_prefix' => 'vertoad:geo:',
+            'default_country_code' => 'CN',
         ];
     }
 

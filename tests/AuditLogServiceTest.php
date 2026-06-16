@@ -6,12 +6,19 @@ namespace VertoAD\Tests;
 
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
+use Slim\Psr7\Factory\ServerRequestFactory;
 use VertoAD\Domain\Audit\AuditLogEntry;
+use VertoAD\Http\RequestIdContext;
 use VertoAD\Repository\AuditLogRepositoryInterface;
 use VertoAD\Service\AuditLogService;
 
 final class AuditLogServiceTest extends TestCase
 {
+    protected function tearDown(): void
+    {
+        RequestIdContext::clear();
+    }
+
     public function testRecordNormalizesMetadataAndIpAddressBeforeAppending(): void
     {
         $repository = new class implements AuditLogRepositoryInterface {
@@ -107,6 +114,32 @@ final class AuditLogServiceTest extends TestCase
         self::assertNull($repository->entry->packedIpAddress);
         self::assertSame('CLI', $repository->entry->userAgent);
         self::assertNull($repository->entry->metadata);
+    }
+
+    public function testRecordInheritsCurrentRequestIdWhenNotExplicitlyProvided(): void
+    {
+        $repository = new class implements AuditLogRepositoryInterface {
+            public ?AuditLogEntry $entry = null;
+
+            public function append(AuditLogEntry $entry): void
+            {
+                $this->entry = $entry;
+            }
+        };
+        $service = new AuditLogService($repository);
+        RequestIdContext::begin((new ServerRequestFactory())
+            ->createServerRequest('POST', '/api/v1/operations/config/versions')
+            ->withHeader('X-Request-Id', 'req-audit-context'));
+
+        $service->record(
+            action: 'admin.config.update',
+            subjectType: 'system_config',
+            metadata: ['endpoint' => '/api/v1/operations/config/versions'],
+        );
+
+        self::assertNotNull($repository->entry);
+        self::assertSame('req-audit-context', $repository->entry->requestId);
+        self::assertSame(['endpoint' => '/api/v1/operations/config/versions'], $repository->entry->metadata);
     }
 
     public function testRecordRejectsInvalidIpAddress(): void

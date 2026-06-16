@@ -227,6 +227,7 @@ final class OpenApiResponseSmokeTest extends TestCase
             'budget_total_cap',
             'budget_daily_cap',
             'budget_hourly_cap',
+            'geo_target_mismatch',
             'frequency_cap_exceeded',
             'fraud_high_risk_viewer',
             'fraud_high_risk_slot',

@@ -9,7 +9,9 @@ use VertoAD\Http\Action\Cron\CronRunAction;
 use VertoAD\Http\Action\Cron\CronStatusAction;
 use VertoAD\Http\Action\HealthAction;
 use VertoAD\Http\Action\Operations\CreateConfigVersionAction;
+use VertoAD\Http\Action\Operations\GetOperationRequestCorrelationsAction;
 use VertoAD\Http\Action\Operations\GetRawOperationErrorContextAction;
+use VertoAD\Http\Action\Operations\LookupOperationIpGeoAction;
 use VertoAD\Http\Action\Operations\ListConfigVersionsAction;
 use VertoAD\Http\Action\Operations\ListOperationErrorsAction;
 use VertoAD\Http\Action\Operations\ListWebhookDeliveriesAction;
@@ -307,8 +309,17 @@ return static function (App $app): void {
     $app->get('/api/v1/operations/errors', ListOperationErrorsAction::class)
         ->add($platformPermission('ops.error_log.read_redacted.platform'))
         ->add(AuthenticateRequestMiddleware::class);
+    $app->get('/api/v1/operations/request-correlations', GetOperationRequestCorrelationsAction::class)
+        ->add($platformPermission('ops.dashboard.read.platform'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->get('/api/v1/operations/request-correlations/{request_id}', GetOperationRequestCorrelationsAction::class)
+        ->add($platformPermission('ops.error_log.read_redacted.platform'))
+        ->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/operations/errors/{error_id}/raw-context', GetRawOperationErrorContextAction::class)
         ->add($platformPermission('ops.error_log.view_raw.platform'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->post('/api/v1/operations/ip-geo/lookup', LookupOperationIpGeoAction::class)
+        ->add($platformPermission('ops.error_log.read_redacted.platform'))
         ->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/operations/config/versions', ListConfigVersionsAction::class)
         ->add($platformPermission('config.read.platform'))

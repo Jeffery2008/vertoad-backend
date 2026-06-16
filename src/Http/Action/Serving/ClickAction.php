@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use InvalidArgumentException;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
+use VertoAD\Http\RequestIdContext;
 use VertoAD\Service\Serving\AdServingService;
 
 final readonly class ClickAction
@@ -25,6 +26,7 @@ final readonly class ClickAction
                 viewerId: $this->stringField($query, 'viewer_id'),
                 eventId: $this->stringField($query, 'event_id'),
                 occurredAt: new DateTimeImmutable(),
+                requestId: RequestIdContext::fromRequest($request),
             );
         } catch (InvalidArgumentException $exception) {
             return $this->json($response, ['code' => 'invalid_request', 'message' => $exception->getMessage()], 422);

@@ -35,6 +35,10 @@ final readonly class DatabaseAdDecisionRepository implements AdDecisionRepositor
             'click_cost_points' => $decision->clickCostPoints,
             'landing_url' => $decision->landingUrl,
             'decided_at' => $this->formatDate($decision->decidedAt),
+            'request_id' => $decision->requestId,
+            'ip_address' => $decision->ipAddress,
+            'user_agent' => $decision->userAgent,
+            'geo_code' => $decision->geoCode,
         ];
 
         if ($this->find($decision->decisionId) === null) {
@@ -71,6 +75,10 @@ final readonly class DatabaseAdDecisionRepository implements AdDecisionRepositor
                 'click_cost_points',
                 'landing_url',
                 'decided_at',
+                'request_id',
+                'ip_address',
+                'user_agent',
+                'geo_code',
             )
             ->from('ad_serving_decisions')
             ->where('decision_id = :decision_id')
@@ -78,6 +86,58 @@ final readonly class DatabaseAdDecisionRepository implements AdDecisionRepositor
             ->fetchAssociative();
 
         return $row === false ? null : $this->hydrate($row);
+    }
+
+    public function searchDecisions(array $filters): array
+    {
+        $query = $this->connection->createQueryBuilder()
+            ->select(
+                'decision_id',
+                'site_id',
+                'slot_id',
+                'viewer_id',
+                'filled',
+                'reason',
+                'iframe_html',
+                'width',
+                'height',
+                'ad_id',
+                'campaign_id',
+                'advertiser_organization_id',
+                'publisher_organization_id',
+                'impression_cost_points',
+                'click_cost_points',
+                'landing_url',
+                'decided_at',
+                'request_id',
+                'ip_address',
+                'user_agent',
+                'geo_code',
+            )
+            ->from('ad_serving_decisions')
+            ->orderBy('decided_at', 'DESC');
+
+        if (isset($filters['request_id']) && trim((string) $filters['request_id']) !== '') {
+            $query->andWhere('request_id = :request_id')
+                ->setParameter('request_id', trim((string) $filters['request_id']));
+        }
+        if (isset($filters['ip_address']) && trim((string) $filters['ip_address']) !== '') {
+            $query->andWhere('ip_address = :ip_address')
+                ->setParameter('ip_address', trim((string) $filters['ip_address']));
+        }
+        if (isset($filters['occurred_from']) && trim((string) $filters['occurred_from']) !== '') {
+            $query->andWhere('decided_at >= :occurred_from')
+                ->setParameter('occurred_from', $this->formatDate(new DateTimeImmutable((string) $filters['occurred_from'])));
+        }
+        if (isset($filters['occurred_to']) && trim((string) $filters['occurred_to']) !== '') {
+            $query->andWhere('decided_at <= :occurred_to')
+                ->setParameter('occurred_to', $this->formatDate(new DateTimeImmutable((string) $filters['occurred_to'])));
+        }
+        if (isset($filters['limit']) && is_int($filters['limit']) && $filters['limit'] > 0) {
+            $query->setMaxResults($filters['limit']);
+        }
+
+        return array_map(fn (array $row): AdDecision => $this->hydrate($row), $query->fetchAllAssociative());
     }
 
     /**
@@ -103,6 +163,10 @@ final readonly class DatabaseAdDecisionRepository implements AdDecisionRepositor
             clickCostPoints: $row['click_cost_points'] === null ? null : (int) $row['click_cost_points'],
             landingUrl: $row['landing_url'] === null ? null : (string) $row['landing_url'],
             decidedAt: new DateTimeImmutable((string) $row['decided_at'], new DateTimeZone('UTC')),
+            requestId: $row['request_id'] === null ? null : (string) $row['request_id'],
+            ipAddress: $row['ip_address'] === null ? null : (string) $row['ip_address'],
+            userAgent: $row['user_agent'] === null ? null : (string) $row['user_agent'],
+            geoCode: $row['geo_code'] === null ? null : (string) $row['geo_code'],
         );
     }
 

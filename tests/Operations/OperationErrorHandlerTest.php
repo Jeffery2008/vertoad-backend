@@ -5,10 +5,17 @@ declare(strict_types=1);
 namespace VertoAD\Tests\Operations;
 
 use PHPUnit\Framework\TestCase;
+use Psr\Http\Message\ResponseInterface;
+use Psr\Http\Message\ServerRequestInterface;
+use Slim\App;
+use Slim\Factory\AppFactory as SlimAppFactory;
 use Slim\Psr7\Factory\ResponseFactory;
 use Slim\Psr7\Factory\ServerRequestFactory;
 use VertoAD\Domain\Audit\AuditLogEntry;
 use VertoAD\Http\Error\OperationErrorHandler;
+use VertoAD\Http\Middleware\ApiEnvelopeMiddleware;
+use VertoAD\Http\Middleware\RequestIdMiddleware;
+use VertoAD\Http\RequestIdContext;
 use VertoAD\Repository\AuditLogRepositoryInterface;
 use VertoAD\Repository\Operations\InMemoryOperationErrorLogRepository;
 use VertoAD\Service\AuditLogService;
@@ -62,11 +69,92 @@ final class OperationErrorHandlerTest extends TestCase
 
         self::assertSame('php', $repository->all()[0]->source);
     }
+
+    public function testHandlerPrefersRequestHeaderOverStaleCurrentContext(): void
+    {
+        $repository = new InMemoryOperationErrorLogRepository();
+        $handler = new OperationErrorHandler(
+            new ResponseFactory(),
+            new OperationErrorCaptureService($repository, new AuditLogService(new HandlerAuditRepository())),
+        );
+        RequestIdContext::begin((new ServerRequestFactory())->createServerRequest('GET', '/stale')->withHeader('X-Request-Id', 'req-stale'));
+        $request = (new ServerRequestFactory())
+            ->createServerRequest('GET', '/api/v1/current')
+            ->withHeader('X-Request-Id', 'req-current');
+
+        $response = $handler($request, new \RuntimeException('Current request failed'), false, true, false);
+        $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame('req-current', $response->getHeaderLine('X-Request-Id'));
+        self::assertSame('req-current', $payload['request_id'] ?? null);
+        self::assertSame('req-current', $repository->all()[0]->request_id);
+        self::assertNull(RequestIdContext::current());
+    }
+
+    public function testGeneratedRequestIdIsStableAcrossEnvelopeErrorAndAuditForThrownRoute(): void
+    {
+        $errors = new InMemoryOperationErrorLogRepository();
+        $auditRepository = new CapturingHandlerAuditRepository();
+        $audit = new AuditLogService($auditRepository);
+        $app = $this->throwingApp($errors, $audit);
+
+        $response = $app->handle((new ServerRequestFactory())->createServerRequest('GET', '/api/v1/operations/boom'));
+        $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+        $logs = $errors->all();
+
+        self::assertSame(500, $response->getStatusCode());
+        self::assertCount(1, $logs);
+        self::assertCount(1, $auditRepository->entries);
+        self::assertMatchesRegularExpression('/^[a-f0-9]{32}$/', (string) ($payload['request_id'] ?? ''));
+        self::assertSame($payload['request_id'], $response->getHeaderLine('X-Request-Id'));
+        self::assertSame($payload['request_id'], $logs[0]->request_id);
+        self::assertSame($payload['request_id'], $auditRepository->entries[0]->requestId);
+    }
+
+    private function throwingApp(
+        InMemoryOperationErrorLogRepository $errors,
+        AuditLogService $audit,
+    ): App {
+        $responseFactory = new ResponseFactory();
+        $handler = new OperationErrorHandler(
+            $responseFactory,
+            new OperationErrorCaptureService($errors, $audit),
+        );
+
+        $app = SlimAppFactory::create($responseFactory);
+        $app->get('/api/v1/operations/boom', function (ServerRequestInterface $request, ResponseInterface $response) use ($audit): ResponseInterface {
+            $audit->record(
+                action: 'operations.test.before_throw',
+                subjectType: 'operation_test',
+                requestId: RequestIdContext::fromRequest($request),
+            );
+
+            throw new \RuntimeException('Thrown route should keep the generated request id.');
+        });
+        $app->add(new ApiEnvelopeMiddleware($responseFactory));
+        $app->add(new RequestIdMiddleware());
+        $app->addRoutingMiddleware();
+        $errorMiddleware = $app->addErrorMiddleware(false, true, true);
+        $errorMiddleware->setDefaultErrorHandler($handler);
+
+        return $app;
+    }
 }
 
 final class HandlerAuditRepository implements AuditLogRepositoryInterface
 {
     public function append(AuditLogEntry $entry): void
     {
+    }
+}
+
+final class CapturingHandlerAuditRepository implements AuditLogRepositoryInterface
+{
+    /** @var list<AuditLogEntry> */
+    public array $entries = [];
+
+    public function append(AuditLogEntry $entry): void
+    {
+        $this->entries[] = $entry;
     }
 }

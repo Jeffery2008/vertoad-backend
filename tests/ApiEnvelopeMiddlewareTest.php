@@ -11,9 +11,15 @@ use Psr\Http\Server\RequestHandlerInterface;
 use Slim\Psr7\Factory\ResponseFactory;
 use Slim\Psr7\Factory\ServerRequestFactory;
 use VertoAD\Http\Middleware\ApiEnvelopeMiddleware;
+use VertoAD\Http\RequestIdContext;
 
 final class ApiEnvelopeMiddlewareTest extends TestCase
 {
+    protected function tearDown(): void
+    {
+        RequestIdContext::clear();
+    }
+
     public function testLeavesNonJsonResponseBodyUntouchedAndAddsRequestId(): void
     {
         $middleware = new ApiEnvelopeMiddleware(new ResponseFactory());
@@ -120,6 +126,38 @@ final class ApiEnvelopeMiddlewareTest extends TestCase
 
         self::assertSame($body, (string) $response->getBody());
         self::assertSame('response-header-id', $response->getHeaderLine('X-Request-Id'));
+    }
+
+    public function testGeneratedRequestIdIsAvailableAsCurrentContextInEnvelopeOnlyStacks(): void
+    {
+        $middleware = new ApiEnvelopeMiddleware(new ResponseFactory());
+        $request = (new ServerRequestFactory())->createServerRequest('GET', '/generated-request-id');
+        $observed = [];
+
+        $response = $middleware->process($request, new class($observed) implements RequestHandlerInterface {
+            /** @param array<string,string|null> $observed */
+            public function __construct(private array &$observed)
+            {
+            }
+
+            public function handle(ServerRequestInterface $request): ResponseInterface
+            {
+                $this->observed['from_request'] = RequestIdContext::fromRequest($request);
+                $this->observed['current'] = RequestIdContext::current();
+
+                $response = (new ResponseFactory())->createResponse(200);
+                $response->getBody()->write(json_encode(['ok' => true], JSON_THROW_ON_ERROR));
+
+                return $response->withHeader('Content-Type', 'application/json');
+            }
+        });
+        $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertMatchesRegularExpression('/^[a-f0-9]{32}$/', (string) ($payload['request_id'] ?? ''));
+        self::assertSame($payload['request_id'], $response->getHeaderLine('X-Request-Id'));
+        self::assertSame($payload['request_id'], $observed['from_request'] ?? null);
+        self::assertSame($payload['request_id'], $observed['current'] ?? null);
+        self::assertNull(RequestIdContext::current());
     }
 }
 

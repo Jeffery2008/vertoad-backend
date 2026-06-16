@@ -23,6 +23,8 @@ final readonly class AdCandidate
         public int $historicalCtrPerMille = 0,
         public ?int $hourlyFrequencyCap = null,
         public ?int $dailyFrequencyCap = null,
+        /** @var list<string> */
+        public array $geos = [],
     ) {
     }
 }

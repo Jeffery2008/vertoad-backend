@@ -9,6 +9,7 @@ use DateTimeZone;
 use InvalidArgumentException;
 use VertoAD\Domain\Audit\AuditLogRecord;
 use VertoAD\Domain\Audit\AuditLogEntry;
+use VertoAD\Http\RequestIdContext;
 use VertoAD\Http\Auth\RequestUserContext;
 use VertoAD\Repository\AuditLogQueryRepositoryInterface;
 use VertoAD\Repository\AuditLogRepositoryInterface;
@@ -30,6 +31,7 @@ final class AuditLogService
         ?int $organizationId = null,
         ?string $ipAddress = null,
         ?string $userAgent = null,
+        ?string $requestId = null,
         ?array $metadata = null,
     ): void {
         $action = trim($action);
@@ -52,6 +54,7 @@ final class AuditLogService
             organizationId: $organizationId,
             packedIpAddress: $packedIpAddress,
             userAgent: $userAgent === null ? null : trim($userAgent),
+            requestId: $this->normalizeRequestId($requestId, $metadata),
             metadata: $this->normalizeMetadata($metadata),
         ));
     }
@@ -130,7 +133,7 @@ final class AuditLogService
             'offset' => $this->nonNegativeInteger($filters['offset'] ?? null, 'offset', 0),
         ];
 
-        foreach (['action', 'subject_type'] as $field) {
+        foreach (['action', 'subject_type', 'request_id', 'ip_address', 'endpoint'] as $field) {
             $value = $this->optionalStringFilter($filters[$field] ?? null, $field);
             if ($value !== null) {
                 $normalized[$field] = $value;
@@ -162,6 +165,31 @@ final class AuditLogService
         }
 
         return $normalized;
+    }
+
+    /**
+     * @param array<string, mixed>|null $metadata
+     */
+    private function normalizeRequestId(?string $requestId, ?array $metadata): ?string
+    {
+        $requestId = $requestId === null ? '' : trim($requestId);
+        if ($requestId !== '') {
+            return $requestId;
+        }
+
+        foreach (['request_id', 'requestId', 'correlation_id'] as $key) {
+            $value = $metadata[$key] ?? null;
+            if (is_scalar($value) && trim((string) $value) !== '') {
+                return trim((string) $value);
+            }
+        }
+
+        $current = RequestIdContext::current();
+        if (is_string($current) && trim($current) !== '') {
+            return trim($current);
+        }
+
+        return null;
     }
 
     private function optionalStringFilter(mixed $value, string $field): ?string
@@ -249,6 +277,7 @@ final class AuditLogService
             'subject_id' => $record->subjectId,
             'ip_address' => $includeRawContext ? $record->ipAddress : null,
             'user_agent' => $includeRawContext ? $record->userAgent : null,
+            'request_id' => $record->requestId,
             'metadata' => $includeRawContext ? $record->metadata : null,
             'context_redacted' => !$includeRawContext,
             'created_at' => $record->createdAt,

@@ -38,6 +38,27 @@ final class ServingBillingReportSchemaMigrationTest extends TestCase
         self::assertStringContainsString("constraint chk_ad_serving_events_billing_status check (billing_status in ('pending', 'billed', 'skipped', 'failed'))", $this->servingSql);
     }
 
+    public function testServingPersistenceBaselineIncludesRequestCorrelationColumns(): void
+    {
+        foreach ([
+            'request_id varchar(160) null',
+            'ip_address varchar(45) null',
+            'user_agent varchar(512) null',
+            'geo_code varchar(64) null',
+        ] as $fragment) {
+            self::assertStringContainsString($fragment, $this->servingSql);
+        }
+
+        foreach ([
+            'key idx_ad_serving_decisions_request_time (request_id, decided_at)',
+            'key idx_ad_serving_decisions_ip_time (ip_address, decided_at)',
+            'key idx_ad_serving_events_request_time (request_id, occurred_at)',
+            'key idx_ad_serving_events_ip_time (ip_address, occurred_at)',
+        ] as $fragment) {
+            self::assertStringContainsString($fragment, $this->servingSql);
+        }
+    }
+
     public function testReportAggregateBaselineUsesDeterministicDimensionKey(): void
     {
         foreach ([

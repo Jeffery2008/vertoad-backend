@@ -16,6 +16,7 @@ CREATE TABLE webhook_deliveries (
     endpoint_url VARCHAR(2048) NOT NULL,
     event_type VARCHAR(120) NOT NULL,
     payload_json JSON NOT NULL,
+    request_id VARCHAR(160) NULL,
     status VARCHAR(32) NOT NULL,
     retry_count INT UNSIGNED NOT NULL DEFAULT 0,
     next_attempt_at DATETIME(6) NOT NULL,
@@ -30,6 +31,7 @@ CREATE TABLE webhook_deliveries (
     KEY idx_webhook_deliveries_endpoint_org (webhook_endpoint_id, organization_id),
     KEY idx_webhook_deliveries_retry (status, next_attempt_at, created_at, delivery_id),
     KEY idx_webhook_deliveries_event_time (event_type, created_at),
+    KEY idx_webhook_deliveries_request_time (request_id, created_at),
     CONSTRAINT chk_webhook_deliveries_status CHECK (status IN ('queued', 'delivered', 'failed', 'exhausted')),
     CONSTRAINT chk_webhook_deliveries_last_status_code CHECK (last_status_code IS NULL OR last_status_code BETWEEN 100 AND 599),
     CONSTRAINT fk_webhook_deliveries_organization
