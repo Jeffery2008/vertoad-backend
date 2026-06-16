@@ -30,6 +30,27 @@ final class OperationAuditRepository implements AuditLogRepositoryInterface, Aud
             if ($requestId !== '' && $entryRequestId !== $requestId) {
                 continue;
             }
+            if (isset($filters['action']) && $entry->action !== $filters['action']) {
+                continue;
+            }
+            if (isset($filters['organization_id']) && $entry->organizationId !== $filters['organization_id']) {
+                continue;
+            }
+            if (isset($filters['actor_user_id']) && $entry->actorUserId !== $filters['actor_user_id']) {
+                continue;
+            }
+            if (isset($filters['subject_type']) && $entry->subjectType !== $filters['subject_type']) {
+                continue;
+            }
+            if (isset($filters['subject_id']) && $entry->subjectId !== $filters['subject_id']) {
+                continue;
+            }
+            if (isset($filters['ip_address']) && $this->unpackIpAddress($entry->packedIpAddress) !== $filters['ip_address']) {
+                continue;
+            }
+            if (isset($filters['endpoint']) && ($metadata['endpoint'] ?? null) !== $filters['endpoint']) {
+                continue;
+            }
 
             $items[] = new AuditLogRecord(
                 id: $index + 1,

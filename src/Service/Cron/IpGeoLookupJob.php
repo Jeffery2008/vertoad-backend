@@ -54,11 +54,26 @@ final readonly class IpGeoLookupJob implements CronJobInterface
         foreach ($this->repository->leasePending($this->policy->batchSize, $now) as $task) {
             ++$leased;
             $provider = null;
+            $lastException = null;
             try {
-                $provider = $this->selector->select($task->regionHint, $task->ipAddress);
-                $record = $this->client->lookup($task->ipAddress, $provider, ($this->clock)());
-                $this->repository->markResolved($record);
-                ++$resolved;
+                foreach ($this->selector->orderedProviders($task->regionHint, $task->ipAddress) as $candidate) {
+                    $provider = $candidate;
+                    try {
+                        $record = $this->client->lookup(
+                            $task->ipAddress,
+                            $provider,
+                            ($this->clock)(),
+                            $this->policy->defaultCountryCode,
+                        );
+                        $this->repository->markResolved($record);
+                        ++$resolved;
+                        continue 2;
+                    } catch (\Throwable $exception) {
+                        $lastException = $exception;
+                    }
+                }
+
+                throw $lastException ?? new \RuntimeException('No IP geo provider is configured for region.');
             } catch (\Throwable $exception) {
                 ++$failed;
                 $this->repository->markFailed(

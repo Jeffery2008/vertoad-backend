@@ -12,6 +12,7 @@ use VertoAD\Domain\Serving\AdDecision;
 use VertoAD\Repository\Serving\DatabaseAdCandidateRepository;
 use VertoAD\Repository\Serving\DatabaseServingInventoryRepository;
 use VertoAD\Repository\Serving\EmptyAdCandidateRepository;
+use VertoAD\Repository\Serving\InMemoryAdDecisionRepository;
 use VertoAD\Repository\Serving\InMemoryAdEventRepository;
 use VertoAD\Tests\Campaigns\CampaignSchema;
 
@@ -252,6 +253,85 @@ final class ServingRepositoryTest extends TestCase
         (new InMemoryAdEventRepository())->lease(0);
     }
 
+    public function testInMemoryDecisionRepositorySearchFiltersAndLimit(): void
+    {
+        $repository = new InMemoryAdDecisionRepository();
+        $repository->save($this->inMemoryDecision(
+            decisionId: 'decision-old',
+            requestId: 'req-old',
+            ipAddress: '198.51.100.1',
+            decidedAt: new DateTimeImmutable('2026-06-08T09:00:00Z'),
+        ));
+        $repository->save($this->inMemoryDecision(
+            decisionId: 'decision-match',
+            requestId: 'req-match',
+            ipAddress: '198.51.100.2',
+            decidedAt: new DateTimeImmutable('2026-06-08T10:00:00Z'),
+        ));
+        $repository->save($this->inMemoryDecision(
+            decisionId: 'decision-new',
+            requestId: 'req-new',
+            ipAddress: '198.51.100.2',
+            decidedAt: new DateTimeImmutable('2026-06-08T10:30:00Z'),
+        ));
+
+        self::assertSame([], $repository->searchDecisions(['request_id' => 'req-missing']));
+        self::assertSame([], $repository->searchDecisions(['ip_address' => '198.51.100.3']));
+        self::assertSame([], $repository->searchDecisions(['occurred_from' => '2026-06-08T11:00:00Z']));
+        self::assertSame([], $repository->searchDecisions(['occurred_to' => '2026-06-08T08:00:00Z']));
+
+        $matches = $repository->searchDecisions([
+            'ip_address' => '198.51.100.2',
+            'occurred_from' => '2026-06-08T09:30:00Z',
+            'occurred_to' => '2026-06-08T10:15:00Z',
+            'limit' => 1,
+        ]);
+
+        self::assertSame(['decision-match'], array_map(static fn (AdDecision $decision): string => $decision->decisionId, $matches));
+        self::assertSame(
+            ['decision-old', 'decision-match', 'decision-new'],
+            array_map(static fn (AdDecision $decision): string => $decision->decisionId, $repository->searchDecisions([])),
+        );
+    }
+
+    public function testInMemoryEventRepositorySearchFiltersAndLimit(): void
+    {
+        $repository = new InMemoryAdEventRepository();
+        $oldDecision = $this->inMemoryDecision(
+            decisionId: 'decision-old',
+            requestId: 'req-old-decision',
+            ipAddress: '198.51.100.1',
+            decidedAt: new DateTimeImmutable('2026-06-08T09:00:00Z'),
+        );
+        $matchDecision = $this->inMemoryDecision(
+            decisionId: 'decision-match',
+            requestId: 'req-match-decision',
+            ipAddress: '198.51.100.2',
+            decidedAt: new DateTimeImmutable('2026-06-08T09:59:00Z'),
+        );
+
+        $repository->recordImpression($oldDecision, 'imp-old', 0.75, 1500, new DateTimeImmutable('2026-06-08T09:00:00Z'), 'req-old');
+        $repository->recordImpression($matchDecision, 'imp-match', 0.75, 1500, new DateTimeImmutable('2026-06-08T10:00:00Z'), 'req-match');
+        $repository->recordClick($matchDecision, 'clk-match', new DateTimeImmutable('2026-06-08T10:05:00Z'), 'req-click');
+
+        self::assertSame([], $repository->searchEvents(['request_id' => 'req-missing']));
+        self::assertSame([], $repository->searchEvents(['ip_address' => '198.51.100.3']));
+        self::assertSame([], $repository->searchEvents(['event_type' => 'video']));
+        self::assertSame([], $repository->searchEvents(['occurred_from' => '2026-06-08T11:00:00Z']));
+        self::assertSame([], $repository->searchEvents(['occurred_to' => '2026-06-08T08:00:00Z']));
+
+        $matches = $repository->searchEvents([
+            'ip_address' => '198.51.100.2',
+            'event_type' => 'impression',
+            'occurred_from' => '2026-06-08T09:30:00Z',
+            'occurred_to' => '2026-06-08T10:15:00Z',
+            'limit' => 1,
+        ]);
+
+        self::assertSame(['imp-match'], array_map(static fn ($event): string => $event->eventId, $matches));
+        self::assertSame(['imp-old', 'imp-match', 'clk-match'], array_map(static fn ($event): string => $event->eventId, $repository->searchEvents([])));
+    }
+
     private function createConnection(): Connection
     {
         $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
@@ -365,5 +445,32 @@ final class ServingRepositoryTest extends TestCase
             'ends_at' => $endsAt,
             'targeting_json' => $targetingJson ?? json_encode($targeting ?? [], JSON_THROW_ON_ERROR),
         ]);
+    }
+
+    private function inMemoryDecision(string $decisionId, string $requestId, string $ipAddress, DateTimeImmutable $decidedAt): AdDecision
+    {
+        return new AdDecision(
+            decisionId: $decisionId,
+            siteId: 10,
+            slotId: 20,
+            viewerId: 'viewer-1',
+            filled: true,
+            reason: null,
+            iframeHtml: '<iframe title="Advertisement"></iframe>',
+            width: 300,
+            height: 250,
+            adId: 'ad-1',
+            campaignId: 30,
+            advertiserOrganizationId: 40,
+            publisherOrganizationId: 50,
+            impressionCostPoints: 10,
+            clickCostPoints: 20,
+            landingUrl: 'https://advertiser.example/landing',
+            decidedAt: $decidedAt,
+            requestId: $requestId,
+            ipAddress: $ipAddress,
+            userAgent: 'In-memory test browser',
+            geoCode: 'CN-SH',
+        );
     }
 }

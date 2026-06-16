@@ -151,6 +151,68 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
         self::assertSame('CN-SH', $rawPayload['geo_code']);
     }
 
+    public function testSearchDecisionsSupportsIpAddressTimeWindowAndLimitFilters(): void
+    {
+        $connection = $this->createConnection();
+        $repository = new DatabaseAdDecisionRepository($connection);
+
+        $repository->save($this->decisionWithCorrelation(
+            'ad:decision-search-old',
+            'req-old',
+            '198.51.100.8',
+            new DateTimeImmutable('2026-06-08T09:00:00+00:00'),
+        ));
+        $repository->save($this->decisionWithCorrelation(
+            'ad:decision-search-match',
+            'req-match',
+            '198.51.100.9',
+            new DateTimeImmutable('2026-06-08T10:00:00+00:00'),
+        ));
+        $repository->save($this->decisionWithCorrelation(
+            'ad:decision-search-new',
+            'req-new',
+            '198.51.100.9',
+            new DateTimeImmutable('2026-06-08T10:30:00+00:00'),
+        ));
+
+        $matches = $repository->searchDecisions([
+            'ip_address' => ' 198.51.100.9 ',
+            'occurred_from' => '2026-06-08T09:30:00+00:00',
+            'occurred_to' => '2026-06-08T10:15:00+00:00',
+            'limit' => 1,
+        ]);
+
+        self::assertCount(1, $matches);
+        self::assertSame('ad:decision-search-match', $matches[0]->decisionId);
+    }
+
+    public function testSearchEventsSupportsIpAddressTypeTimeWindowAndLimitFilters(): void
+    {
+        $connection = $this->createConnection();
+        $decision = $this->decisionWithCorrelation(
+            'ad:decision-event-search',
+            'req-event-decision',
+            '198.51.100.10',
+            new DateTimeImmutable('2026-06-08T09:59:00+00:00'),
+        );
+        (new DatabaseAdDecisionRepository($connection))->save($decision);
+        $repository = new DatabaseAdEventRepository($connection);
+        $repository->recordImpression($decision, 'imp-search-db', 0.75, 1500, new DateTimeImmutable('2026-06-08T10:00:00+00:00'), 'req-imp-db');
+        $repository->recordClick($decision, 'clk-search-db', new DateTimeImmutable('2026-06-08T10:05:00+00:00'), 'req-click-db');
+        $repository->recordClick($decision, 'clk-late-db', new DateTimeImmutable('2026-06-08T10:30:00+00:00'), 'req-late-db');
+
+        $matches = $repository->searchEvents([
+            'ip_address' => ' 198.51.100.10 ',
+            'event_type' => ' click ',
+            'occurred_from' => '2026-06-08T10:01:00+00:00',
+            'occurred_to' => '2026-06-08T10:10:00+00:00',
+            'limit' => 1,
+        ]);
+
+        self::assertCount(1, $matches);
+        self::assertSame('clk-search-db', $matches[0]->eventId);
+    }
+
     public function testPendingDuplicateLookupDistinguishesProcessedAndMissingEvents(): void
     {
         $connection = $this->createConnection();
@@ -582,6 +644,33 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
             decidedAt: new DateTimeImmutable('2026-06-08T09:59:00+00:00'),
             requestId: 'req-decision-1',
             ipAddress: '198.51.100.8',
+            userAgent: 'DB test browser',
+            geoCode: 'CN-SH',
+        );
+    }
+
+    private function decisionWithCorrelation(string $decisionId, string $requestId, string $ipAddress, DateTimeImmutable $decidedAt): AdDecision
+    {
+        return new AdDecision(
+            decisionId: $decisionId,
+            siteId: 10,
+            slotId: 20,
+            viewerId: 'viewer-1',
+            filled: true,
+            reason: null,
+            iframeHtml: '<iframe title="Advertisement"></iframe>',
+            width: 300,
+            height: 250,
+            adId: 'ad-1',
+            campaignId: 30,
+            advertiserOrganizationId: 40,
+            publisherOrganizationId: 50,
+            impressionCostPoints: 10,
+            clickCostPoints: 20,
+            landingUrl: 'https://advertiser.example/landing',
+            decidedAt: $decidedAt,
+            requestId: $requestId,
+            ipAddress: $ipAddress,
             userAgent: 'DB test browser',
             geoCode: 'CN-SH',
         );

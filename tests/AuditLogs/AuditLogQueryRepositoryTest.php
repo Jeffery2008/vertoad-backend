@@ -6,6 +6,7 @@ namespace VertoAD\Tests\AuditLogs;
 
 use Doctrine\DBAL\DriverManager;
 use Doctrine\DBAL\Connection;
+use Doctrine\DBAL\Platforms\MySQL84Platform;
 use PHPUnit\Framework\TestCase;
 use VertoAD\Domain\Audit\AuditLogEntry;
 use VertoAD\Repository\AuditLogRepository;
@@ -86,6 +87,95 @@ final class AuditLogQueryRepositoryTest extends TestCase
         self::assertSame(10, $result['items'][0]->subjectId);
     }
 
+    public function testSearchFiltersByIpAddressAndMetadataEndpoint(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        self::createAuditLogsTable($connection);
+        $repository = new AuditLogRepository($connection);
+
+        $this->insertAuditLogWithIpAndEndpoint(
+            $connection,
+            $repository,
+            subjectId: 10,
+            ipAddress: '127.0.0.1',
+            endpoint: '/api/v1/operations/audit-logs',
+            createdAt: '2026-06-15 10:00:00',
+        );
+        $this->insertAuditLogWithIpAndEndpoint(
+            $connection,
+            $repository,
+            subjectId: 11,
+            ipAddress: '127.0.0.1',
+            endpoint: '/api/v1/operations/errors',
+            createdAt: '2026-06-15 11:00:00',
+        );
+        $this->insertAuditLogWithIpAndEndpoint(
+            $connection,
+            $repository,
+            subjectId: 12,
+            ipAddress: '198.51.100.10',
+            endpoint: '/api/v1/operations/audit-logs',
+            createdAt: '2026-06-15 12:00:00',
+        );
+
+        $result = $repository->search([
+            'ip_address' => '127.0.0.1',
+            'endpoint' => '/api/v1/operations/audit-logs',
+            'limit' => 50,
+            'offset' => 0,
+        ]);
+
+        self::assertSame(1, $result['total']);
+        self::assertCount(1, $result['items']);
+        self::assertSame(10, $result['items'][0]->subjectId);
+        self::assertSame('127.0.0.1', $result['items'][0]->ipAddress);
+        self::assertSame('/api/v1/operations/audit-logs', $result['items'][0]->metadata['endpoint'] ?? null);
+    }
+
+    public function testSearchIgnoresInvalidIpAddressFilter(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        self::createAuditLogsTable($connection);
+        $repository = new AuditLogRepository($connection);
+
+        $this->insertAuditLogWithIpAndEndpoint(
+            $connection,
+            $repository,
+            subjectId: 10,
+            ipAddress: '127.0.0.1',
+            endpoint: '/api/v1/operations/audit-logs',
+            createdAt: '2026-06-15 10:00:00',
+        );
+
+        $result = $repository->search([
+            'ip_address' => 'not-an-ip',
+            'limit' => 50,
+            'offset' => 0,
+        ]);
+
+        self::assertSame(1, $result['total']);
+        self::assertCount(1, $result['items']);
+        self::assertSame(10, $result['items'][0]->subjectId);
+    }
+
+    public function testMetadataExpressionUsesMysqlJsonExtractionOutsideSqlite(): void
+    {
+        $connection = new class extends Connection {
+            public function __construct()
+            {
+            }
+
+            public function getDatabasePlatform(): \Doctrine\DBAL\Platforms\AbstractPlatform
+            {
+                return new MySQL84Platform();
+            }
+        };
+        $repository = new AuditLogRepository($connection);
+        $method = new \ReflectionMethod($repository, 'metadataStringExpression');
+
+        self::assertSame("JSON_UNQUOTE(JSON_EXTRACT(al.metadata_json, '$.endpoint'))", $method->invoke($repository, 'endpoint'));
+    }
+
     public function testSearchReportsHasMoreAndHydratesMissingRawContextAsNull(): void
     {
         $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
@@ -157,6 +247,32 @@ SQL
             packedIpAddress: inet_pton('127.0.0.1') ?: null,
             userAgent: 'PHPUnit',
             metadata: ['correlation_id' => 'req-' . $subjectId, 'nested' => ['token' => 'secret-token']],
+        ));
+
+        $connection->update(
+            'audit_logs',
+            ['created_at' => $createdAt],
+            ['id' => (int) $connection->lastInsertId()],
+        );
+    }
+
+    private function insertAuditLogWithIpAndEndpoint(
+        Connection $connection,
+        AuditLogRepository $repository,
+        int $subjectId,
+        string $ipAddress,
+        string $endpoint,
+        string $createdAt,
+    ): void {
+        $repository->append(new AuditLogEntry(
+            action: 'operations.audit_log.viewed',
+            subjectType: 'audit_log',
+            subjectId: $subjectId,
+            actorUserId: 7,
+            organizationId: 3,
+            packedIpAddress: inet_pton($ipAddress) ?: null,
+            userAgent: 'PHPUnit',
+            metadata: ['endpoint' => $endpoint],
         ));
 
         $connection->update(

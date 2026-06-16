@@ -4143,6 +4143,7 @@ paths:
                       status: ok
                       jobs:
                         - redis-events-consume
+                        - ip-geo-resolve
                         - aggregate-statistics
                         - archive-parquet
                         - duckdb-cold-query
@@ -4216,6 +4217,23 @@ paths:
                         billed: 240
                         skipped: 10
                         duplicates: 0
+                      message: null
+                    error: null
+                    meta: {}
+                    request_id: req_0123456789abcdef
+                ipGeoResolve:
+                  summary: IP geo queue resolution updated the canonical store.
+                  value:
+                    data:
+                      job: ip-geo-resolve
+                      status: completed
+                      acquired_lock: true
+                      metrics:
+                        queued: 100
+                        resolved: 96
+                        failed: 3
+                        dead: 1
+                        refreshed_canonical_records: 96
                       message: null
                     error: null
                     meta: {}
@@ -7981,6 +7999,13 @@ components:
           type: string
           minLength: 1
           default: serving
+        default_country_code:
+          type:
+            - string
+            - "null"
+          pattern: "^[A-Z]{2}$"
+          default: null
+          description: Optional ISO 3166-1 alpha-2 country code used when a provider response does not include a usable country code; null keeps the geo unknown.
       additionalProperties: false
     IpGeoProviderRegistryProvider:
       type: object

@@ -147,6 +147,40 @@ final class AdServingServiceTest extends TestCase
         self::assertSame('geo_target_mismatch', $decision->reason);
     }
 
+    public function testServeSkipsGeoTargetedCandidatesWhenGeoIsUnknownButKeepsUntargetedCandidates(): void
+    {
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([
+                $this->candidate(
+                    adId: 'ad-shanghai',
+                    campaignId: 30,
+                    advertiserOrganizationId: 40,
+                    landingUrl: 'https://advertiser.example/shanghai',
+                    impressionCostPoints: 10,
+                    clickCostPoints: 20,
+                    geos: ['CN-SH'],
+                ),
+                $this->candidate(
+                    adId: 'ad-untargeted',
+                    campaignId: 31,
+                    advertiserOrganizationId: 41,
+                    landingUrl: 'https://advertiser.example/untargeted',
+                    impressionCostPoints: 8,
+                    clickCostPoints: 16,
+                ),
+            ]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+        );
+
+        $decision = $service->serve(10, 20, 'viewer-unknown-geo', null, false, new DateTimeImmutable('2026-06-08 10:00:00'));
+
+        self::assertTrue($decision->filled);
+        self::assertSame('ad-untargeted', $decision->adId);
+        self::assertNull($decision->geoCode);
+    }
+
     public function testTrackRequiresValidViewabilityThresholdAndDeduplicatesEvents(): void
     {
         $events = new InMemoryAdEventRepository();

@@ -15,6 +15,16 @@ final readonly class IpGeoProviderSelector
 
     public function select(?string $regionHint, string $ipAddress): IpGeoProviderDefinition
     {
+        $providers = $this->orderedProviders($regionHint, $ipAddress);
+
+        return $providers[0];
+    }
+
+    /**
+     * @return list<IpGeoProviderDefinition>
+     */
+    public function orderedProviders(?string $regionHint, string $ipAddress): array
+    {
         $providers = $this->policy->providersForRegion($regionHint);
         if ($providers === []) {
             throw new \RuntimeException('No IP geo provider is configured for region.');
@@ -23,14 +33,19 @@ final readonly class IpGeoProviderSelector
         $totalWeight = array_sum(array_map(static fn (IpGeoProviderDefinition $provider): int => $provider->weight, $providers));
         $slot = $this->slot($regionHint, $ipAddress, $totalWeight);
         $cursor = 0;
-        foreach ($providers as $provider) {
+        $selectedIndex = 0;
+        foreach ($providers as $index => $provider) {
             $cursor += $provider->weight;
             if ($slot < $cursor) {
-                return $provider;
+                $selectedIndex = $index;
+                break;
             }
         }
 
-        return $providers[array_key_last($providers)];
+        return [
+            ...array_slice($providers, $selectedIndex),
+            ...array_slice($providers, 0, $selectedIndex),
+        ];
     }
 
     private function slot(?string $regionHint, string $ipAddress, int $totalWeight): int

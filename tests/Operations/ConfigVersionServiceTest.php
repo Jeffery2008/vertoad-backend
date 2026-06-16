@@ -199,6 +199,11 @@ final class ConfigVersionServiceTest extends TestCase
                     [...$this->validServingGeoProviderConfig(), 'enabled' => 'true'],
                     'Invalid serving.geo_provider ',
                 ],
+                'serving geo include builtins wrong type' => [
+                    'serving.geo_provider',
+                    [...$this->validServingGeoProviderConfig(), 'include_builtins' => 'false'],
+                    'Invalid serving.geo_provider ',
+                ],
                 'serving geo legacy flat provider unsupported' => [
                     'serving.geo_provider',
                     [
@@ -226,6 +231,16 @@ final class ConfigVersionServiceTest extends TestCase
                 'serving geo non-integer ttl' => [
                     'serving.geo_provider',
                     [...$this->validServingGeoProviderConfig(), 'cache_ttl_seconds' => '60'],
+                    'Invalid serving.geo_provider ',
+                ],
+                'serving geo queue source wrong type' => [
+                    'serving.geo_provider',
+                    [...$this->validServingGeoProviderConfig(), 'queue_source' => ['serving']],
+                    'Invalid serving.geo_provider ',
+                ],
+                'serving geo default country wrong type' => [
+                    'serving.geo_provider',
+                    [...$this->validServingGeoProviderConfig(), 'default_country_code' => ['CN']],
                     'Invalid serving.geo_provider ',
                 ],
             ] as $case => [$key, $value, $messagePrefix]
@@ -676,6 +691,7 @@ final class ConfigVersionServiceTest extends TestCase
             'retry_backoff_seconds' => 120,
             'cache_ttl_seconds' => 86400,
             'queue_source' => 'serving',
+            'default_country_code' => 'CN',
             'providers' => [[
                 'id' => 'pconline',
                 'endpoint_template' => 'https://whois.pconline.com.cn/ipJson.jsp?ip={ip}&json=true',

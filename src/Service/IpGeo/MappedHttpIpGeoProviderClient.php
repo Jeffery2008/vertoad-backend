@@ -24,7 +24,12 @@ final readonly class MappedHttpIpGeoProviderClient
         $this->transport = Closure::fromCallable($transport ?? self::httpTransport());
     }
 
-    public function lookup(string $ipAddress, IpGeoProviderDefinition $provider, DateTimeImmutable $resolvedAt): GeoIpRecord
+    public function lookup(
+        string $ipAddress,
+        IpGeoProviderDefinition $provider,
+        DateTimeImmutable $resolvedAt,
+        ?string $defaultCountryCode = null,
+    ): GeoIpRecord
     {
         $apiKey = $provider->apiKeyEnvVar === null ? null : getenv($provider->apiKeyEnvVar);
         if (str_contains($provider->endpointTemplate, '{api_key}') && (!is_string($apiKey) || trim($apiKey) === '')) {
@@ -52,7 +57,7 @@ final readonly class MappedHttpIpGeoProviderClient
             throw new \RuntimeException('IP geo provider ' . $provider->id . ' returned invalid JSON.');
         }
 
-        return $this->normalizer->normalize($ipAddress, $provider, $decoded, $resolvedAt);
+        return $this->normalizer->normalize($ipAddress, $provider, $decoded, $resolvedAt, $defaultCountryCode);
     }
 
     /**

@@ -257,6 +257,7 @@ final class SystemConfigServiceTest extends TestCase
         self::assertFalse($policy->enabled);
         self::assertNotNull($policy->provider('pconline'));
         self::assertSame(86400, $policy->cacheTtlSeconds);
+        self::assertNull($policy->defaultCountryCode);
     }
 
     public function testIpGeoProviderPolicyRejectsLegacyFlatConfiguredValues(): void
@@ -280,6 +281,26 @@ final class SystemConfigServiceTest extends TestCase
             self::assertStringStartsWith('Invalid serving.geo_provider ', $exception->getMessage());
             self::assertStringContainsString('unknown field provider', $exception->getMessage());
         }
+    }
+
+    public function testIpGeoProviderPolicyUsesConfiguredDefaultCountryCode(): void
+    {
+        $repository = new ArraySystemConfigRepository([
+            'serving.geo_provider' => [
+                'enabled' => true,
+                'default_country_code' => 'cn',
+                'providers' => [[
+                    'id' => 'custom-global',
+                    'endpoint_template' => 'https://geo.example/lookup/{ip}',
+                    'regions' => ['global'],
+                    'fields' => ['country_code' => 'country_code', 'region_code' => 'region_code'],
+                ]],
+            ],
+        ]);
+
+        $policy = (new SystemConfigService($repository))->ipGeoProviderPolicy();
+
+        self::assertSame('CN', $policy->defaultCountryCode);
     }
 
     public function testAssetUploadPolicyUsesConfiguredRules(): void

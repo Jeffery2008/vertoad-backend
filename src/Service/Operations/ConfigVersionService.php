@@ -301,7 +301,17 @@ final readonly class ConfigVersionService
         $this->assertOnlyFields(
             self::SERVING_GEO_PROVIDER_KEY,
             $value,
-            ['enabled', 'providers', 'include_builtins', 'batch_size', 'max_attempts', 'retry_backoff_seconds', 'cache_ttl_seconds', 'queue_source'],
+            [
+                'enabled',
+                'providers',
+                'include_builtins',
+                'batch_size',
+                'max_attempts',
+                'retry_backoff_seconds',
+                'cache_ttl_seconds',
+                'queue_source',
+                'default_country_code',
+            ],
         );
         if (array_key_exists('enabled', $value) && !is_bool($value['enabled'])) {
             throw new InvalidArgumentException('Invalid serving.geo_provider enabled must be boolean.');
@@ -316,6 +326,13 @@ final readonly class ConfigVersionService
         }
         if (array_key_exists('queue_source', $value) && !is_string($value['queue_source'])) {
             throw new InvalidArgumentException('Invalid serving.geo_provider queue_source must be a string.');
+        }
+        if (
+            array_key_exists('default_country_code', $value)
+            && $value['default_country_code'] !== null
+            && !is_string($value['default_country_code'])
+        ) {
+            throw new InvalidArgumentException('Invalid serving.geo_provider default_country_code must be a string or null.');
         }
 
         try {

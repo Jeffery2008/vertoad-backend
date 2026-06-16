@@ -261,6 +261,87 @@ namespace VertoAD\Tests\Serving {
             self::assertSame(['imp-search', 'clk-search-invalid'], array_map(static fn ($event): string => $event->eventId, $allInRange));
         }
 
+        public function testSearchEventsUsesRequestIdAndIpAddressIndexesAndAppliesSecondaryFilters(): void
+        {
+            $repository = new RedisAdEventRepository(new \Redis(), 'vertoad:test:', 60, 3600);
+            $decision = new AdDecision(
+                decisionId: 'decision-search-correlated',
+                siteId: 10,
+                slotId: 20,
+                viewerId: 'viewer-search',
+                filled: true,
+                reason: null,
+                iframeHtml: '<iframe title="Advertisement"></iframe>',
+                width: 300,
+                height: 250,
+                adId: 'ad-search',
+                campaignId: 30,
+                advertiserOrganizationId: 40,
+                publisherOrganizationId: 50,
+                impressionCostPoints: 10,
+                clickCostPoints: 20,
+                landingUrl: 'https://advertiser.example/landing',
+                decidedAt: new DateTimeImmutable('2026-06-08T09:59:00Z'),
+                requestId: 'req-decision-search',
+                ipAddress: '198.51.100.88',
+                userAgent: 'Search browser',
+                geoCode: 'CN-SH',
+            );
+
+            $repository->recordImpression($decision, 'imp-correlated', 0.75, 1500, new DateTimeImmutable('2026-06-08T10:00:00Z'), 'req-shared');
+            $repository->recordClick($decision, 'clk-correlated', new DateTimeImmutable('2026-06-08T10:00:20Z'), 'req-shared');
+            $repository->recordClick($this->decision(), 'clk-other-ip', new DateTimeImmutable('2026-06-08T10:00:30Z'), 'req-other');
+
+            $requestMatches = $repository->searchEvents([
+                'request_id' => ' req-shared ',
+                'event_type' => 'click',
+                'limit' => 10,
+            ]);
+            $ipMatches = $repository->searchEvents([
+                'ip_address' => ' 198.51.100.88 ',
+                'event_type' => 'click',
+                'limit' => 10,
+            ]);
+
+            self::assertSame(['clk-correlated'], array_map(static fn ($event): string => $event->eventId, $requestMatches));
+            self::assertSame(['clk-correlated'], array_map(static fn ($event): string => $event->eventId, $ipMatches));
+        }
+
+        public function testSearchEventsSkipsMissingPayloadsAndStopsAtLimit(): void
+        {
+            $redis = new \Redis();
+            $repository = new RedisAdEventRepository($redis, 'vertoad:test:', 60, 3600);
+            $decision = $this->decision();
+
+            $repository->recordClick($decision, 'clk-limit-old', new DateTimeImmutable('2026-06-08T10:00:00Z'));
+            $repository->recordClick($decision, 'clk-limit-new', new DateTimeImmutable('2026-06-08T10:01:00Z'));
+
+            foreach ($redis->zsets['vertoad:test:serving-events:index:all'] as $member => $_score) {
+                if (isset($redis->values[$member]) && str_contains($redis->values[$member], 'clk-limit-old')) {
+                    unset($redis->values[$member], $redis->keys[$member]);
+                }
+            }
+
+            $events = $repository->searchEvents(['limit' => 1]);
+
+            self::assertSame(['clk-limit-new'], array_map(static fn ($event): string => $event->eventId, $events));
+        }
+
+        public function testSearchEventsSkipsCorruptedRequestAndIpIndexes(): void
+        {
+            $redis = new \Redis();
+            $repository = new RedisAdEventRepository($redis, 'vertoad:test:', 60, 3600);
+            $decision = $this->decision();
+
+            $repository->recordClick($decision, 'clk-corrupted-index', new DateTimeImmutable('2026-06-08T10:00:00Z'), 'req-good');
+            $eventKey = 'vertoad:test:serving-events:event:' . hash('sha256', 'click:clk-corrupted-index');
+            $redis->zAdd('vertoad:test:serving-events:index:request:' . hash('sha256', 'req-bad'), (float) (new DateTimeImmutable('2026-06-08T10:00:00Z'))->getTimestamp(), $eventKey);
+            $redis->zAdd('vertoad:test:serving-events:index:ip:' . hash('sha256', '198.51.100.199'), (float) (new DateTimeImmutable('2026-06-08T10:00:00Z'))->getTimestamp(), $eventKey);
+
+            self::assertSame([], $repository->searchEvents(['request_id' => 'req-bad', 'limit' => 10]));
+            self::assertSame([], $repository->searchEvents(['ip_address' => '198.51.100.199', 'limit' => 10]));
+        }
+
         public function testLeaseUsesProcessingVisibilityAndAckKeepsDedupePayload(): void
         {
             $redis = new \Redis();

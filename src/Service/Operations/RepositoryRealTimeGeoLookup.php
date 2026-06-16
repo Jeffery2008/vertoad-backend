@@ -34,17 +34,21 @@ final readonly class RepositoryRealTimeGeoLookup implements RealTimeGeoLookupInt
             if ($this->policy->enabled) {
                 try {
                     $this->repository->ensureQueued($ipAddress, null, null, 'operations_realtime_lookup', $now, $requestId);
-                    $provider = $this->selector->select(null, $ipAddress);
-                    $record = $this->client->lookup($ipAddress, $provider, $now);
-                    $this->repository->markResolved($record);
+                    foreach ($this->selector->orderedProviders(null, $ipAddress) as $provider) {
+                        try {
+                            $record = $this->client->lookup($ipAddress, $provider, $now, $this->policy->defaultCountryCode);
+                            $this->repository->markResolved($record);
 
-                    return [
-                        ...$this->recordPayload($record),
-                        'source' => 'provider',
-                        'status' => 'resolved',
-                        'queried_at' => $now->format(DATE_ATOM),
-                        'persisted_to_canonical_store' => true,
-                    ];
+                            return [
+                                ...$this->recordPayload($record),
+                                'source' => 'provider',
+                                'status' => 'resolved',
+                                'queried_at' => $now->format(DATE_ATOM),
+                                'persisted_to_canonical_store' => true,
+                            ];
+                        } catch (Throwable) {
+                        }
+                    }
                 } catch (Throwable) {
                     // Realtime admin lookups must not fail the log page when providers are down.
                 }

@@ -8,6 +8,7 @@ final readonly class IpGeoProviderPolicy
 {
     /** @var array<string, IpGeoProviderDefinition> */
     private array $providersById;
+    public ?string $defaultCountryCode;
 
     /**
      * @param list<IpGeoProviderDefinition> $providers
@@ -20,6 +21,7 @@ final readonly class IpGeoProviderPolicy
         public int $retryBackoffSeconds = 300,
         public int $cacheTtlSeconds = 86400,
         public string $queueSource = 'serving',
+        ?string $defaultCountryCode = null,
     ) {
         if ($batchSize < 1) {
             throw new \InvalidArgumentException('IP geo batch_size must be positive.');
@@ -37,6 +39,13 @@ final readonly class IpGeoProviderPolicy
             throw new \InvalidArgumentException('IP geo cache_ttl_seconds must be positive.');
         }
 
+        if ($defaultCountryCode !== null) {
+            $defaultCountryCode = strtoupper(trim($defaultCountryCode));
+            if (preg_match('/^[A-Z]{2}$/', $defaultCountryCode) !== 1) {
+                throw new \InvalidArgumentException('IP geo default_country_code must be a two-letter country code.');
+            }
+        }
+
         $providersById = [];
         foreach ($providers as $provider) {
             if (!$provider instanceof IpGeoProviderDefinition) {
@@ -49,6 +58,7 @@ final readonly class IpGeoProviderPolicy
         }
 
         $this->providersById = $providersById;
+        $this->defaultCountryCode = $defaultCountryCode;
     }
 
     /**
@@ -65,6 +75,7 @@ final readonly class IpGeoProviderPolicy
             'retry_backoff_seconds',
             'cache_ttl_seconds',
             'queue_source',
+            'default_country_code',
         ], true);
         foreach ($value as $key => $_) {
             if (!isset($allowedKeys[(string) $key])) {
@@ -85,6 +96,9 @@ final readonly class IpGeoProviderPolicy
             retryBackoffSeconds: (int) ($value['retry_backoff_seconds'] ?? 300),
             cacheTtlSeconds: (int) ($value['cache_ttl_seconds'] ?? 86400),
             queueSource: trim((string) ($value['queue_source'] ?? 'serving')) ?: 'serving',
+            defaultCountryCode: isset($value['default_country_code']) && $value['default_country_code'] !== null
+                ? (string) $value['default_country_code']
+                : null,
         );
     }
 

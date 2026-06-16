@@ -18,6 +18,7 @@ final class MappedIpGeoResponseNormalizer
         IpGeoProviderDefinition $provider,
         array $payload,
         DateTimeImmutable $resolvedAt,
+        ?string $defaultCountryCode = null,
     ): GeoIpRecord {
         $summary = [];
         foreach ($provider->fieldMap as $canonicalField => $path) {
@@ -26,8 +27,8 @@ final class MappedIpGeoResponseNormalizer
 
         $countryCode = $this->code($summary[$provider->fieldMap['country_code'] ?? ''] ?? null);
         $regionCode = $this->code($summary[$provider->fieldMap['region_code'] ?? ''] ?? null);
-        if ($countryCode === null && $provider->id === 'pconline') {
-            $countryCode = 'CN';
+        if ($countryCode === null) {
+            $countryCode = $this->defaultCountryCode($defaultCountryCode, $provider);
         }
         if ($provider->id === 'pconline') {
             $regionCode = $this->chinaRegionCode($summary[$provider->fieldMap['region_code'] ?? ''] ?? $summary[$provider->fieldMap['region_name'] ?? ''] ?? null);
@@ -82,6 +83,16 @@ final class MappedIpGeoResponseNormalizer
         $value = $this->string($value);
 
         return $value === null ? null : strtoupper($value);
+    }
+
+    private function defaultCountryCode(?string $defaultCountryCode, IpGeoProviderDefinition $provider): ?string
+    {
+        $defaultCountryCode = $this->code($defaultCountryCode);
+        if ($defaultCountryCode !== null) {
+            return $defaultCountryCode;
+        }
+
+        return $provider->id === 'pconline' ? 'CN' : null;
     }
 
     private function float(mixed $value): ?float

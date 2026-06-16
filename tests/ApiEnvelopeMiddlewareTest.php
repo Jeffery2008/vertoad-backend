@@ -10,6 +10,7 @@ use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\RequestHandlerInterface;
 use Slim\Psr7\Factory\ResponseFactory;
 use Slim\Psr7\Factory\ServerRequestFactory;
+use VertoAD\Http\Middleware\LazyContainerMiddleware;
 use VertoAD\Http\Middleware\ApiEnvelopeMiddleware;
 use VertoAD\Http\RequestIdContext;
 
@@ -158,6 +159,134 @@ final class ApiEnvelopeMiddlewareTest extends TestCase
         self::assertSame($payload['request_id'], $observed['from_request'] ?? null);
         self::assertSame($payload['request_id'], $observed['current'] ?? null);
         self::assertNull(RequestIdContext::current());
+    }
+
+    public function testLazyContainerSkipsResolutionWhenEndpointIsNotEnabled(): void
+    {
+        $middleware = new LazyContainerMiddleware(
+            new class implements \Psr\Container\ContainerInterface {
+                public function get(string $id): mixed
+                {
+                    throw new \RuntimeException('container should not be consulted');
+                }
+
+                public function has(string $id): bool
+                {
+                    return true;
+                }
+            },
+            'test.middleware',
+            ['POST:/enabled'],
+        );
+        $request = (new ServerRequestFactory())
+            ->createServerRequest('GET', '/disabled')
+            ->withAttribute(RequestIdContext::ATTRIBUTE, 'attr-request-id')
+            ->withHeader('X-Request-Id', 'header-request-id');
+        $handled = false;
+
+        self::assertSame('attr-request-id', RequestIdContext::begin($request));
+
+        $response = $middleware->process($request, new class($handled) implements RequestHandlerInterface {
+            public function __construct(private bool &$handled)
+            {
+            }
+
+            public function handle(ServerRequestInterface $request): ResponseInterface
+            {
+                $this->handled = true;
+                TestCase::assertSame('attr-request-id', RequestIdContext::fromRequest($request));
+
+                return (new ResponseFactory())->createResponse(204);
+            }
+        });
+
+        self::assertTrue($handled);
+        self::assertSame(204, $response->getStatusCode());
+    }
+
+    public function testLazyContainerResolvesAndDelegatesWhenEndpointIsEnabled(): void
+    {
+        $delegateCalled = false;
+        $middleware = new LazyContainerMiddleware(
+            new class($delegateCalled) implements \Psr\Container\ContainerInterface {
+                public function __construct(private bool &$delegateCalled)
+                {
+                }
+
+                public function get(string $id): mixed
+                {
+                    TestCase::assertSame('test.middleware', $id);
+
+                    return new class($this->delegateCalled) implements \Psr\Http\Server\MiddlewareInterface {
+                        public function __construct(private bool &$delegateCalled)
+                        {
+                        }
+
+                        public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
+                        {
+                            $this->delegateCalled = true;
+
+                            return (new ResponseFactory())->createResponse(202);
+                        }
+                    };
+                }
+
+                public function has(string $id): bool
+                {
+                    return $id === 'test.middleware';
+                }
+            },
+            'test.middleware',
+            ['get:/enabled'],
+        );
+        $handlerCalled = false;
+
+        $response = $middleware->process(
+            (new ServerRequestFactory())->createServerRequest('GET', '/ENABLED'),
+            new class($handlerCalled) implements RequestHandlerInterface {
+                public function __construct(private bool &$handlerCalled)
+                {
+                }
+
+                public function handle(ServerRequestInterface $request): ResponseInterface
+                {
+                    $this->handlerCalled = true;
+
+                    return (new ResponseFactory())->createResponse(500);
+                }
+            },
+        );
+
+        self::assertSame(202, $response->getStatusCode());
+        self::assertTrue($delegateCalled);
+        self::assertFalse($handlerCalled);
+    }
+
+    public function testLazyContainerRejectsResolvedNonMiddleware(): void
+    {
+        $middleware = new LazyContainerMiddleware(
+            new class implements \Psr\Container\ContainerInterface {
+                public function get(string $id): mixed
+                {
+                    return new \stdClass();
+                }
+
+                public function has(string $id): bool
+                {
+                    return true;
+                }
+            },
+            'bad.middleware',
+            ['GET:/enabled'],
+        );
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('bad.middleware must resolve to a PSR-15 middleware.');
+
+        $middleware->process(
+            (new ServerRequestFactory())->createServerRequest('GET', '/ENABLED'),
+            new FixedResponseHandler(200, '', []),
+        );
     }
 }
 

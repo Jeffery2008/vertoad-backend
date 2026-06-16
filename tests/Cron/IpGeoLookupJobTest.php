@@ -15,6 +15,59 @@ use VertoAD\Service\IpGeo\MappedIpGeoResponseNormalizer;
 
 final class IpGeoLookupJobTest extends TestCase
 {
+    public function testDisabledPolicyCompletesWithoutLeasingPendingIps(): void
+    {
+        $repository = new InMemoryIpGeoRepository();
+        $repository->ensureQueued(
+            '203.0.113.10',
+            'UA',
+            'US',
+            'serving',
+            new DateTimeImmutable('2026-06-16T00:00:00+00:00'),
+            'req-cron-disabled',
+        );
+        $policy = IpGeoProviderPolicy::fromArray([
+            'enabled' => false,
+            'batch_size' => 10,
+            'providers' => [[
+                'id' => 'disabled-provider',
+                'endpoint_template' => 'https://geo.example/lookup/{ip}',
+                'regions' => ['US'],
+                'fields' => ['country_code' => 'country_code'],
+            ]],
+        ]);
+        $transportCalled = false;
+        $job = new IpGeoLookupJob(
+            $repository,
+            new IpGeoProviderSelector($policy),
+            new MappedHttpIpGeoProviderClient(
+                new MappedIpGeoResponseNormalizer(),
+                static function () use (&$transportCalled): array {
+                    $transportCalled = true;
+
+                    return ['status' => 200, 'body' => '{}'];
+                },
+            ),
+            $policy,
+            static fn (): DateTimeImmutable => new DateTimeImmutable('2026-06-16T00:00:05+00:00'),
+        );
+
+        $result = $job->run();
+        $row = array_values($repository->rows())[0];
+
+        self::assertSame('completed', $result->status);
+        self::assertSame([
+            'leased' => 0,
+            'resolved' => 0,
+            'failed' => 0,
+            'disabled' => 1,
+        ], $result->metrics);
+        self::assertFalse($transportCalled);
+        self::assertSame('pending', $row['status']);
+        self::assertSame(0, $row['attempts']);
+        self::assertSame('req-cron-disabled', $row['request_id']);
+    }
+
     public function testCronConsumesPendingIpsAndWritesCanonicalRecords(): void
     {
         $repository = new InMemoryIpGeoRepository();
@@ -81,6 +134,70 @@ final class IpGeoLookupJobTest extends TestCase
 
         $row = array_values($repository->rows())[0];
         self::assertSame('req-cron-geo-ok', $row['request_id']);
+    }
+
+    public function testCronFallsBackToNextProviderWhenSelectedProviderFails(): void
+    {
+        $repository = new InMemoryIpGeoRepository();
+        $queuedAt = new DateTimeImmutable('2026-06-16T00:00:00+00:00');
+        $repository->ensureQueued('203.0.113.12', 'UA', 'US', 'serving', $queuedAt, 'req-cron-failover');
+        $policy = IpGeoProviderPolicy::fromArray([
+            'enabled' => true,
+            'batch_size' => 10,
+            'default_country_code' => 'US',
+            'providers' => [
+                [
+                    'id' => 'primary-down',
+                    'endpoint_template' => 'https://primary.example/lookup/{ip}',
+                    'regions' => ['US'],
+                    'weight' => 1,
+                    'fields' => ['country_code' => 'country_code', 'region_code' => 'region_code'],
+                ],
+                [
+                    'id' => 'backup-ok',
+                    'endpoint_template' => 'https://backup.example/lookup/{ip}',
+                    'regions' => ['US'],
+                    'weight' => 1,
+                    'fields' => ['country_code' => 'country_code', 'region_code' => 'region_code'],
+                ],
+            ],
+        ]);
+        $orderedProviderIds = array_map(
+            static fn (object $provider): string => $provider->id,
+            (new IpGeoProviderSelector($policy))->orderedProviders('US', '203.0.113.12'),
+        );
+        $requests = [];
+        $job = new IpGeoLookupJob(
+            $repository,
+            new IpGeoProviderSelector($policy),
+            new MappedHttpIpGeoProviderClient(
+                new MappedIpGeoResponseNormalizer(),
+                static function (string $url) use (&$requests): array {
+                    $requests[] = $url;
+                    if (count($requests) === 1) {
+                        return ['status' => 503, 'body' => 'unavailable'];
+                    }
+
+                    return [
+                        'status' => 200,
+                        'body' => json_encode(['region_code' => 'CA'], JSON_THROW_ON_ERROR),
+                    ];
+                },
+            ),
+            $policy,
+            static fn (): DateTimeImmutable => new DateTimeImmutable('2026-06-16T00:00:05+00:00'),
+        );
+
+        $result = $job->run();
+        $record = $repository->findResolved('203.0.113.12');
+
+        self::assertSame(1, $result->metrics['resolved'] ?? null);
+        self::assertSame(0, $result->metrics['failed'] ?? null);
+        self::assertNotNull($record);
+        self::assertSame($orderedProviderIds[1], $record->providerId);
+        self::assertSame('US-CA', $record->canonicalGeoCode());
+        self::assertCount(2, $requests);
+        self::assertNotSame($requests[0], $requests[1]);
     }
 
     public function testProviderFailuresAreRetriedWithBackoffAndLastError(): void
