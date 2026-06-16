@@ -235,6 +235,32 @@ namespace VertoAD\Tests\Serving {
             self::assertSame('clk-factory', $repository->lease(1)[0]->eventId);
         }
 
+        public function testSearchEventsSupportsTypeAndTimeWithoutRequestOrIpFilters(): void
+        {
+            $repository = new RedisAdEventRepository(new \Redis(), 'vertoad:test:', 60, 3600);
+            $decision = $this->decision();
+
+            $repository->recordImpression($decision, 'imp-search', 0.75, 1500, new DateTimeImmutable('2026-06-08T10:00:00Z'));
+            $repository->recordInvalidClick($decision, 'clk-search-invalid', new DateTimeImmutable('2026-06-08T10:00:20Z'), 'repeat_click_window');
+            $repository->recordClick($decision, 'clk-search-valid', new DateTimeImmutable('2026-06-08T10:01:00Z'));
+
+            $clicks = $repository->searchEvents([
+                'event_type' => 'click',
+                'occurred_from' => '2026-06-08T10:00:10Z',
+                'occurred_to' => '2026-06-08T10:00:40Z',
+                'limit' => 10,
+            ]);
+            $allInRange = $repository->searchEvents([
+                'occurred_from' => '2026-06-08T09:59:00Z',
+                'occurred_to' => '2026-06-08T10:00:30Z',
+                'limit' => 10,
+            ]);
+
+            self::assertSame(['clk-search-invalid'], array_map(static fn ($event): string => $event->eventId, $clicks));
+            self::assertFalse($clicks[0]->valid);
+            self::assertSame(['imp-search', 'clk-search-invalid'], array_map(static fn ($event): string => $event->eventId, $allInRange));
+        }
+
         public function testLeaseUsesProcessingVisibilityAndAckKeepsDedupePayload(): void
         {
             $redis = new \Redis();

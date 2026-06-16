@@ -7,6 +7,7 @@ namespace VertoAD\Service\Operations;
 use DateTimeImmutable;
 use DateTimeZone;
 use InvalidArgumentException;
+use VertoAD\Domain\IpGeo\GeoIpRecord;
 use VertoAD\Http\Auth\RequestUserContext;
 use VertoAD\Repository\IpGeo\IpGeoRepositoryInterface;
 use VertoAD\Repository\Serving\DatabaseAdEventRepository;
@@ -166,7 +167,7 @@ final readonly class OperationRequestCorrelationService
                 ...array_map(fn (object $event): array => $this->servingEventPayload($event), $servingEvents),
             ],
             'risk_decisions' => $riskDecisions,
-            'ip_geo_lookups' => $ipGeoLookups,
+            'ip_geo_lookups' => array_map(fn (array $entry): array => $this->ipGeoLookupPayload($entry), $ipGeoLookups),
             'entries' => $entries,
             'counts' => [
                 'operation_errors' => count($operationErrors),
@@ -569,7 +570,7 @@ final readonly class OperationRequestCorrelationService
             'summary' => $message,
             'actor' => $this->actor(null, null),
             'subject' => $this->subject('operation_error_log', $sourceId),
-            'ip_address' => null,
+            'ip_address' => $context['ip_address'] ?? null,
             'endpoint' => $endpoint['endpoint'],
             'http_method' => $endpoint['method'],
             'geo' => null,
@@ -708,10 +709,11 @@ final readonly class OperationRequestCorrelationService
      */
     private function ipGeoLookupEntry(array $entry): array
     {
-        $ipAddress = (string) ($entry['ip_address'] ?? '');
-        $sourceId = sha1($ipAddress . '|' . (string) ($entry['created_at'] ?? '') . '|' . (string) ($entry['request_id'] ?? ''));
-        $occurredAt = (string) (($entry['resolved_at'] ?? null) ?: ($entry['next_attempt_at'] ?? null) ?: ($entry['created_at'] ?? ''));
-        $status = (string) ($entry['status'] ?? 'pending');
+        $payload = $this->ipGeoLookupPayload($entry);
+        $sourceId = (string) $payload['lookup_id'];
+        $ipAddress = (string) ($payload['ip_address'] ?? '');
+        $occurredAt = (string) (($payload['resolved_at'] ?? null) ?: ($payload['next_attempt_at'] ?? null) ?: $payload['queued_at']);
+        $status = (string) $payload['status'];
         $endpoint = $this->endpointForIpGeoLookup($entry);
 
         return [
@@ -733,13 +735,58 @@ final readonly class OperationRequestCorrelationService
             'raw_context_available' => false,
             'context_redacted' => true,
             'redacted_context' => [
-                'source' => $entry['source'] ?? null,
+                'lookup_id' => $payload['lookup_id'],
+                'ip_hash' => $payload['ip_hash'],
+                'source' => $payload['source'],
                 'status' => $status,
-                'attempts' => $entry['attempts'] ?? null,
-                'provider_id' => $entry['provider_id'] ?? null,
-                'region_hint' => $entry['region_hint'] ?? null,
-                'request_ids' => $entry['request_ids'] ?? [],
+                'attempts' => $payload['attempts'],
+                'provider_id' => $payload['provider_id'],
+                'canonical_geo_code' => $payload['canonical_geo_code'],
+                'queued_at' => $payload['queued_at'],
+                'resolved_at' => $payload['resolved_at'],
+                'ip_address' => $ipAddress,
+                'region_hint' => $payload['region_hint'],
+                'request_ids' => $payload['request_ids'],
             ],
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $entry
+     * @return array<string,mixed>
+     */
+    private function ipGeoLookupPayload(array $entry): array
+    {
+        $ipAddress = $this->nullableScalar($entry['ip_address'] ?? null);
+        $queuedAt = $this->nullableScalar($entry['created_at'] ?? null) ?? $this->nullableScalar($entry['queued_at'] ?? null) ?? '';
+        $requestId = $this->nullableScalar($entry['request_id'] ?? null) ?? '';
+        $lookupId = $this->nullableScalar($entry['lookup_id'] ?? null)
+            ?? ($ipAddress === null ? sha1($queuedAt . '|' . $requestId) : sha1($ipAddress . '|' . $queuedAt . '|' . $requestId));
+        $requestIds = $entry['request_ids'] ?? [];
+        if (!is_array($requestIds)) {
+            $requestIds = [];
+        }
+
+        return [
+            'lookup_id' => $lookupId,
+            'request_id' => $requestId,
+            'ip_hash' => $ipAddress === null ? $lookupId : GeoIpRecord::hashIp($ipAddress),
+            'ip_address' => $ipAddress,
+            'source' => $this->nullableScalar($entry['source'] ?? null) ?? 'unknown',
+            'status' => $this->nullableScalar($entry['status'] ?? null) ?? 'pending',
+            'provider_id' => $this->nullableScalar($entry['provider_id'] ?? null),
+            'canonical_geo_code' => $this->nullableScalar($entry['canonical_geo_code'] ?? null),
+            'queued_at' => $queuedAt,
+            'resolved_at' => $this->nullableScalar($entry['resolved_at'] ?? null),
+            'attempts' => (int) ($entry['attempts'] ?? 0),
+            'last_error' => $this->nullableScalar($entry['last_error'] ?? null),
+            'next_attempt_at' => $this->nullableScalar($entry['next_attempt_at'] ?? null),
+            'user_agent' => $this->nullableScalar($entry['user_agent'] ?? null),
+            'region_hint' => $this->nullableScalar($entry['region_hint'] ?? null),
+            'request_ids' => array_values(array_filter(
+                array_map(fn (mixed $value): ?string => $this->nullableScalar($value), $requestIds),
+                static fn (?string $value): bool => $value !== null,
+            )),
         ];
     }
 

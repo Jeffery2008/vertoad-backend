@@ -105,13 +105,14 @@ final readonly class RedisAdEventRepository implements AdEventRepositoryInterfac
 
     public function searchEvents(array $filters): array
     {
-        $index = null;
         if (isset($filters['request_id']) && trim((string) $filters['request_id']) !== '') {
             $index = $this->requestIdIndex(trim((string) $filters['request_id']));
         } elseif (isset($filters['ip_address']) && trim((string) $filters['ip_address']) !== '') {
             $index = $this->ipAddressIndex(trim((string) $filters['ip_address']));
+        } elseif (isset($filters['event_type']) && trim((string) $filters['event_type']) !== '') {
+            $index = $this->eventTypeIndex(trim((string) $filters['event_type']));
         } else {
-            return [];
+            $index = $this->allEventsIndex();
         }
 
         $from = isset($filters['occurred_from']) && trim((string) $filters['occurred_from']) !== ''
@@ -121,24 +122,32 @@ final readonly class RedisAdEventRepository implements AdEventRepositoryInterfac
             ? (string) (new DateTimeImmutable((string) $filters['occurred_to']))->getTimestamp()
             : '+inf';
         $limit = isset($filters['limit']) && is_int($filters['limit']) && $filters['limit'] > 0 ? $filters['limit'] : 100;
-        $keys = $this->client->zRangeByScore($index, $from, $to, 0, $limit);
+        $chunkSize = max($limit, 100);
         $events = [];
-        foreach (is_array($keys) ? $keys : [] as $key) {
-            $event = $this->load((string) $key);
-            if ($event === null) {
-                continue;
+        $offset = 0;
+        do {
+            $keys = $this->client->zRangeByScore($index, $from, $to, $offset, $chunkSize);
+            foreach (is_array($keys) ? $keys : [] as $key) {
+                $event = $this->load((string) $key);
+                if ($event === null) {
+                    continue;
+                }
+                if (isset($filters['request_id']) && trim((string) $filters['request_id']) !== '' && $event->requestId !== trim((string) $filters['request_id'])) {
+                    continue;
+                }
+                if (isset($filters['ip_address']) && trim((string) $filters['ip_address']) !== '' && $event->ipAddress !== trim((string) $filters['ip_address'])) {
+                    continue;
+                }
+                if (isset($filters['event_type']) && trim((string) $filters['event_type']) !== '' && $event->eventType !== trim((string) $filters['event_type'])) {
+                    continue;
+                }
+                $events[] = $event;
+                if (count($events) >= $limit) {
+                    break 2;
+                }
             }
-            if (isset($filters['request_id']) && trim((string) $filters['request_id']) !== '' && $event->requestId !== trim((string) $filters['request_id'])) {
-                continue;
-            }
-            if (isset($filters['ip_address']) && trim((string) $filters['ip_address']) !== '' && $event->ipAddress !== trim((string) $filters['ip_address'])) {
-                continue;
-            }
-            if (isset($filters['event_type']) && trim((string) $filters['event_type']) !== '' && $event->eventType !== trim((string) $filters['event_type'])) {
-                continue;
-            }
-            $events[] = $event;
-        }
+            $offset += $chunkSize;
+        } while (count($keys) === $chunkSize);
 
         return $events;
     }
@@ -219,6 +228,8 @@ LUA,
         }
 
         $this->client->zAdd($this->pendingKey(), $event->occurredAt->getTimestamp(), $key);
+        $this->indexAll($event);
+        $this->indexAllByValue($event->eventType, fn (string $value): string => $this->eventTypeIndex($value), $event);
         $this->indexNullable($event->requestId, fn (string $value): string => $this->requestIdIndex($value), $event);
         $this->indexNullable($event->ipAddress, fn (string $value): string => $this->ipAddressIndex($value), $event);
     }
@@ -242,6 +253,20 @@ LUA,
             return;
         }
 
+        $this->indexAllByValue($value, $indexKey, $event);
+    }
+
+    private function indexAll(AdEvent $event): void
+    {
+        $this->client->zAdd($this->allEventsIndex(), $event->occurredAt->getTimestamp(), $this->eventKey($event->eventType, $event->eventId));
+        $this->client->expire($this->allEventsIndex(), $this->eventRetentionSeconds);
+    }
+
+    /**
+     * @param callable(string): string $indexKey
+     */
+    private function indexAllByValue(string $value, callable $indexKey, AdEvent $event): void
+    {
         $key = $indexKey(trim($value));
         $this->client->zAdd($key, $event->occurredAt->getTimestamp(), $this->eventKey($event->eventType, $event->eventId));
         $this->client->expire($key, $this->eventRetentionSeconds);
@@ -392,5 +417,15 @@ LUA,
     private function ipAddressIndex(string $ipAddress): string
     {
         return $this->prefix . 'serving-events:index:ip:' . hash('sha256', trim($ipAddress));
+    }
+
+    private function eventTypeIndex(string $eventType): string
+    {
+        return $this->prefix . 'serving-events:index:type:' . hash('sha256', trim($eventType));
+    }
+
+    private function allEventsIndex(): string
+    {
+        return $this->prefix . 'serving-events:index:all';
     }
 }

@@ -113,6 +113,17 @@ final class OperationsOpenApiContractTest extends TestCase
             self::assertArrayHasKey($field, $singleSchema['properties'] ?? []);
         }
 
+        $ipGeoLookupSchema = $openApi['components']['schemas']['OperationIpGeoLookupLogEntry'] ?? null;
+        self::assertIsArray($ipGeoLookupSchema);
+        foreach (['lookup_id', 'request_id', 'ip_hash', 'ip_address', 'source', 'status', 'provider_id', 'canonical_geo_code', 'queued_at', 'resolved_at', 'attempts', 'last_error', 'next_attempt_at', 'user_agent', 'region_hint', 'request_ids'] as $field) {
+            self::assertContains($field, $ipGeoLookupSchema['required'] ?? []);
+            self::assertArrayHasKey($field, $ipGeoLookupSchema['properties'] ?? []);
+        }
+        self::assertContains('pending', $ipGeoLookupSchema['properties']['status']['enum'] ?? []);
+        self::assertContains('processing', $ipGeoLookupSchema['properties']['status']['enum'] ?? []);
+        self::assertContains('dead', $ipGeoLookupSchema['properties']['status']['enum'] ?? []);
+        self::assertNotContains('queued', $ipGeoLookupSchema['properties']['status']['enum'] ?? []);
+
         $webhookSchema = $openApi['components']['schemas']['WebhookDelivery'] ?? null;
         self::assertIsArray($webhookSchema);
         self::assertContains('request_id', $webhookSchema['required'] ?? []);

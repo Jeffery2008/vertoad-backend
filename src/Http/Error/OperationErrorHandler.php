@@ -11,6 +11,7 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Throwable;
 use VertoAD\Http\RequestIdContext;
+use VertoAD\Infrastructure\Security\ClientIpResolver;
 use VertoAD\Service\Operations\OperationErrorCaptureService;
 
 final readonly class OperationErrorHandler
@@ -18,6 +19,7 @@ final readonly class OperationErrorHandler
     public function __construct(
         private ResponseFactoryInterface $responseFactory,
         private OperationErrorCaptureService $errors,
+        private ?ClientIpResolver $ipResolver = null,
     ) {
     }
 
@@ -75,6 +77,8 @@ final readonly class OperationErrorHandler
             'method' => $request->getMethod(),
             'path' => $request->getUri()->getPath(),
             'query' => $request->getUri()->getQuery(),
+            'ip_address' => $this->ipResolver?->resolve($request),
+            'user_agent' => trim($request->getHeaderLine('User-Agent')) ?: null,
             'headers' => $headers,
             'exception_class' => $exception::class,
             'file' => $exception->getFile(),

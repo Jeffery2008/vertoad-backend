@@ -7477,6 +7477,12 @@ components:
         - canonical_geo_code
         - queued_at
         - resolved_at
+        - attempts
+        - last_error
+        - next_attempt_at
+        - user_agent
+        - region_hint
+        - request_ids
       properties:
         lookup_id:
           type: string
@@ -7499,10 +7505,11 @@ components:
         status:
           type: string
           enum:
-            - queued
+            - pending
+            - processing
             - resolved
             - failed
-            - skipped
+            - dead
         provider_id:
           type:
             - string
@@ -7519,6 +7526,31 @@ components:
             - string
             - "null"
           format: date-time
+        attempts:
+          type: integer
+          minimum: 0
+        last_error:
+          type:
+            - string
+            - "null"
+        next_attempt_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        user_agent:
+          type:
+            - string
+            - "null"
+        region_hint:
+          type:
+            - string
+            - "null"
+        request_ids:
+          type: array
+          items:
+            type: string
+            minLength: 1
       additionalProperties: false
     OperationIpGeoLookupRequest:
       type: object

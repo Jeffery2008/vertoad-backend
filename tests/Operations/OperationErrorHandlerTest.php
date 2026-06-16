@@ -16,6 +16,7 @@ use VertoAD\Http\Error\OperationErrorHandler;
 use VertoAD\Http\Middleware\ApiEnvelopeMiddleware;
 use VertoAD\Http\Middleware\RequestIdMiddleware;
 use VertoAD\Http\RequestIdContext;
+use VertoAD\Infrastructure\Security\ClientIpResolver;
 use VertoAD\Repository\AuditLogRepositoryInterface;
 use VertoAD\Repository\Operations\InMemoryOperationErrorLogRepository;
 use VertoAD\Service\AuditLogService;
@@ -49,6 +50,29 @@ final class OperationErrorHandlerTest extends TestCase
         self::assertSame('api', $logs[0]->source);
         self::assertSame('[REDACTED]', $logs[0]->redacted_context['headers']['authorization'] ?? null);
         self::assertSame('Bearer raw-token', $logs[0]->raw_context['headers']['authorization'] ?? null);
+    }
+
+    public function testHandlerStoresResolvedIpAddressAndUserAgentInContext(): void
+    {
+        $repository = new InMemoryOperationErrorLogRepository();
+        $handler = new OperationErrorHandler(
+            new ResponseFactory(),
+            new OperationErrorCaptureService($repository, new AuditLogService(new HandlerAuditRepository())),
+            new ClientIpResolver('CF-Connecting-IP', ['203.0.113.9']),
+        );
+        $request = (new ServerRequestFactory())
+            ->createServerRequest('GET', '/api/v1/operations/fails', ['REMOTE_ADDR' => '203.0.113.9'])
+            ->withHeader('X-Request-Id', 'req-handler-ip')
+            ->withHeader('CF-Connecting-IP', '198.51.100.44')
+            ->withHeader('User-Agent', 'Ops Browser');
+
+        $handler($request, new \RuntimeException('IP context failed'), false, true, false);
+
+        $log = $repository->all()[0];
+        self::assertSame('198.51.100.44', $log->redacted_context['ip_address'] ?? null);
+        self::assertSame('Ops Browser', $log->redacted_context['user_agent'] ?? null);
+        self::assertSame('198.51.100.44', $log->raw_context['ip_address'] ?? null);
+        self::assertSame('Ops Browser', $log->raw_context['user_agent'] ?? null);
     }
 
     public function testHandlerClassifiesPhpEngineErrorsSeparately(): void

@@ -21,6 +21,7 @@ use VertoAD\Http\Action\Serving\ServeAction;
 use VertoAD\Http\Action\Serving\ServeFrameAction;
 use VertoAD\Http\Action\Serving\TrackAction;
 use VertoAD\Http\Middleware\ApiEnvelopeMiddleware;
+use VertoAD\Http\Middleware\RequestIdMiddleware;
 use VertoAD\Http\Middleware\TurnstileMiddleware;
 use VertoAD\Infrastructure\Security\TurnstileVerifier;
 use VertoAD\Infrastructure\Security\ClientIpResolver;
@@ -178,6 +179,41 @@ final class ServingRouteIntegrationTest extends TestCase
         self::assertSame('pending', $row['status']);
         self::assertSame('198.51.100.30', $row['ip_address']);
         self::assertSame('US', $row['region_hint']);
+    }
+
+    public function testGeneratedRequestIdIsPropagatedToAsyncIpGeoQueue(): void
+    {
+        $repository = new \VertoAD\Repository\IpGeo\InMemoryIpGeoRepository();
+        $app = $this->createApp(
+            [$this->safeCandidate()],
+            geoResolver: new \VertoAD\Service\IpGeo\AsyncIpGeoResolver($repository, 'serving'),
+            useIpGeoMiddleware: true,
+        );
+
+        $response = $this->handleRaw(
+            $app,
+            'POST',
+            '/api/v1/ads/serve',
+            [
+                'site_id' => 10,
+                'slot_id' => 20,
+                'viewer_id' => 'viewer-generated-request-id',
+                'size' => ['width' => 300, 'height' => 250],
+            ],
+            [
+                'CF-Connecting-IP' => '198.51.100.31',
+                'User-Agent' => 'Async request id browser',
+            ],
+            ['REMOTE_ADDR' => '203.0.113.9'],
+        );
+        $decoded = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+        self::assertIsArray($decoded);
+
+        $row = array_values($repository->rows())[0];
+        self::assertMatchesRegularExpression('/^[a-f0-9]{32}$/', (string) $decoded['request_id']);
+        self::assertSame($decoded['request_id'], $response->getHeaderLine('X-Request-Id'));
+        self::assertSame($decoded['request_id'], $row['request_id']);
+        self::assertSame([$decoded['request_id']], $row['request_ids']);
     }
 
     public function testServeIgnoresUntrustedForwardedIpForGeoTargeting(): void
@@ -598,6 +634,7 @@ final class ServingRouteIntegrationTest extends TestCase
         $app->add(new ApiEnvelopeMiddleware($app->getResponseFactory()));
         $app->addRoutingMiddleware();
         $app->addErrorMiddleware(false, true, true);
+        $app->add(new RequestIdMiddleware());
 
         return $app;
     }
@@ -694,6 +731,6 @@ final class RecordingGeoResolver implements GeoResolverInterface
 
     public function contextForRequest(?string $ipAddress, ?string $userAgent = null, ?string $requestId = null): ServingRequestContext
     {
-        return new ServingRequestContext($ipAddress, $userAgent, $this->resolve($ipAddress, $userAgent));
+        return new ServingRequestContext($ipAddress, $userAgent, $this->resolve($ipAddress, $userAgent), null, $requestId);
     }
 }

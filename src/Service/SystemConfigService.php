@@ -10,7 +10,6 @@ use VertoAD\Domain\Review\AiReviewPolicy;
 use VertoAD\Domain\Security\TurnstilePolicy;
 use VertoAD\Domain\IpGeo\IpGeoProviderPolicy;
 use VertoAD\Domain\Serving\ServingEventPolicy;
-use VertoAD\Domain\Serving\ServingGeoTargetingPolicy;
 use VertoAD\Domain\Webhooks\WebhookDeliveryPolicy;
 use VertoAD\Infrastructure\Security\RateLimitPolicy;
 use VertoAD\Repository\SystemConfigRepositoryInterface;
@@ -142,25 +141,6 @@ final class SystemConfigService
         return new ServingEventPolicy((float) $minVisibleRatio, $minVisibleMs, $repeatClickWindowSeconds);
     }
 
-    public function servingGeoTargetingPolicy(): ServingGeoTargetingPolicy
-    {
-        $config = $this->findLatestValue(self::SERVING_GEO_PROVIDER_KEY);
-
-        if ($config === null) {
-            if (!$this->allowRuntimeFallbacks) {
-                throw new \RuntimeException('Missing required system config: serving.geo_provider.');
-            }
-
-            return new ServingGeoTargetingPolicy();
-        }
-
-        try {
-            return ServingGeoTargetingPolicy::fromArray($config);
-        } catch (\InvalidArgumentException $exception) {
-            throw new UnexpectedValueException('Invalid serving.geo_provider ' . $exception->getMessage(), previous: $exception);
-        }
-    }
-
     public function ipGeoProviderPolicy(): IpGeoProviderPolicy
     {
         $config = $this->findLatestValue(self::SERVING_GEO_PROVIDER_KEY);
@@ -174,7 +154,7 @@ final class SystemConfigService
         }
 
         try {
-            return IpGeoProviderPolicy::fromArray($this->normalizeIpGeoProviderConfig($config));
+            return IpGeoProviderPolicy::fromArray($config);
         } catch (\InvalidArgumentException $exception) {
             throw new UnexpectedValueException('Invalid serving.geo_provider ' . $exception->getMessage(), previous: $exception);
         }
@@ -270,36 +250,5 @@ final class SystemConfigService
 
             throw $exception;
         }
-    }
-
-    /**
-     * @param array<string, mixed> $config
-     * @return array<string, mixed>
-     */
-    private function normalizeIpGeoProviderConfig(array $config): array
-    {
-        if (isset($config['providers'])) {
-            return $config;
-        }
-
-        return [
-            'enabled' => (bool) ($config['enabled'] ?? false),
-            'batch_size' => (int) ($config['batch_size'] ?? 100),
-            'max_attempts' => (int) ($config['max_attempts'] ?? 3),
-            'retry_backoff_seconds' => (int) ($config['retry_backoff_seconds'] ?? 300),
-            'cache_ttl_seconds' => (int) ($config['cache_ttl_seconds'] ?? 86400),
-            'providers' => [[
-                'id' => (string) ($config['provider'] ?? ServingGeoTargetingPolicy::DEFAULT_PROVIDER),
-                'endpoint_template' => rtrim((string) ($config['endpoint'] ?? 'https://whois.pconline.com.cn/ipJson.jsp'), '?') . '?ip={ip}&json=true',
-                'timeout_seconds' => (int) ($config['timeout_seconds'] ?? 2),
-                'regions' => ['CN'],
-                'fields' => [
-                    'country_code' => 'countryCode',
-                    'region_code' => 'proCode',
-                    'region_name' => 'pro',
-                    'city_name' => 'city',
-                ],
-            ]],
-        ];
     }
 }

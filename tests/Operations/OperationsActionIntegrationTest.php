@@ -262,6 +262,42 @@ final class OperationsActionIntegrationTest extends TestCase
         self::assertArrayNotHasKey('counts', $collection['body']['data']);
     }
 
+    public function testRequestCorrelationRouteFiltersOperationAndSystemLogsByIpAddress(): void
+    {
+        $auditRepository = new OperationAuditRepository();
+        $errorRepository = new InMemoryOperationErrorLogRepository();
+        $configRepository = new InMemoryConfigVersionRepository();
+        $deliveryRepository = new InMemoryWebhookDeliveryRepository();
+        $endpointRepository = new InMemoryWebhookEndpointRepository();
+        $secretCipher = $this->secretCipher();
+        $audit = new AuditLogService($auditRepository);
+        $errors = new OperationErrorCaptureService($errorRepository, $audit);
+        $configs = new ConfigVersionService($configRepository, $audit);
+        $deliveries = new WebhookDeliveryJob($deliveryRepository, $endpointRepository, $secretCipher, static fn (): int => 200);
+
+        $errors->captureApiError(
+            requestId: 'req-correlate-ip',
+            severity: 'error',
+            message: 'IP correlated error',
+            context: [
+                'ip_address' => '203.0.113.44',
+                'user_agent' => 'Ops Browser',
+                'path' => '/api/v1/operations/request-correlations',
+                'method' => 'GET',
+            ],
+            occurredAt: new \DateTimeImmutable('2026-06-08T13:10:00Z'),
+        );
+        $app = $this->createApp($errors, $configs, $deliveryRepository, $deliveries, audit: $audit);
+
+        $correlations = $this->handle($app, 'GET', '/api/v1/operations/request-correlations/req-correlate-ip?ip_address=203.0.113.44');
+
+        self::assertSame(200, $correlations['status']);
+        self::assertCount(1, $correlations['body']['data']['operation_errors']);
+        self::assertSame('203.0.113.44', $correlations['body']['data']['operation_errors'][0]['redacted_context']['ip_address']);
+        self::assertSame('203.0.113.44', $correlations['body']['data']['timeline'][0]['ip_address']);
+        self::assertSame('203.0.113.44', $correlations['body']['data']['timeline'][0]['redacted_context']['ip_address']);
+    }
+
     public function testRequestCorrelationRouteIncludesIpGeoLookupTasksByRequestId(): void
     {
         $auditRepository = new OperationAuditRepository();
@@ -299,6 +335,49 @@ final class OperationsActionIntegrationTest extends TestCase
         self::assertCount(1, $collection['body']['data']['entries']);
         self::assertSame('ip_geo_lookup', $collection['body']['data']['entries'][0]['entry_type']);
         self::assertSame('req-correlate-geo', $collection['body']['data']['entries'][0]['request_id']);
+    }
+
+    public function testRequestCorrelationRouteReturnsNormalizedIpGeoLookupContracts(): void
+    {
+        $auditRepository = new OperationAuditRepository();
+        $errorRepository = new InMemoryOperationErrorLogRepository();
+        $configRepository = new InMemoryConfigVersionRepository();
+        $deliveryRepository = new InMemoryWebhookDeliveryRepository();
+        $endpointRepository = new InMemoryWebhookEndpointRepository();
+        $secretCipher = $this->secretCipher();
+        $audit = new AuditLogService($auditRepository);
+        $errors = new OperationErrorCaptureService($errorRepository, $audit);
+        $configs = new ConfigVersionService($configRepository, $audit);
+        $deliveries = new WebhookDeliveryJob($deliveryRepository, $endpointRepository, $secretCipher, static fn (): int => 200);
+        $ipGeoRepository = new InMemoryIpGeoRepository();
+        $ipGeoRepository->ensureQueued(
+            '203.0.113.79',
+            'Geo contract browser',
+            'CN',
+            'serving',
+            new \DateTimeImmutable('2026-06-08T13:04:00Z'),
+            'req-correlate-geo-contract',
+        );
+        $app = $this->createApp($errors, $configs, $deliveryRepository, $deliveries, audit: $audit, ipGeoRepository: $ipGeoRepository);
+
+        $correlations = $this->handle($app, 'GET', '/api/v1/operations/request-correlations/req-correlate-geo-contract');
+        $lookup = $correlations['body']['data']['ip_geo_lookups'][0];
+
+        self::assertSame('req-correlate-geo-contract', $correlations['body']['data']['request_id']);
+        self::assertSame(sha1('203.0.113.79|2026-06-08T13:04:00+00:00|req-correlate-geo-contract'), $lookup['lookup_id']);
+        self::assertSame(hash('sha256', inet_pton('203.0.113.79')), $lookup['ip_hash']);
+        self::assertSame('203.0.113.79', $lookup['ip_address']);
+        self::assertSame('serving', $lookup['source']);
+        self::assertSame('pending', $lookup['status']);
+        self::assertNull($lookup['canonical_geo_code']);
+        self::assertSame('2026-06-08T13:04:00+00:00', $lookup['queued_at']);
+        self::assertNull($lookup['resolved_at']);
+        self::assertSame(0, $lookup['attempts']);
+        self::assertNull($lookup['last_error']);
+        self::assertSame('2026-06-08T13:04:00+00:00', $lookup['next_attempt_at']);
+        self::assertSame('Geo contract browser', $lookup['user_agent']);
+        self::assertSame('CN', $lookup['region_hint']);
+        self::assertSame(['req-correlate-geo-contract'], $lookup['request_ids']);
     }
 
     public function testRequestCorrelationRouteIncludesAdminIpGeoLookupsByEndpoint(): void

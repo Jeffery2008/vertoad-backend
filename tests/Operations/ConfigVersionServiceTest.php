@@ -199,14 +199,28 @@ final class ConfigVersionServiceTest extends TestCase
                     [...$this->validServingGeoProviderConfig(), 'enabled' => 'true'],
                     'Invalid serving.geo_provider ',
                 ],
-                'serving geo provider unsupported' => [
+                'serving geo legacy flat provider unsupported' => [
                     'serving.geo_provider',
-                    [...$this->validServingGeoProviderConfig(), 'provider' => 'other'],
+                    [
+                        'enabled' => true,
+                        'provider' => 'pconline',
+                        'endpoint' => 'https://whois.pconline.com.cn/ipJson.jsp',
+                        'timeout_seconds' => 2,
+                        'cache_ttl_seconds' => 86400,
+                        'cache_prefix' => 'vertoad:geo:',
+                        'default_country_code' => 'CN',
+                    ],
                     'Invalid serving.geo_provider ',
                 ],
                 'serving geo endpoint not https' => [
                     'serving.geo_provider',
-                    [...$this->validServingGeoProviderConfig(), 'endpoint' => 'http://geo.example.test'],
+                    [
+                        ...$this->validServingGeoProviderConfig(),
+                        'providers' => [[
+                            ...$this->validServingGeoProviderConfig()['providers'][0],
+                            'endpoint_template' => 'http://geo.example.test/{ip}',
+                        ]],
+                    ],
                     'Invalid serving.geo_provider ',
                 ],
                 'serving geo non-integer ttl' => [
@@ -656,12 +670,25 @@ final class ConfigVersionServiceTest extends TestCase
     {
         return [
             'enabled' => true,
-            'provider' => 'pconline',
-            'endpoint' => 'https://whois.pconline.com.cn/ipJson.jsp',
-            'timeout_seconds' => 2,
+            'include_builtins' => false,
+            'batch_size' => 50,
+            'max_attempts' => 3,
+            'retry_backoff_seconds' => 120,
             'cache_ttl_seconds' => 86400,
-            'cache_prefix' => 'vertoad:geo:',
-            'default_country_code' => 'CN',
+            'queue_source' => 'serving',
+            'providers' => [[
+                'id' => 'pconline',
+                'endpoint_template' => 'https://whois.pconline.com.cn/ipJson.jsp?ip={ip}&json=true',
+                'regions' => ['CN'],
+                'weight' => 1,
+                'timeout_seconds' => 2,
+                'fields' => [
+                    'country_code' => 'countryCode',
+                    'region_code' => 'proCode',
+                    'region_name' => 'pro',
+                    'city_name' => 'city',
+                ],
+            ]],
         ];
     }
 

@@ -11,7 +11,6 @@ use Slim\App;
 use Slim\Factory\AppFactory as SlimAppFactory;
 use VertoAD\Domain\Security\TurnstilePolicy;
 use VertoAD\Domain\IpGeo\IpGeoProviderPolicy;
-use VertoAD\Domain\Serving\ServingGeoTargetingPolicy;
 use VertoAD\Http\Action\Cron\CronStatusAction;
 use VertoAD\Http\Action\Cron\CronRunAction;
 use VertoAD\Http\Action\HealthAction;
@@ -184,11 +183,9 @@ use VertoAD\Service\Serving\AdSelectionPolicyInterface;
 use VertoAD\Service\Serving\CampaignSpendEligibilityInterface;
 use VertoAD\Service\Serving\DatabaseServingRiskAssessor;
 use VertoAD\Service\Serving\DefaultAdSelectionPolicy;
-use VertoAD\Service\Serving\GeoResolver;
 use VertoAD\Service\Serving\GeoResolverInterface;
 use VertoAD\Service\Serving\InMemoryServingFrequencyCapStore;
 use VertoAD\Service\Serving\NullGeoResolver;
-use VertoAD\Service\Serving\PconlineGeoProvider;
 use VertoAD\Service\Serving\RedisServingFrequencyCapStore;
 use VertoAD\Service\Serving\ServingFrequencyCapStoreInterface;
 use VertoAD\Service\Serving\ServingRiskAssessorInterface;
@@ -466,7 +463,8 @@ final class AppFactory
                 ),
                 OperationErrorHandler::class => static fn (
                     OperationErrorCaptureService $errors,
-                ): OperationErrorHandler => new OperationErrorHandler(SlimAppFactory::determineResponseFactory(), $errors),
+                    ClientIpResolver $ipResolver,
+                ): OperationErrorHandler => new OperationErrorHandler(SlimAppFactory::determineResponseFactory(), $errors, $ipResolver),
                 ConfigVersionRepositoryInterface::class => static fn (Connection $connection): ConfigVersionRepositoryInterface =>
                     new DatabaseConfigVersionRepository($connection),
                 ConfigVersionService::class => static fn (

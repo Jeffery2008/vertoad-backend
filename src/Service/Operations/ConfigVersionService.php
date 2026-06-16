@@ -13,7 +13,6 @@ use VertoAD\Domain\IpGeo\IpGeoProviderPolicy;
 use VertoAD\Domain\Operations\ConfigVersion;
 use VertoAD\Domain\Review\AiReviewPolicy;
 use VertoAD\Domain\Security\TurnstilePolicy;
-use VertoAD\Domain\Serving\ServingGeoTargetingPolicy;
 use VertoAD\Domain\Webhooks\WebhookDeliveryPolicy;
 use VertoAD\Repository\Operations\ConfigVersionRepositoryInterface;
 use VertoAD\Service\AuditLogService;
@@ -291,42 +290,7 @@ final readonly class ConfigVersionService
      */
     private function assertValidServingGeoProvider(array $value): void
     {
-        if (isset($value['providers'])) {
-            $this->assertValidIpGeoProviderPolicy($value);
-            return;
-        }
-
-        $this->assertOnlyFields(
-            self::SERVING_GEO_PROVIDER_KEY,
-            $value,
-            ['enabled', 'provider', 'endpoint', 'timeout_seconds', 'cache_ttl_seconds', 'cache_prefix', 'default_country_code'],
-        );
-
-        if (!is_bool($value['enabled'] ?? null)) {
-            throw new InvalidArgumentException('Invalid serving.geo_provider enabled must be boolean.');
-        }
-
-        if (($value['provider'] ?? null) !== ServingGeoTargetingPolicy::DEFAULT_PROVIDER) {
-            throw new InvalidArgumentException('Invalid serving.geo_provider provider must be pconline.');
-        }
-
-        $endpoint = $value['endpoint'] ?? null;
-        if (!is_string($endpoint) || !filter_var($endpoint, FILTER_VALIDATE_URL) || !str_starts_with(strtolower($endpoint), 'https://')) {
-            throw new InvalidArgumentException('Invalid serving.geo_provider endpoint must be an HTTPS URL.');
-        }
-
-        $this->requiredPositiveInt(self::SERVING_GEO_PROVIDER_KEY, $value, 'timeout_seconds');
-        $this->requiredPositiveInt(self::SERVING_GEO_PROVIDER_KEY, $value, 'cache_ttl_seconds');
-
-        $cachePrefix = $value['cache_prefix'] ?? null;
-        if (!is_string($cachePrefix) || trim($cachePrefix) === '') {
-            throw new InvalidArgumentException('Invalid serving.geo_provider cache_prefix must be a non-empty string.');
-        }
-
-        $defaultCountryCode = $value['default_country_code'] ?? null;
-        if (!is_string($defaultCountryCode) || preg_match('/^[A-Z]{2}$/', strtoupper(trim($defaultCountryCode))) !== 1) {
-            throw new InvalidArgumentException('Invalid serving.geo_provider default_country_code must be an ISO-like country code.');
-        }
+        $this->assertValidIpGeoProviderPolicy($value);
     }
 
     /**
@@ -339,6 +303,20 @@ final readonly class ConfigVersionService
             $value,
             ['enabled', 'providers', 'include_builtins', 'batch_size', 'max_attempts', 'retry_backoff_seconds', 'cache_ttl_seconds', 'queue_source'],
         );
+        if (array_key_exists('enabled', $value) && !is_bool($value['enabled'])) {
+            throw new InvalidArgumentException('Invalid serving.geo_provider enabled must be boolean.');
+        }
+        if (array_key_exists('include_builtins', $value) && !is_bool($value['include_builtins'])) {
+            throw new InvalidArgumentException('Invalid serving.geo_provider include_builtins must be boolean.');
+        }
+        foreach (['batch_size', 'max_attempts', 'retry_backoff_seconds', 'cache_ttl_seconds'] as $field) {
+            if (array_key_exists($field, $value) && !is_int($value[$field])) {
+                throw new InvalidArgumentException('Invalid serving.geo_provider ' . $field . ' must be an integer.');
+            }
+        }
+        if (array_key_exists('queue_source', $value) && !is_string($value['queue_source'])) {
+            throw new InvalidArgumentException('Invalid serving.geo_provider queue_source must be a string.');
+        }
 
         try {
             IpGeoProviderPolicy::fromArray($value);
