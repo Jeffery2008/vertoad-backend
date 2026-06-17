@@ -873,7 +873,7 @@ function frontendUsedQueryParameters(): array
         'GET /api/v1/creative/templates' => ['organization_id', 'scope'],
         'GET /api/v1/creative/designs/{design_id}/versions' => ['organization_id'],
         'GET /api/v1/operations/config/versions' => ['config_key'],
-        'GET /api/v1/operations/request-correlations' => ['request_id', 'actor_user_id', 'actor', 'action', 'subject_type', 'subject_id', 'ip_address', 'endpoint', 'occurred_from', 'occurred_to', 'limit', 'offset'],
+        'GET /api/v1/operations/request-correlations' => ['request_id', 'actor_user_id', 'actor', 'action', 'subject_type', 'subject_id', 'ip_address', 'endpoint', 'entry_type', 'occurred_from', 'occurred_to', 'limit', 'offset'],
     ];
 }
 

@@ -739,6 +739,105 @@ PHP);
         );
     }
 
+    public function testCheckerFailsWhenOperationsCorrelationEntryTypeQueryParameterIsNotDocumented(): void
+    {
+        $result = self::runChecker(<<<'YAML'
+openapi: 3.1.0
+paths:
+  /api/v1/operations/request-correlations:
+    get:
+      tags:
+        - Operations
+      operationId: searchOperationRequestCorrelations
+      parameters:
+        - name: request_id
+          in: query
+          schema:
+            type: string
+        - name: actor_user_id
+          in: query
+          schema:
+            type: integer
+        - name: actor
+          in: query
+          schema:
+            type: string
+        - name: action
+          in: query
+          schema:
+            type: string
+        - name: subject_type
+          in: query
+          schema:
+            type: string
+        - name: subject_id
+          in: query
+          schema:
+            type: string
+        - name: ip_address
+          in: query
+          schema:
+            type: string
+        - name: endpoint
+          in: query
+          schema:
+            type: string
+        - name: occurred_from
+          in: query
+          schema:
+            type: string
+        - name: occurred_to
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  responses:
+    Error:
+      description: error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    SuccessEnvelope:
+      type: object
+    ErrorEnvelope:
+      type: object
+YAML, <<<'PHP'
+<?php
+
+$app->get('/api/v1/operations/request-correlations', GetOperationRequestCorrelationsAction::class);
+PHP);
+
+        self::assertSame(1, $result['exitCode'], $result['output']);
+        self::assertStringContainsString(
+            'OpenAPI operation GET /api/v1/operations/request-correlations is missing query parameter documented from frontend usage: entry_type',
+            $result['output'],
+        );
+    }
+
     public function testCheckerFailsWhenDesignerUploadAndReviewQueryParametersAreNotDocumented(): void
     {
         $workspace = sys_get_temp_dir() . '/vertoad-openapi-check-' . bin2hex(random_bytes(8));
