@@ -356,6 +356,26 @@ final class OperationRequestCorrelationServiceTest extends TestCase
         self::assertSame(0, $service->search(['request_id' => 'req-geo-filter', 'action' => 'ip_geo.lookup.resolved'], $this->context())['page']['total']);
     }
 
+    public function testIpGeoLookupWithoutRequestIdStaysNullableInPayloadAndTimeline(): void
+    {
+        $service = $this->service(ipGeoRepository: $this->ipGeoRepository([
+            [
+                'ip_address' => '203.0.113.46',
+                'request_id' => null,
+                'request_ids' => [],
+                'source' => 'serving',
+                'status' => 'pending',
+                'attempts' => 0,
+                'created_at' => '2026-06-08T02:20:00Z',
+            ],
+        ]));
+
+        $result = $service->search(['entry_type' => 'ip_geo_lookup'], $this->context());
+
+        self::assertSame(1, $result['page']['total']);
+        self::assertNull($result['entries'][0]['request_id']);
+    }
+
     public function testSearchFiltersServingDecisionsAndEventsByActorActionAndEntryType(): void
     {
         $decision = $this->decision('decision-serve-filter', 'req-serving-filter', '203.0.113.60', new DateTimeImmutable('2026-06-08T02:17:00Z'));
@@ -763,11 +783,11 @@ final class OperationRequestCorrelationServiceTest extends TestCase
                 return [];
             }
 
-            public function markResolved(GeoIpRecord $record): void
+            public function markResolved(GeoIpRecord $record, ?string $leaseToken = null): void
             {
             }
 
-            public function markFailed(string $ipAddress, ?string $providerId, string $message, DateTimeImmutable $failedAt, int $maxAttempts, int $retryBackoffSeconds): void
+            public function markFailed(string $ipAddress, ?string $providerId, string $message, DateTimeImmutable $failedAt, int $maxAttempts, int $retryBackoffSeconds, ?string $leaseToken = null): void
             {
             }
         };

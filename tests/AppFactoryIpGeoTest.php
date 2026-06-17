@@ -15,6 +15,7 @@ namespace VertoAD\Tests {
     use VertoAD\Domain\Serving\ServingRequestContext;
     use VertoAD\Http\Action\Serving\ServeFrameAction;
     use VertoAD\Infrastructure\Redis\NativeRedisClient;
+    use VertoAD\Repository\IpGeo\DatabaseIpGeoRepository;
     use VertoAD\Repository\IpGeo\InMemoryIpGeoRepository;
     use VertoAD\Repository\IpGeo\RedisIpGeoRepository;
     use VertoAD\Repository\Serving\InMemoryAdDecisionRepository;
@@ -28,42 +29,111 @@ namespace VertoAD\Tests {
 
     final class AppFactoryIpGeoTest extends TestCase
     {
-        public function testIpGeoRepositoryRequiresRedisPasswordOutsideLocalFallbackEnvironments(): void
+        public function testIpGeoRepositoryUsesDatabaseByDefaultOutsideLocalFallbackEnvironments(): void
         {
-            $this->expectException(\RuntimeException::class);
-            $this->expectExceptionMessage('REDIS_PASSWORD is required for IP geo queue storage.');
-
-            $this->invokeAppFactory('ipGeoRepository', [[
+            $repository = $this->invokeAppFactory('ipGeoRepository', [[
                 'app' => ['env' => 'production'],
                 'redis' => ['password' => ''],
-            ]]);
+            ], $this->createConnection()]);
+
+            self::assertInstanceOf(DatabaseIpGeoRepository::class, $repository);
         }
 
-        public function testIpGeoRepositoryUsesInMemoryFallbackForLocalEnvironmentWithoutRedisPassword(): void
+        public function testIpGeoRepositoryCanUseExplicitInMemoryFallbackForLocalEnvironment(): void
         {
             $repository = $this->invokeAppFactory('ipGeoRepository', [[
                 'app' => ['env' => 'testing'],
+                'ip_geo' => ['repository' => 'memory'],
                 'redis' => ['password' => ''],
-            ]]);
+            ], $this->createConnection()]);
 
             self::assertInstanceOf(InMemoryIpGeoRepository::class, $repository);
         }
 
-        public function testIpGeoRepositoryUsesRedisRepositoryWhenPasswordIsConfigured(): void
+        public function testIpGeoRepositoryUsesImplicitInMemoryFallbackForLocalEnvironmentWhenAdapterIsNotConfigured(): void
+        {
+            $repository = $this->invokeAppFactory('ipGeoRepository', [[
+                'app' => ['env' => 'testing'],
+                'redis' => ['password' => ''],
+            ], $this->createConnection()]);
+
+            self::assertInstanceOf(InMemoryIpGeoRepository::class, $repository);
+        }
+
+        public function testRealSettingsPreserveUnsetIpGeoRepositoryForLocalTestingFallback(): void
+        {
+            $previousAppEnv = getenv('APP_ENV');
+            $previousIpGeoRepository = getenv('IP_GEO_REPOSITORY');
+            putenv('APP_ENV=testing');
+            putenv('IP_GEO_REPOSITORY');
+
+            try {
+                $settings = require dirname(__DIR__) . '/config/settings.php';
+                self::assertNull($settings['ip_geo']['repository'] ?? null);
+
+                $repository = $this->invokeAppFactory('ipGeoRepository', [$settings, $this->createConnection()]);
+                self::assertInstanceOf(InMemoryIpGeoRepository::class, $repository);
+            } finally {
+                $previousAppEnv === false ? putenv('APP_ENV') : putenv('APP_ENV=' . $previousAppEnv);
+                $previousIpGeoRepository === false ? putenv('IP_GEO_REPOSITORY') : putenv('IP_GEO_REPOSITORY=' . $previousIpGeoRepository);
+            }
+        }
+
+        public function testIpGeoRepositoryUsesExplicitRedisRepositoryWhenPasswordIsConfigured(): void
         {
             $repository = $this->invokeAppFactory('ipGeoRepository', [[
                 'app' => ['env' => 'production'],
+                'ip_geo' => ['repository' => 'redis'],
                 'redis' => [
                     'driver' => 'predis',
                     'password' => 'redis-secret',
                     'prefix' => 'test:',
                 ],
-            ]]);
+            ], $this->createConnection()]);
 
             self::assertInstanceOf(RedisIpGeoRepository::class, $repository);
         }
 
-        public function testIpGeoRepositoryUsesServingGeoPolicyCacheTtlForRedisRecords(): void
+        public function testIpGeoRepositoryRejectsUnsafeOrUnknownExplicitAdapters(): void
+        {
+            foreach (
+                [
+                    [
+                        [
+                            'app' => ['env' => 'production'],
+                            'ip_geo' => ['repository' => 'memory'],
+                            'redis' => ['password' => ''],
+                        ],
+                        'IP_GEO_REPOSITORY=memory is only allowed in local/testing.',
+                    ],
+                    [
+                        [
+                            'app' => ['env' => 'production'],
+                            'ip_geo' => ['repository' => 'bogus'],
+                            'redis' => ['password' => ''],
+                        ],
+                        'IP_GEO_REPOSITORY must be one of database, redis, memory.',
+                    ],
+                    [
+                        [
+                            'app' => ['env' => 'production'],
+                            'ip_geo' => ['repository' => 'redis'],
+                            'redis' => ['password' => ''],
+                        ],
+                        'REDIS_PASSWORD is required for IP geo queue storage.',
+                    ],
+                ] as [$settings, $message]
+            ) {
+                try {
+                    $this->invokeAppFactory('ipGeoRepository', [$settings, $this->createConnection()]);
+                    self::fail('Expected invalid IP geo repository adapter settings to be rejected.');
+                } catch (\RuntimeException $exception) {
+                    self::assertSame($message, $exception->getMessage());
+                }
+            }
+        }
+
+        public function testIpGeoRepositoryUsesServingGeoPolicyCacheTtlForDatabaseRecords(): void
         {
             $policy = IpGeoProviderPolicy::fromArray([
                 'enabled' => true,
@@ -79,7 +149,31 @@ namespace VertoAD\Tests {
                     'prefix' => 'test:',
                     'ip_geo_record_ttl_seconds' => 9999,
                 ],
-            ], $policy]);
+            ], $this->createConnection(), $policy]);
+            $recordTtl = new \ReflectionProperty(DatabaseIpGeoRepository::class, 'recordTtlSeconds');
+
+            self::assertInstanceOf(DatabaseIpGeoRepository::class, $repository);
+            self::assertSame(4321, $recordTtl->getValue($repository));
+        }
+
+        public function testExplicitRedisIpGeoRepositoryUsesServingGeoPolicyCacheTtlForRedisRecords(): void
+        {
+            $policy = IpGeoProviderPolicy::fromArray([
+                'enabled' => true,
+                'include_builtins' => false,
+                'cache_ttl_seconds' => 4321,
+            ]);
+
+            $repository = $this->invokeAppFactory('ipGeoRepository', [[
+                'app' => ['env' => 'production'],
+                'ip_geo' => ['repository' => 'redis'],
+                'redis' => [
+                    'driver' => 'predis',
+                    'password' => 'redis-secret',
+                    'prefix' => 'test:',
+                    'ip_geo_record_ttl_seconds' => 9999,
+                ],
+            ], $this->createConnection(), $policy]);
             $recordTtl = new \ReflectionProperty(RedisIpGeoRepository::class, 'recordTtlSeconds');
 
             self::assertInstanceOf(RedisIpGeoRepository::class, $repository);
@@ -183,6 +277,11 @@ PHP);
             $reflection = new ReflectionMethod(AppFactory::class, $method);
 
             return $reflection->invoke(null, ...$arguments);
+        }
+
+        private function createConnection(): \Doctrine\DBAL\Connection
+        {
+            return \Doctrine\DBAL\DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
         }
 
         private function firstDecision(InMemoryAdDecisionRepository $repository): AdDecision

@@ -84,6 +84,29 @@ final class InMemoryIpGeoRepositoryTest extends TestCase
         self::assertSame('resolved', array_values($repository->rows())[0]['status']);
     }
 
+    public function testLeaseTokenRejectsStaleInMemoryWorkerWrites(): void
+    {
+        $repository = new InMemoryIpGeoRepository();
+        $queuedAt = new DateTimeImmutable('2026-06-16T00:00:00+00:00');
+        $repository->ensureQueued('203.0.113.63', 'Agent A', 'CN', 'serving', $queuedAt, 'req-lease-token');
+        $leased = $repository->leasePending(1, $queuedAt->modify('+1 minute'))[0];
+
+        $repository->markResolved($this->record('203.0.113.63', $queuedAt->modify('+2 minutes')), 'stale-token');
+        $repository->markFailed('203.0.113.63', 'provider-stale', 'stale failure', $queuedAt->modify('+3 minutes'), 2, 60, 'stale-token');
+        $repository->markFailed('203.0.113.64', 'provider-missing', 'missing failure', $queuedAt->modify('+3 minutes'), 2, 60, 'missing-token');
+
+        self::assertNull($repository->findResolved('203.0.113.63'));
+        self::assertSame('processing', array_values($repository->rows())[0]['status']);
+        self::assertSame($leased->leaseToken, array_values($repository->rows())[0]['lease_token']);
+        self::assertCount(1, $repository->rows());
+
+        $repository->markResolved($this->record('203.0.113.63', $queuedAt->modify('+4 minutes')), $leased->leaseToken);
+        $repository->markFailed('203.0.113.63', 'provider-after-resolve', 'ignored', $queuedAt->modify('+5 minutes'), 2, 60);
+
+        self::assertSame('resolved', array_values($repository->rows())[0]['status']);
+        self::assertSame('provider-cn', array_values($repository->rows())[0]['provider_id']);
+    }
+
     public function testMarkFailedTransitionsToDeadAfterMaxAttemptsAndSupportsSearchWindows(): void
     {
         $repository = new InMemoryIpGeoRepository();
@@ -108,7 +131,8 @@ final class InMemoryIpGeoRepositoryTest extends TestCase
 
         $leasedFailed = $repository->leasePending(1, new DateTimeImmutable('2026-06-16T00:02:00+00:00'));
         self::assertCount(1, $leasedFailed);
-        self::assertSame('failed', $leasedFailed[0]->status);
+        self::assertSame('processing', $leasedFailed[0]->status);
+        self::assertNotNull($leasedFailed[0]->leaseToken);
         self::assertSame('processing', array_values($repository->rows())[0]['status']);
 
         $repository->markFailed('203.0.113.53', 'provider-b', 'second failure', new DateTimeImmutable('2026-06-16T00:03:00+00:00'), 2, 60);
@@ -245,6 +269,13 @@ final class InMemoryIpGeoRepositoryTest extends TestCase
             self::assertSame('IP geo lookup task status is not supported.', $exception->getMessage());
         }
 
+        try {
+            new GeoIpLookupTask('203.0.113.62', null, null, 0, new DateTimeImmutable('2026-06-16T00:00:00+00:00'), leaseToken: ' ');
+            self::fail('Expected blank lookup task lease token to be rejected.');
+        } catch (\InvalidArgumentException $exception) {
+            self::assertSame('IP geo lookup task lease token must be non-empty when present.', $exception->getMessage());
+        }
+
         $task = new GeoIpLookupTask(
             ipAddress: '203.0.113.61',
             userAgent: 'Agent A',
@@ -275,6 +306,7 @@ final class InMemoryIpGeoRepositoryTest extends TestCase
             'created_at' => '2026-06-16T00:00:00+00:00',
             'next_attempt_at' => '2026-06-16T00:01:00+00:00',
             'resolved_at' => null,
+            'lease_token' => null,
         ], $task->toArray());
     }
 
@@ -286,5 +318,24 @@ final class InMemoryIpGeoRepositoryTest extends TestCase
         $property = new \ReflectionProperty(InMemoryIpGeoRepository::class, 'rows');
         $property->setAccessible(true);
         $property->setValue($repository, $rows);
+    }
+
+    private function record(string $ipAddress, DateTimeImmutable $resolvedAt): GeoIpRecord
+    {
+        return new GeoIpRecord(
+            ipAddress: $ipAddress,
+            countryCode: 'CN',
+            countryName: 'China',
+            regionCode: 'GD',
+            regionName: 'Guangdong',
+            cityName: 'Guangzhou',
+            latitude: 23.1291,
+            longitude: 113.2644,
+            timezone: 'Asia/Shanghai',
+            providerId: 'provider-cn',
+            resolvedAt: $resolvedAt,
+            rawPayloadHash: hash('sha256', '{"country_code":"CN","city":"Guangzhou"}'),
+            rawPayloadSummary: ['country_code' => 'CN', 'city' => 'Guangzhou'],
+        );
     }
 }

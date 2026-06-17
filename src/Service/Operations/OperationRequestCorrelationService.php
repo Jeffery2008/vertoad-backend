@@ -720,7 +720,7 @@ final readonly class OperationRequestCorrelationService
             'entry_id' => 'ip_geo_lookup:' . $sourceId,
             'entry_type' => 'ip_geo_lookup',
             'source_id' => $sourceId,
-            'request_id' => (string) ($entry['request_id'] ?? ''),
+            'request_id' => $payload['request_id'],
             'occurred_at' => $occurredAt,
             'sort_key' => $this->sortKey($occurredAt, 'ip_geo_lookup', $sourceId),
             'severity' => in_array($status, ['failed', 'dead'], true) ? 'warning' : 'info',
@@ -759,9 +759,9 @@ final readonly class OperationRequestCorrelationService
     {
         $ipAddress = $this->nullableScalar($entry['ip_address'] ?? null);
         $queuedAt = $this->nullableScalar($entry['created_at'] ?? null) ?? $this->nullableScalar($entry['queued_at'] ?? null) ?? '';
-        $requestId = $this->nullableScalar($entry['request_id'] ?? null) ?? '';
+        $requestId = $this->nullableScalar($entry['request_id'] ?? null);
         $lookupId = $this->nullableScalar($entry['lookup_id'] ?? null)
-            ?? ($ipAddress === null ? sha1($queuedAt . '|' . $requestId) : sha1($ipAddress . '|' . $queuedAt . '|' . $requestId));
+            ?? ($ipAddress === null ? sha1($queuedAt . '|' . ($requestId ?? '')) : sha1($ipAddress . '|' . $queuedAt . '|' . ($requestId ?? '')));
         $requestIds = $entry['request_ids'] ?? [];
         if (!is_array($requestIds)) {
             $requestIds = [];

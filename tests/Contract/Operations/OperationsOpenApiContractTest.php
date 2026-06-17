@@ -61,6 +61,8 @@ final class OperationsOpenApiContractTest extends TestCase
                 'api_key_env_var',
                 'canonical_geo_code',
                 'persisted_to_canonical_store',
+                'database adapter',
+                'optional Redis adapter',
             ] as $contractString
         ) {
             self::assertTrue(str_contains($openApi, $contractString), $contractString . ' must be documented.');
@@ -72,6 +74,7 @@ final class OperationsOpenApiContractTest extends TestCase
                 'credential_env_var',
                 'persist_to_canonical_store',
                 'OperationRequestCorrelationData:',
+                'Canonical geo Redis record TTL',
             ] as $staleString
         ) {
             self::assertStringNotContainsString($staleString, $openApi, $staleString . ' must not remain in the operations contract.');
@@ -123,6 +126,7 @@ final class OperationsOpenApiContractTest extends TestCase
         self::assertContains('processing', $ipGeoLookupSchema['properties']['status']['enum'] ?? []);
         self::assertContains('dead', $ipGeoLookupSchema['properties']['status']['enum'] ?? []);
         self::assertNotContains('queued', $ipGeoLookupSchema['properties']['status']['enum'] ?? []);
+        self::assertSame(['string', 'null'], $ipGeoLookupSchema['properties']['request_id']['type'] ?? null);
 
         $webhookSchema = $openApi['components']['schemas']['WebhookDelivery'] ?? null;
         self::assertIsArray($webhookSchema);

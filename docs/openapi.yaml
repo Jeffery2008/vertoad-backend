@@ -7759,9 +7759,10 @@ components:
           minLength: 1
           description: Native source record ID, such as `error_id`, audit row ID, webhook delivery ID, event ID, or lookup task ID.
         request_id:
-          type: string
-          minLength: 1
-          description: Stable request ID propagated from the HTTP request entrypoint.
+          type:
+            - string
+            - "null"
+          description: Stable request ID propagated from the HTTP request entrypoint when available.
         occurred_at:
           type: string
           format: date-time
@@ -7975,8 +7976,9 @@ components:
           type: string
           minLength: 1
         request_id:
-          type: string
-          minLength: 1
+          type:
+            - string
+            - "null"
         level:
           type: string
           enum:
@@ -8131,8 +8133,9 @@ components:
           type: string
           minLength: 1
         request_id:
-          type: string
-          minLength: 1
+          type:
+            - string
+            - "null"
         ip_hash:
           type: string
           minLength: 1
@@ -8619,7 +8622,7 @@ components:
           type: integer
           minimum: 1
           default: 86400
-          description: Canonical geo Redis record TTL and freshness window; expired or missing records are queued asynchronously instead of synchronously calling a provider.
+          description: Canonical geo record freshness window for the database adapter and record TTL for the optional Redis adapter; expired or missing records are queued asynchronously instead of synchronously calling a provider.
         queue_source:
           type: string
           minLength: 1

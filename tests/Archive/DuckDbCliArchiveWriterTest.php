@@ -53,7 +53,7 @@ final class DuckDbCliArchiveWriterTest extends TestCase
     public function testRunnerFailureDeletesTemporaryFilesAndDoesNotUpload(): void
     {
         $storage = new RecordingArchiveObjectStorage();
-        $runner = new FailingArchiveCommandRunner();
+        $runner = new NestedWorkspaceFailingArchiveCommandRunner();
         $tempDirectory = $this->temporaryDirectory();
         $writer = new DuckDbCliArchiveWriter($storage, 'duckdb-test', $tempDirectory, $runner);
 
@@ -271,6 +271,20 @@ final class FailingArchiveCommandRunner implements ArchiveCommandRunnerInterface
 {
     public function run(array $command, ?string $stdin, int $timeoutSeconds): ArchiveCommandResult
     {
+        return new ArchiveCommandResult(2, '', 'simulated duckdb failure');
+    }
+}
+
+final class NestedWorkspaceFailingArchiveCommandRunner implements ArchiveCommandRunnerInterface
+{
+    public function run(array $command, ?string $stdin, int $timeoutSeconds): ArchiveCommandResult
+    {
+        if (preg_match("/read_json_auto\\('([^']+)'/i", $stdin ?? '', $matches) === 1) {
+            $workspace = dirname(str_replace("''", "'", $matches[1]));
+            mkdir($workspace . DIRECTORY_SEPARATOR . 'nested-artifacts');
+            file_put_contents($workspace . DIRECTORY_SEPARATOR . 'nested-artifacts' . DIRECTORY_SEPARATOR . 'debug.tmp', 'debug');
+        }
+
         return new ArchiveCommandResult(2, '', 'simulated duckdb failure');
     }
 }

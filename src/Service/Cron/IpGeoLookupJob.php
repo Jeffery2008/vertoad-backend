@@ -65,7 +65,7 @@ final readonly class IpGeoLookupJob implements CronJobInterface
                             ($this->clock)(),
                             $this->policy->defaultCountryCode,
                         );
-                        $this->repository->markResolved($record);
+                        $this->repository->markResolved($record, $task->leaseToken);
                         ++$resolved;
                         continue 2;
                     } catch (\Throwable $exception) {
@@ -83,6 +83,7 @@ final readonly class IpGeoLookupJob implements CronJobInterface
                     ($this->clock)(),
                     $this->policy->maxAttempts,
                     $this->policy->retryBackoffSeconds,
+                    $task->leaseToken,
                 );
             }
         }

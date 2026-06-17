@@ -33,7 +33,7 @@ interface IpGeoRepositoryInterface
      */
     public function leasePending(int $limit, DateTimeImmutable $now): array;
 
-    public function markResolved(GeoIpRecord $record): void;
+    public function markResolved(GeoIpRecord $record, ?string $leaseToken = null): void;
 
-    public function markFailed(string $ipAddress, ?string $providerId, string $message, DateTimeImmutable $failedAt, int $maxAttempts, int $retryBackoffSeconds): void;
+    public function markFailed(string $ipAddress, ?string $providerId, string $message, DateTimeImmutable $failedAt, int $maxAttempts, int $retryBackoffSeconds, ?string $leaseToken = null): void;
 }

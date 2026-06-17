@@ -131,7 +131,7 @@ LUA,
 
         $tasks = [];
         foreach ($members as $taskKey) {
-            $task = $this->loadTask($taskKey);
+            $task = $this->claimTask($taskKey, $deadline);
             if ($task === null) {
                 $this->client->zRem($this->processingKey(), $taskKey);
                 continue;
@@ -142,17 +142,23 @@ LUA,
         return $tasks;
     }
 
-    public function markResolved(GeoIpRecord $record): void
+    public function markResolved(GeoIpRecord $record, ?string $leaseToken = null): void
     {
         $taskKey = $this->taskKey($record->ipAddress);
         $payload = $this->client->get($taskKey);
         $data = is_string($payload) && $payload !== '' ? json_decode($payload, true, flags: JSON_THROW_ON_ERROR) : [];
         $data = is_array($data) ? $data : [];
+        if (!$this->leaseCanWrite($data, $leaseToken)) {
+            return;
+        }
+
         $data['status'] = 'resolved';
         $data['attempts'] = (int) ($data['attempts'] ?? 0) + 1;
         $data['provider_id'] = $record->providerId;
         $data['last_error'] = null;
         $data['next_attempt_at'] = null;
+        $data['lease_token'] = null;
+        $data['leased_until'] = null;
         $data['resolved_at'] = $record->resolvedAt->setTimezone(new DateTimeZone('UTC'))->format(DATE_ATOM);
         $this->client->setEx($this->recordKey($record->ipAddress), $this->serializeRecord($record), $this->recordTtlSeconds);
         if ($data !== []) {
@@ -163,13 +169,16 @@ LUA,
         $this->client->zRem($this->processingKey(), $taskKey);
     }
 
-    public function markFailed(string $ipAddress, ?string $providerId, string $message, DateTimeImmutable $failedAt, int $maxAttempts, int $retryBackoffSeconds): void
+    public function markFailed(string $ipAddress, ?string $providerId, string $message, DateTimeImmutable $failedAt, int $maxAttempts, int $retryBackoffSeconds, ?string $leaseToken = null): void
     {
         $taskKey = $this->taskKey($ipAddress);
         $payload = $this->client->get($taskKey);
         $data = is_string($payload) && $payload !== '' ? json_decode($payload, true, flags: JSON_THROW_ON_ERROR) : [];
         if (!is_array($data)) {
             $data = [];
+        }
+        if (($data['status'] ?? null) === 'resolved' || !$this->leaseCanWrite($data, $leaseToken)) {
+            return;
         }
 
         $attempts = (int) ($data['attempts'] ?? 0) + 1;
@@ -179,6 +188,8 @@ LUA,
         $nextAttemptAt = $failedAt->modify('+' . max(1, $retryBackoffSeconds * $attempts) . ' seconds');
         $data['next_attempt_at'] = $nextAttemptAt->setTimezone(new DateTimeZone('UTC'))->format(DATE_ATOM);
         $data['status'] = $attempts >= $maxAttempts ? 'dead' : 'failed';
+        $data['lease_token'] = null;
+        $data['leased_until'] = null;
         $this->client->setEx($taskKey, json_encode($data, JSON_THROW_ON_ERROR), $this->recordTtlSeconds);
         $this->client->zAdd($this->lookupIndexKey(), (float) $failedAt->getTimestamp(), $taskKey);
         $this->client->zRem($this->processingKey(), $taskKey);
@@ -216,7 +227,28 @@ LUA,
             lastError: $this->nullableString($data['last_error'] ?? null),
             nextAttemptAt: $this->nullableDateTime($data['next_attempt_at'] ?? null),
             resolvedAt: $this->nullableDateTime($data['resolved_at'] ?? null),
+            leaseToken: $this->nullableString($data['lease_token'] ?? null),
         );
+    }
+
+    private function claimTask(string $taskKey, int $deadline): ?GeoIpLookupTask
+    {
+        $payload = $this->client->get($taskKey);
+        if (!is_string($payload) || $payload === '') {
+            return null;
+        }
+
+        $data = json_decode($payload, true, flags: JSON_THROW_ON_ERROR);
+        if (!is_array($data)) {
+            return null;
+        }
+
+        $data['status'] = 'processing';
+        $data['lease_token'] = bin2hex(random_bytes(16));
+        $data['leased_until'] = (new DateTimeImmutable('@' . $deadline))->setTimezone(new DateTimeZone('UTC'))->format(DATE_ATOM);
+        $this->client->setEx($taskKey, json_encode($data, JSON_THROW_ON_ERROR), $this->recordTtlSeconds);
+
+        return $this->loadTask($taskKey);
     }
 
     private function serializeTask(string $ipAddress, ?string $userAgent, ?string $regionHint, string $source, DateTimeImmutable $queuedAt, ?string $requestId): string
@@ -234,6 +266,8 @@ LUA,
             'attempts' => 0,
             'created_at' => $queuedAt->setTimezone(new DateTimeZone('UTC'))->format(DATE_ATOM),
             'next_attempt_at' => $queuedAt->setTimezone(new DateTimeZone('UTC'))->format(DATE_ATOM),
+            'lease_token' => null,
+            'leased_until' => null,
         ], JSON_THROW_ON_ERROR);
     }
 
@@ -370,6 +404,24 @@ LUA,
         $value = trim((string) $value);
 
         return $value === '' ? null : $value;
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function leaseCanWrite(array $data, ?string $leaseToken): bool
+    {
+        $leaseToken = $this->nullableString($leaseToken);
+        if ($leaseToken === null) {
+            return true;
+        }
+        if (($data['status'] ?? null) !== 'processing') {
+            return false;
+        }
+
+        $currentToken = $this->nullableString($data['lease_token'] ?? null);
+
+        return $currentToken !== null && hash_equals($currentToken, $leaseToken);
     }
 
     private function nullableDateTime(mixed $value): ?DateTimeImmutable

@@ -27,6 +27,7 @@ final readonly class GeoIpLookupTask
         public ?string $lastError = null,
         public ?DateTimeImmutable $nextAttemptAt = null,
         public ?DateTimeImmutable $resolvedAt = null,
+        public ?string $leaseToken = null,
     ) {
         if (@inet_pton($ipAddress) === false) {
             throw new \InvalidArgumentException('IP geo lookup task requires a valid IP address.');
@@ -44,6 +45,10 @@ final readonly class GeoIpLookupTask
             if (!is_string($requestIdValue) || trim($requestIdValue) === '') {
                 throw new \InvalidArgumentException('IP geo lookup task request IDs must be non-empty strings.');
             }
+        }
+
+        if ($leaseToken !== null && trim($leaseToken) === '') {
+            throw new \InvalidArgumentException('IP geo lookup task lease token must be non-empty when present.');
         }
     }
 
@@ -66,6 +71,7 @@ final readonly class GeoIpLookupTask
             'created_at' => $this->createdAt->format(DATE_ATOM),
             'next_attempt_at' => $this->nextAttemptAt?->format(DATE_ATOM),
             'resolved_at' => $this->resolvedAt?->format(DATE_ATOM),
+            'lease_token' => $this->leaseToken,
         ];
     }
 }

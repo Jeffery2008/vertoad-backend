@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+$ipGeoRepository = getenv('IP_GEO_REPOSITORY');
+
 return [
     'app' => [
         'name' => getenv('APP_NAME') ?: 'VertoAD API',
@@ -41,6 +43,10 @@ return [
                 FILTER_VALIDATE_BOOL
             ),
         ],
+    ],
+    'ip_geo' => [
+        'repository' => $ipGeoRepository === false ? null : $ipGeoRepository,
+        'visibility_timeout_seconds' => (int) (getenv('IP_GEO_VISIBILITY_TIMEOUT_SECONDS') ?: 300),
     ],
     'storage' => [
         's3' => [

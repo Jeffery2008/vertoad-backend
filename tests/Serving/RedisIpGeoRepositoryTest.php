@@ -141,6 +141,36 @@ final class RedisIpGeoRepositoryTest extends TestCase
         self::assertSame(['req-retry'], $resolvedTask[0]->requestIds);
     }
 
+    public function testLeaseTokenRejectsStaleRedisWorkerWrites(): void
+    {
+        $client = new RedisIpGeoRepositoryRedisClient();
+        $repository = new RedisIpGeoRepository($client, 'vertoad:test:', 3600, 300);
+        $queuedAt = new DateTimeImmutable('2026-06-16T00:00:00+00:00');
+        $repository->ensureQueued('198.51.100.21', 'Lease browser', 'CN', 'serving', $queuedAt, 'req-lease');
+        $leased = $repository->leasePending(1, $queuedAt->modify('+1 minute'))[0];
+        $taskKey = 'vertoad:test:ip-geo:task:' . GeoIpRecord::hashIp('198.51.100.21');
+        $missingTaskKey = 'vertoad:test:ip-geo:task:' . GeoIpRecord::hashIp('198.51.100.22');
+
+        $repository->markResolved($this->record('198.51.100.21', $queuedAt->modify('+2 minutes')), 'stale-token');
+        $repository->markFailed('198.51.100.21', 'provider-stale', 'stale failure', $queuedAt->modify('+3 minutes'), 2, 60, 'stale-token');
+        $repository->markFailed('198.51.100.22', 'provider-missing', 'missing failure', $queuedAt->modify('+3 minutes'), 2, 60, 'missing-token');
+
+        $payload = $client->get($taskKey);
+        self::assertIsString($payload);
+        $data = json_decode($payload, true, flags: JSON_THROW_ON_ERROR);
+        self::assertSame('processing', $data['status']);
+        self::assertSame($leased->leaseToken, $data['lease_token']);
+        self::assertFalse($client->exists($missingTaskKey));
+
+        $repository->markResolved($this->record('198.51.100.21', $queuedAt->modify('+4 minutes')), $leased->leaseToken);
+        $repository->markFailed('198.51.100.21', 'provider-after-resolve', 'ignored', $queuedAt->modify('+5 minutes'), 2, 60);
+        $resolved = $repository->searchLookups(['ip_address' => '198.51.100.21', 'status' => 'resolved', 'limit' => 10]);
+
+        self::assertCount(1, $resolved);
+        self::assertSame('provider-cn', $resolved[0]->providerId);
+        self::assertNull($resolved[0]->lastError);
+    }
+
     public function testLeaseDropsMissingProcessingMembersAndFindResolvedIgnoresNonRecordPayloads(): void
     {
         $client = new RedisIpGeoRepositoryRedisClient();
@@ -154,6 +184,19 @@ final class RedisIpGeoRepositoryTest extends TestCase
         self::assertNull($repository->findResolved('198.51.100.30'));
         self::assertSame([], $repository->leasePending(5, $now));
         self::assertFalse($client->zContains('vertoad:test:ip-geo:processing', $missingTaskKey));
+    }
+
+    public function testLeaseDropsScalarTaskPayloadsAfterClaiming(): void
+    {
+        $client = new RedisIpGeoRepositoryRedisClient();
+        $repository = new RedisIpGeoRepository($client, 'vertoad:test:', 3600, 300);
+        $now = new DateTimeImmutable('2026-06-16T00:00:00+00:00');
+        $taskKey = 'vertoad:test:ip-geo:task:' . GeoIpRecord::hashIp('198.51.100.31');
+        $client->setEx($taskKey, '"scalar-task"', 3600);
+        $client->zAdd('vertoad:test:ip-geo:pending', (float) $now->getTimestamp(), $taskKey);
+
+        self::assertSame([], $repository->leasePending(5, $now));
+        self::assertFalse($client->zContains('vertoad:test:ip-geo:processing', $taskKey));
     }
 
     public function testSearchLookupsHonorsLimitAndNormalizesNonListRequestIds(): void

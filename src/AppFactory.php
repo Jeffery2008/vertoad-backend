@@ -84,6 +84,7 @@ use VertoAD\Repository\Cron\ServingEventBufferInterface;
 use VertoAD\Repository\FirstPartySessionRepository;
 use VertoAD\Repository\FirstPartySessionRepositoryInterface;
 use VertoAD\Repository\Fraud\DatabaseFraudRiskFeatureRepository;
+use VertoAD\Repository\IpGeo\DatabaseIpGeoRepository;
 use VertoAD\Repository\IpGeo\InMemoryIpGeoRepository;
 use VertoAD\Repository\IpGeo\IpGeoRepositoryInterface;
 use VertoAD\Repository\IpGeo\RedisIpGeoRepository;
@@ -381,8 +382,9 @@ final class AppFactory
                     ServingRiskAssessorInterface $riskAssessor,
                 ): AdSelectionPolicyInterface => new DefaultAdSelectionPolicy($frequencyCaps, $riskAssessor),
                 IpGeoRepositoryInterface::class => static fn (
+                    Connection $connection,
                     IpGeoProviderPolicy $policy,
-                ): IpGeoRepositoryInterface => self::ipGeoRepository($settings, $policy),
+                ): IpGeoRepositoryInterface => self::ipGeoRepository($settings, $connection, $policy),
                 IpGeoProviderPolicy::class => static fn (SystemConfigService $configs): IpGeoProviderPolicy =>
                     $configs->ipGeoProviderPolicy(),
                 IpGeoProviderSelector::class => static fn (IpGeoProviderPolicy $policy): IpGeoProviderSelector =>
@@ -1081,20 +1083,42 @@ final class AppFactory
     }
 
     /** @param array<string, mixed> $settings */
-    private static function ipGeoRepository(array $settings, ?IpGeoProviderPolicy $policy = null): IpGeoRepositoryInterface
+    private static function ipGeoRepository(array $settings, Connection $connection, ?IpGeoProviderPolicy $policy = null): IpGeoRepositoryInterface
     {
-        $redis = $settings['redis'] ?? [];
-        if (!is_array($redis) || (string) ($redis['password'] ?? '') === '') {
-            if (self::redisRequired($settings)) {
-                throw new \RuntimeException('REDIS_PASSWORD is required for IP geo queue storage.');
+        $ipGeo = $settings['ip_geo'] ?? [];
+        $adapterConfigured = is_array($ipGeo)
+            && array_key_exists('repository', $ipGeo)
+            && trim((string) ($ipGeo['repository'] ?? '')) !== '';
+        $adapter = $adapterConfigured ? strtolower(trim((string) $ipGeo['repository'])) : 'database';
+        $recordTtlSeconds = $policy?->cacheTtlSeconds ?? 604800;
+        $visibilityTimeoutSeconds = is_array($ipGeo) ? (int) ($ipGeo['visibility_timeout_seconds'] ?? 300) : 300;
+
+        if (!$adapterConfigured && self::localFallbackAllowed($settings)) {
+            return new InMemoryIpGeoRepository();
+        }
+
+        if ($adapter === 'database') {
+            return new DatabaseIpGeoRepository($connection, $recordTtlSeconds, $visibilityTimeoutSeconds);
+        }
+
+        if ($adapter === 'memory') {
+            if (!self::localFallbackAllowed($settings)) {
+                throw new \RuntimeException('IP_GEO_REPOSITORY=memory is only allowed in local/testing.');
             }
 
             return new InMemoryIpGeoRepository();
         }
 
-        if ($policy !== null) {
-            $redis['ip_geo_record_ttl_seconds'] = $policy->cacheTtlSeconds;
+        if ($adapter !== 'redis') {
+            throw new \RuntimeException('IP_GEO_REPOSITORY must be one of database, redis, memory.');
         }
+
+        $redis = $settings['redis'] ?? [];
+        if (!is_array($redis) || (string) ($redis['password'] ?? '') === '') {
+            throw new \RuntimeException('REDIS_PASSWORD is required for IP geo queue storage.');
+        }
+
+        $redis['ip_geo_record_ttl_seconds'] = $recordTtlSeconds;
 
         return RedisIpGeoRepository::fromSettings($redis);
     }

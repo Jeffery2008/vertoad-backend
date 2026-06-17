@@ -123,12 +123,20 @@ final readonly class DuckDbCliArchiveWriter implements ArchiveWriterInterface
             return;
         }
 
-        foreach (glob($directory . DIRECTORY_SEPARATOR . '*') ?: [] as $path) {
-            if (is_file($path)) {
+        foreach (new \FilesystemIterator($directory, \FilesystemIterator::SKIP_DOTS) as $fileInfo) {
+            $path = $fileInfo->getPathname();
+            if ($fileInfo->isDir() && !$fileInfo->isLink()) {
+                $this->removeDirectory($path);
+            } elseif ($fileInfo->isFile() || $fileInfo->isLink()) {
                 @unlink($path);
             }
         }
 
-        @rmdir($directory);
+        for ($attempt = 0; $attempt < 3; $attempt++, usleep(10_000)) {
+            clearstatcache(true, $directory);
+            if (!is_dir($directory) || @rmdir($directory)) {
+                return;
+            }
+        }
     }
 }

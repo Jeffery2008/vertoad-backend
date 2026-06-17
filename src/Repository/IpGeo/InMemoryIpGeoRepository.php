@@ -45,6 +45,7 @@ final class InMemoryIpGeoRepository implements IpGeoRepositoryInterface
             'attempts' => (int) ($this->rows[$hash]['attempts'] ?? 0),
             'next_attempt_at' => $this->rows[$hash]['next_attempt_at'] ?? $queuedAt,
             'created_at' => $this->rows[$hash]['created_at'] ?? $queuedAt,
+            'lease_token' => $this->rows[$hash]['lease_token'] ?? null,
         ];
     }
 
@@ -85,7 +86,8 @@ final class InMemoryIpGeoRepository implements IpGeoRepositoryInterface
             }
 
             $this->rows[$hash]['status'] = 'processing';
-            $task = $this->taskFromRow($row, $now);
+            $this->rows[$hash]['lease_token'] = bin2hex(random_bytes(16));
+            $task = $this->taskFromRow($this->rows[$hash], $now);
             if ($task === null) {
                 continue;
             }
@@ -99,8 +101,13 @@ final class InMemoryIpGeoRepository implements IpGeoRepositoryInterface
         return $tasks;
     }
 
-    public function markResolved(GeoIpRecord $record): void
+    public function markResolved(GeoIpRecord $record, ?string $leaseToken = null): void
     {
+        $existing = $this->rows[$record->ipHash()] ?? null;
+        if (!$this->leaseCanWrite($existing, $leaseToken)) {
+            return;
+        }
+
         $this->rows[$record->ipHash()] = [
             'status' => 'resolved',
             'ip_address' => $record->ipAddress,
@@ -113,20 +120,27 @@ final class InMemoryIpGeoRepository implements IpGeoRepositoryInterface
             'provider_id' => $record->providerId,
             'record' => $record,
             'next_attempt_at' => null,
+            'lease_token' => null,
             'created_at' => $this->rows[$record->ipHash()]['created_at'] ?? $record->resolvedAt,
             'resolved_at' => $record->resolvedAt,
         ];
     }
 
-    public function markFailed(string $ipAddress, ?string $providerId, string $message, DateTimeImmutable $failedAt, int $maxAttempts, int $retryBackoffSeconds): void
+    public function markFailed(string $ipAddress, ?string $providerId, string $message, DateTimeImmutable $failedAt, int $maxAttempts, int $retryBackoffSeconds, ?string $leaseToken = null): void
     {
         $hash = GeoIpRecord::hashIp($ipAddress);
+        $existing = $this->rows[$hash] ?? null;
+        if (($existing['status'] ?? null) === 'resolved' || !$this->leaseCanWrite($existing, $leaseToken)) {
+            return;
+        }
+
         $attempts = (int) ($this->rows[$hash]['attempts'] ?? 0) + 1;
         $this->rows[$hash]['status'] = $attempts >= $maxAttempts ? 'dead' : 'failed';
         $this->rows[$hash]['attempts'] = $attempts;
         $this->rows[$hash]['provider_id'] = $providerId;
         $this->rows[$hash]['last_error'] = substr(trim($message), 0, 255);
         $this->rows[$hash]['next_attempt_at'] = $failedAt->modify('+' . max(1, $retryBackoffSeconds * $attempts) . ' seconds');
+        $this->rows[$hash]['lease_token'] = null;
     }
 
     /**
@@ -160,6 +174,7 @@ final class InMemoryIpGeoRepository implements IpGeoRepositoryInterface
             lastError: $this->nullableString($row['last_error'] ?? null),
             nextAttemptAt: $row['next_attempt_at'] instanceof DateTimeImmutable ? $row['next_attempt_at'] : null,
             resolvedAt: ($row['resolved_at'] ?? null) instanceof DateTimeImmutable ? $row['resolved_at'] : null,
+            leaseToken: $this->nullableString($row['lease_token'] ?? null),
         );
     }
 
@@ -192,6 +207,24 @@ final class InMemoryIpGeoRepository implements IpGeoRepositoryInterface
     private function normalizeRequestId(mixed $value): ?string
     {
         return $this->nullableString($value);
+    }
+
+    /**
+     * @param array<string, mixed>|null $row
+     */
+    private function leaseCanWrite(?array $row, ?string $leaseToken): bool
+    {
+        $leaseToken = $this->nullableString($leaseToken);
+        if ($leaseToken === null) {
+            return true;
+        }
+        if ($row === null || ($row['status'] ?? null) !== 'processing') {
+            return false;
+        }
+
+        $currentToken = $this->nullableString($row['lease_token'] ?? null);
+
+        return $currentToken !== null && hash_equals($currentToken, $leaseToken);
     }
 
     private function nullableString(mixed $value): ?string
