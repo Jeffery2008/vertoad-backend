@@ -38,4 +38,11 @@ interface AdSelectionPolicyInterface
         string $viewerId,
         DateTimeImmutable $now,
     ): void;
+
+    public function recordClick(
+        int $campaignId,
+        int $slotId,
+        string $viewerId,
+        DateTimeImmutable $now,
+    ): void;
 }

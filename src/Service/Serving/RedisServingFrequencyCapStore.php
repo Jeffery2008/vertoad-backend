@@ -24,7 +24,19 @@ final readonly class RedisServingFrequencyCapStore implements ServingFrequencyCa
         string $window,
         DateTimeImmutable $at,
     ): int {
-        $value = $this->redis->get($this->key($campaignId, $slotId, $viewerId, $window, $at));
+        $value = $this->redis->get($this->key('serve', $campaignId, $slotId, $viewerId, $window, $at));
+
+        return $value === false ? 0 : max(0, (int) $value);
+    }
+
+    public function clickCount(
+        int $campaignId,
+        int $slotId,
+        string $viewerId,
+        string $window,
+        DateTimeImmutable $at,
+    ): int {
+        $value = $this->redis->get($this->key('click', $campaignId, $slotId, $viewerId, $window, $at));
 
         return $value === false ? 0 : max(0, (int) $value);
     }
@@ -35,14 +47,28 @@ final readonly class RedisServingFrequencyCapStore implements ServingFrequencyCa
         string $viewerId,
         DateTimeImmutable $at,
     ): void {
+        $this->record('serve', $campaignId, $slotId, $viewerId, $at);
+    }
+
+    public function recordClick(
+        int $campaignId,
+        int $slotId,
+        string $viewerId,
+        DateTimeImmutable $at,
+    ): void {
+        $this->record('click', $campaignId, $slotId, $viewerId, $at);
+    }
+
+    private function record(string $type, int $campaignId, int $slotId, string $viewerId, DateTimeImmutable $at): void
+    {
         foreach (['hour', 'day'] as $window) {
-            $key = $this->key($campaignId, $slotId, $viewerId, $window, $at);
+            $key = $this->key($type, $campaignId, $slotId, $viewerId, $window, $at);
             $this->redis->increment($key);
             $this->redis->expire($key, $this->ttlSeconds($window, $at));
         }
     }
 
-    private function key(int $campaignId, int $slotId, string $viewerId, string $window, DateTimeImmutable $at): string
+    private function key(string $type, int $campaignId, int $slotId, string $viewerId, string $window, DateTimeImmutable $at): string
     {
         $utc = $at->setTimezone(new DateTimeZone('UTC'));
         $bucket = match ($window) {
@@ -52,7 +78,7 @@ final readonly class RedisServingFrequencyCapStore implements ServingFrequencyCa
         };
         $viewerHash = hash('sha256', $viewerId);
 
-        return $this->prefix . 'serving:frequency:' . implode(':', [$campaignId, $slotId, $window, $bucket, $viewerHash]);
+        return $this->prefix . 'serving:frequency:' . implode(':', [$type, $campaignId, $slotId, $window, $bucket, $viewerHash]);
     }
 
     private function ttlSeconds(string $window, DateTimeImmutable $at): int

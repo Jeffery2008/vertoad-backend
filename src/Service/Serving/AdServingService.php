@@ -176,6 +176,9 @@ final readonly class AdServingService
         }
 
         $this->events->recordClick($decision, $eventId, $occurredAt, $requestId);
+        if ($decision->campaignId !== null) {
+            $this->selectionPolicy->recordClick($decision->campaignId, $decision->slotId, $viewerId, $occurredAt);
+        }
 
         return AdEventResult::accepted(redirectUrl: $decision->landingUrl);
     }

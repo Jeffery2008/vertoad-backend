@@ -19,7 +19,17 @@ final class InMemoryServingFrequencyCapStore implements ServingFrequencyCapStore
         string $window,
         DateTimeImmutable $at,
     ): int {
-        return $this->counts[$this->key($campaignId, $slotId, $viewerId, $window, $at)] ?? 0;
+        return $this->count('serve', $campaignId, $slotId, $viewerId, $window, $at);
+    }
+
+    public function clickCount(
+        int $campaignId,
+        int $slotId,
+        string $viewerId,
+        string $window,
+        DateTimeImmutable $at,
+    ): int {
+        return $this->count('click', $campaignId, $slotId, $viewerId, $window, $at);
     }
 
     public function recordServe(
@@ -28,13 +38,32 @@ final class InMemoryServingFrequencyCapStore implements ServingFrequencyCapStore
         string $viewerId,
         DateTimeImmutable $at,
     ): void {
+        $this->record('serve', $campaignId, $slotId, $viewerId, $at);
+    }
+
+    public function recordClick(
+        int $campaignId,
+        int $slotId,
+        string $viewerId,
+        DateTimeImmutable $at,
+    ): void {
+        $this->record('click', $campaignId, $slotId, $viewerId, $at);
+    }
+
+    private function count(string $type, int $campaignId, int $slotId, string $viewerId, string $window, DateTimeImmutable $at): int
+    {
+        return $this->counts[$this->key($type, $campaignId, $slotId, $viewerId, $window, $at)] ?? 0;
+    }
+
+    private function record(string $type, int $campaignId, int $slotId, string $viewerId, DateTimeImmutable $at): void
+    {
         foreach (['hour', 'day'] as $window) {
-            $key = $this->key($campaignId, $slotId, $viewerId, $window, $at);
+            $key = $this->key($type, $campaignId, $slotId, $viewerId, $window, $at);
             $this->counts[$key] = ($this->counts[$key] ?? 0) + 1;
         }
     }
 
-    private function key(int $campaignId, int $slotId, string $viewerId, string $window, DateTimeImmutable $at): string
+    private function key(string $type, int $campaignId, int $slotId, string $viewerId, string $window, DateTimeImmutable $at): string
     {
         $utc = $at->setTimezone(new DateTimeZone('UTC'));
         $bucket = match ($window) {
@@ -43,6 +72,6 @@ final class InMemoryServingFrequencyCapStore implements ServingFrequencyCapStore
             default => throw new \InvalidArgumentException('Serving frequency cap window is not supported.'),
         };
 
-        return implode(':', [$campaignId, $slotId, $viewerId, $window, $bucket]);
+        return implode(':', [$type, $campaignId, $slotId, $viewerId, $window, $bucket]);
     }
 }

@@ -41,6 +41,8 @@ final readonly class DatabaseAdCandidateRepository implements AdCandidateReposit
                 'COALESCE(SUM(ra.clicks), 0) AS historical_clicks',
                 'fc.hourly_impression_cap',
                 'fc.daily_impression_cap',
+                'fc.hourly_click_cap',
+                'fc.daily_click_cap',
             )
             ->from('campaigns', 'c')
             ->innerJoin('c', 'creative_assets', 'a', 'a.id = c.creative_asset_id AND a.organization_id = c.organization_id')
@@ -75,6 +77,8 @@ final readonly class DatabaseAdCandidateRepository implements AdCandidateReposit
             ->addGroupBy('r.final_decided_at')
             ->addGroupBy('fc.hourly_impression_cap')
             ->addGroupBy('fc.daily_impression_cap')
+            ->addGroupBy('fc.hourly_click_cap')
+            ->addGroupBy('fc.daily_click_cap')
             ->orderBy('c.bid_points', 'DESC')
             ->addOrderBy('r.final_decided_at', 'ASC')
             ->addOrderBy('c.id', 'ASC')
@@ -112,6 +116,8 @@ final readonly class DatabaseAdCandidateRepository implements AdCandidateReposit
                 historicalCtrPerMille: $this->historicalCtrPerMille((int) $row['historical_impressions'], (int) $row['historical_clicks']),
                 hourlyFrequencyCap: $row['hourly_impression_cap'] === null ? null : (int) $row['hourly_impression_cap'],
                 dailyFrequencyCap: $row['daily_impression_cap'] === null ? null : (int) $row['daily_impression_cap'],
+                hourlyClickCap: $row['hourly_click_cap'] === null ? null : (int) $row['hourly_click_cap'],
+                dailyClickCap: $row['daily_click_cap'] === null ? null : (int) $row['daily_click_cap'],
                 geos: $targeting->geos,
             );
         }

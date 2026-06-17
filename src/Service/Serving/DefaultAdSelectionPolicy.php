@@ -58,14 +58,25 @@ final readonly class DefaultAdSelectionPolicy implements AdSelectionPolicyInterf
     ): bool {
         $frequencyCaps = $this->frequencyCaps();
         if (
-            $candidate->hourlyFrequencyCap !== null
-            && $frequencyCaps->servedCount($candidate->campaignId, $slotId, $viewerId, 'hour', $now) >= $candidate->hourlyFrequencyCap
+            !$this->withinCap(
+                $candidate->hourlyFrequencyCap,
+                $frequencyCaps->servedCount($candidate->campaignId, $slotId, $viewerId, 'hour', $now),
+            )
+            || !$this->withinCap(
+                $candidate->hourlyClickCap,
+                $frequencyCaps->clickCount($candidate->campaignId, $slotId, $viewerId, 'hour', $now),
+            )
         ) {
             return false;
         }
 
-        return $candidate->dailyFrequencyCap === null
-            || $frequencyCaps->servedCount($candidate->campaignId, $slotId, $viewerId, 'day', $now) < $candidate->dailyFrequencyCap;
+        return $this->withinCap(
+            $candidate->dailyFrequencyCap,
+            $frequencyCaps->servedCount($candidate->campaignId, $slotId, $viewerId, 'day', $now),
+        ) && $this->withinCap(
+            $candidate->dailyClickCap,
+            $frequencyCaps->clickCount($candidate->campaignId, $slotId, $viewerId, 'day', $now),
+        );
     }
 
     public function recordServe(
@@ -82,6 +93,15 @@ final readonly class DefaultAdSelectionPolicy implements AdSelectionPolicyInterf
         $this->frequencyCaps()->recordServe($candidate->campaignId, $slotId, $viewerId, $now);
     }
 
+    public function recordClick(
+        int $campaignId,
+        int $slotId,
+        string $viewerId,
+        DateTimeImmutable $now,
+    ): void {
+        $this->frequencyCaps()->recordClick($campaignId, $slotId, $viewerId, $now);
+    }
+
     private function score(AdCandidate $candidate): int
     {
         $bid = max($candidate->impressionCostPoints, $candidate->clickCostPoints);
@@ -92,6 +112,11 @@ final readonly class DefaultAdSelectionPolicy implements AdSelectionPolicyInterf
     private function frequencyCaps(): ServingFrequencyCapStoreInterface
     {
         return $this->frequencyCapStore;
+    }
+
+    private function withinCap(?int $cap, int $count): bool
+    {
+        return $cap === null || $count < $cap;
     }
 
     private function riskAssessor(): ServingRiskAssessorInterface

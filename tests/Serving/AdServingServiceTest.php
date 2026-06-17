@@ -657,6 +657,98 @@ final class AdServingServiceTest extends TestCase
         self::assertSame(2, $frequencyCaps->servedCount(31, 20, 'viewer-frequency', 'hour', $now));
     }
 
+    public function testAcceptedClickCountsTowardClickFrequencyCapsAndNextServeSkipsCappedCandidate(): void
+    {
+        self::assertTrue(property_exists(AdCandidate::class, 'hourlyClickCap'), 'Ad candidates must expose hourly click caps.');
+        self::assertTrue(method_exists(InMemoryServingFrequencyCapStore::class, 'clickCount'), 'Frequency cap stores must expose click counts.');
+        self::assertTrue(method_exists(InMemoryServingFrequencyCapStore::class, 'recordClick'), 'Frequency cap stores must record accepted clicks.');
+
+        $frequencyCaps = new InMemoryServingFrequencyCapStore();
+        $policy = new DefaultAdSelectionPolicy($frequencyCaps);
+        $decisions = new InMemoryAdDecisionRepository();
+        $events = new InMemoryAdEventRepository();
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([
+                new AdCandidate(
+                    adId: 'ad-click-capped',
+                    campaignId: 30,
+                    advertiserOrganizationId: 40,
+                    creativeHtml: '<strong>VertoAD creative</strong>',
+                    landingUrl: 'https://advertiser.example/capped',
+                    width: 300,
+                    height: 250,
+                    impressionCostPoints: 100,
+                    clickCostPoints: 0,
+                    hourlyClickCap: 1,
+                ),
+                $this->candidate(
+                    adId: 'ad-available-after-click-cap',
+                    campaignId: 31,
+                    advertiserOrganizationId: 41,
+                    landingUrl: 'https://advertiser.example/available',
+                    impressionCostPoints: 20,
+                    clickCostPoints: 0,
+                ),
+            ]),
+            $decisions,
+            $events,
+            null,
+            $policy,
+        );
+        $now = new DateTimeImmutable('2026-06-08 10:00:00');
+
+        $first = $service->serve(10, 20, 'viewer-click-cap', null, false, $now);
+        $service->trackImpression($first->decisionId, 'viewer-click-cap', 0.75, 1500, 'imp-click-cap-1', $now->modify('+2 seconds'));
+        $click = $service->recordClick($first->decisionId, 'viewer-click-cap', 'clk-click-cap-1', $now->modify('+40 seconds'));
+        $second = $service->serve(10, 20, 'viewer-click-cap', null, false, $now->modify('+5 minutes'));
+
+        self::assertSame('ad-click-capped', $first->adId);
+        self::assertTrue($click->accepted);
+        self::assertSame(1, $frequencyCaps->clickCount(30, 20, 'viewer-click-cap', 'hour', $now));
+        self::assertSame('ad-available-after-click-cap', $second->adId);
+    }
+
+    public function testRejectedRepeatClickDoesNotIncrementClickFrequencyCaps(): void
+    {
+        self::assertTrue(property_exists(AdCandidate::class, 'hourlyClickCap'), 'Ad candidates must expose hourly click caps.');
+        self::assertTrue(method_exists(InMemoryServingFrequencyCapStore::class, 'clickCount'), 'Frequency cap stores must expose click counts.');
+
+        $frequencyCaps = new InMemoryServingFrequencyCapStore();
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([
+                new AdCandidate(
+                    adId: 'ad-click-capped',
+                    campaignId: 30,
+                    advertiserOrganizationId: 40,
+                    creativeHtml: '<strong>VertoAD creative</strong>',
+                    landingUrl: 'https://advertiser.example/capped',
+                    width: 300,
+                    height: 250,
+                    impressionCostPoints: 100,
+                    clickCostPoints: 0,
+                    hourlyClickCap: 2,
+                ),
+            ]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+            null,
+            new DefaultAdSelectionPolicy($frequencyCaps),
+        );
+        $now = new DateTimeImmutable('2026-06-08 10:00:00');
+
+        $decision = $service->serve(10, 20, 'viewer-repeat-click-cap', null, false, $now);
+        $service->trackImpression($decision->decisionId, 'viewer-repeat-click-cap', 0.75, 1500, 'imp-repeat-click-cap', $now->modify('+2 seconds'));
+        $accepted = $service->recordClick($decision->decisionId, 'viewer-repeat-click-cap', 'clk-repeat-click-cap-1', $now->modify('+40 seconds'));
+        $repeat = $service->recordClick($decision->decisionId, 'viewer-repeat-click-cap', 'clk-repeat-click-cap-2', $now->modify('+45 seconds'));
+
+        self::assertTrue($accepted->accepted);
+        self::assertFalse($repeat->accepted);
+        self::assertSame('repeat_click_window', $repeat->reason);
+        self::assertSame(1, $frequencyCaps->clickCount(30, 20, 'viewer-repeat-click-cap', 'hour', $now));
+    }
+
     public function testServeTrackAndClickPreserveRequestIdsForCorrelation(): void
     {
         $decisions = new InMemoryAdDecisionRepository();

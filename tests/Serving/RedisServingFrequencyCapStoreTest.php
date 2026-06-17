@@ -34,6 +34,33 @@ final class RedisServingFrequencyCapStoreTest extends TestCase
         }
     }
 
+    public function testRecordsClickCountsSeparatelyFromServeCounts(): void
+    {
+        $redis = new RecordingRedisClient();
+        $store = new RedisServingFrequencyCapStore($redis, 'vertoad:test:', 60);
+        $at = new DateTimeImmutable('2026-06-08T10:15:00+00:00');
+
+        self::assertSame(0, $store->clickCount(30, 20, 'viewer-1', 'hour', $at));
+
+        $store->recordServe(30, 20, 'viewer-1', $at);
+        $store->recordClick(30, 20, 'viewer-1', $at);
+        $store->recordClick(30, 20, 'viewer-1', $at->modify('+5 minutes'));
+
+        self::assertSame(1, $store->servedCount(30, 20, 'viewer-1', 'hour', $at));
+        self::assertSame(2, $store->clickCount(30, 20, 'viewer-1', 'hour', $at));
+        self::assertSame(2, $store->clickCount(30, 20, 'viewer-1', 'day', $at));
+        self::assertSame(0, $store->clickCount(30, 20, 'viewer-1', 'hour', $at->modify('+1 hour')));
+        self::assertCount(4, $redis->values);
+        self::assertSame(2, count(array_filter(
+            array_keys($redis->values),
+            static fn (string $key): bool => str_contains($key, ':click:'),
+        )));
+        self::assertSame(2, count(array_filter(
+            array_keys($redis->values),
+            static fn (string $key): bool => str_contains($key, ':serve:'),
+        )));
+    }
+
     public function testRejectsUnsupportedWindow(): void
     {
         $this->expectException(\InvalidArgumentException::class);

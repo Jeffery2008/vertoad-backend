@@ -96,6 +96,10 @@ final class ServingRepositoryTest extends TestCase
         self::assertSame(50, $candidates[0]->historicalCtrPerMille);
         self::assertSame(2, $candidates[0]->hourlyFrequencyCap);
         self::assertSame(5, $candidates[0]->dailyFrequencyCap);
+        self::assertTrue(property_exists($candidates[0], 'hourlyClickCap'));
+        self::assertTrue(property_exists($candidates[0], 'dailyClickCap'));
+        self::assertSame(3, $candidates[0]->hourlyClickCap);
+        self::assertSame(7, $candidates[0]->dailyClickCap);
     }
 
     public function testDatabaseCandidateRepositoryHydratesGeoTargetingRules(): void

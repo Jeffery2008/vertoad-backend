@@ -16,7 +16,22 @@ interface ServingFrequencyCapStoreInterface
         DateTimeImmutable $at,
     ): int;
 
+    public function clickCount(
+        int $campaignId,
+        int $slotId,
+        string $viewerId,
+        string $window,
+        DateTimeImmutable $at,
+    ): int;
+
     public function recordServe(
+        int $campaignId,
+        int $slotId,
+        string $viewerId,
+        DateTimeImmutable $at,
+    ): void;
+
+    public function recordClick(
         int $campaignId,
         int $slotId,
         string $viewerId,
