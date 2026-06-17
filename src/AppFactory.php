@@ -20,6 +20,7 @@ use VertoAD\Http\Error\OperationErrorHandler;
 use VertoAD\Http\Auth\BearerTokenAuthenticator;
 use VertoAD\Http\Middleware\AuthenticateRequestMiddleware;
 use VertoAD\Http\Middleware\CronAuthMiddleware;
+use VertoAD\Http\Middleware\CreativeTemplateWritePermissionMiddleware;
 use VertoAD\Http\Middleware\ApiEnvelopeMiddleware;
 use VertoAD\Http\Middleware\IpGeoMiddleware;
 use VertoAD\Http\Middleware\LazyContainerMiddleware;
@@ -62,6 +63,10 @@ use VertoAD\Repository\Campaign\CampaignRepository;
 use VertoAD\Repository\Campaign\CampaignRepositoryInterface;
 use VertoAD\Repository\CampaignBudgetRepository;
 use VertoAD\Repository\CampaignBudgetRepositoryInterface;
+use VertoAD\Repository\Creative\CreativeDesignRepositoryInterface;
+use VertoAD\Repository\Creative\CreativeTemplateRepositoryInterface;
+use VertoAD\Repository\Creative\DatabaseCreativeDesignRepository;
+use VertoAD\Repository\Creative\DatabaseCreativeTemplateRepository;
 use VertoAD\Repository\FeatureFlags\DatabaseFeatureFlagRepository;
 use VertoAD\Repository\FeatureFlags\FeatureFlagRepositoryInterface;
 use VertoAD\Repository\Serving\AdCandidateRepositoryInterface;
@@ -161,6 +166,7 @@ use VertoAD\Service\Cron\IpGeoLookupJob;
 use VertoAD\Service\Cron\NoOpCronJob;
 use VertoAD\Service\Cron\PartitionMaintenanceJob;
 use VertoAD\Service\Cron\RedisCronLockStore;
+use VertoAD\Service\Creative\CreativeDesignService;
 use VertoAD\Service\DefuseRechargeKeyPlaintextCipher;
 use VertoAD\Service\FeatureFlags\FeatureFlagService;
 use VertoAD\Service\IpGeo\AsyncIpGeoResolver;
@@ -275,6 +281,12 @@ final class AppFactory
                     OrganizationMembershipRepositoryInterface $memberships,
                     PermissionMatcher $permissions,
                 ): TenantAccessService => new TenantAccessService($memberships, $permissions),
+                CreativeTemplateWritePermissionMiddleware::class => static fn (
+                    TenantAccessService $tenantAccess,
+                ): CreativeTemplateWritePermissionMiddleware => new CreativeTemplateWritePermissionMiddleware(
+                    SlimAppFactory::determineResponseFactory(),
+                    $tenantAccess,
+                ),
                 PublisherSiteRepositoryInterface::class => static fn (Connection $connection): PublisherSiteRepositoryInterface =>
                     new PublisherSiteRepository($connection),
                 PublisherSiteVerificationAttemptRepositoryInterface::class => static fn (Connection $connection): PublisherSiteVerificationAttemptRepositoryInterface =>
@@ -328,6 +340,15 @@ final class AppFactory
                     ReviewRepositoryInterface $reviews,
                     CampaignBudgetService $budgets,
                 ): CampaignService => new CampaignService($campaigns, $reviews, $budgets),
+                CreativeTemplateRepositoryInterface::class => static fn (Connection $connection): CreativeTemplateRepositoryInterface =>
+                    new DatabaseCreativeTemplateRepository($connection),
+                CreativeDesignRepositoryInterface::class => static fn (Connection $connection): CreativeDesignRepositoryInterface =>
+                    new DatabaseCreativeDesignRepository($connection),
+                CreativeDesignService::class => static fn (
+                    CreativeTemplateRepositoryInterface $templates,
+                    CreativeDesignRepositoryInterface $designs,
+                    AuditLogService $audit,
+                ): CreativeDesignService => new CreativeDesignService($templates, $designs, $audit),
                 ServingInventoryRepositoryInterface::class => static fn (Connection $connection): ServingInventoryRepositoryInterface =>
                     new DatabaseServingInventoryRepository($connection),
                 AdCandidateRepositoryInterface::class => static fn (Connection $connection): AdCandidateRepositoryInterface =>

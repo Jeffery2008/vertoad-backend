@@ -298,7 +298,7 @@ final class ConversionPathReportActionTest extends TestCase
             ->add(new RequirePermissionMiddleware(
                 $app->getResponseFactory(),
                 $container->get(TenantAccessService::class),
-                PermissionRequirement::forOrganization('report.read.own'),
+                PermissionRequirement::forAuthenticatedOrganization('report.read.own'),
             ))
             ->add(AuthenticateRequestMiddleware::class);
         $app->add(new ApiEnvelopeMiddleware($app->getResponseFactory()));

@@ -52,6 +52,11 @@ use VertoAD\Http\Action\Campaigns\CreateCampaignAction;
 use VertoAD\Http\Action\Campaigns\GetCampaignAction;
 use VertoAD\Http\Action\Campaigns\ListCampaignsAction;
 use VertoAD\Http\Action\Campaigns\UpdateCampaignAction;
+use VertoAD\Http\Action\Creative\CreateCreativeDesignAction;
+use VertoAD\Http\Action\Creative\CreateCreativeDesignVersionAction;
+use VertoAD\Http\Action\Creative\CreateCreativeTemplateAction;
+use VertoAD\Http\Action\Creative\ListCreativeDesignVersionsAction;
+use VertoAD\Http\Action\Creative\ListCreativeTemplatesAction;
 use VertoAD\Http\Action\FeatureFlags\CreateFeatureFlagAction;
 use VertoAD\Http\Action\FeatureFlags\EvaluateFeatureFlagAction;
 use VertoAD\Http\Action\FeatureFlags\ListFeatureFlagsAction;
@@ -88,6 +93,7 @@ use VertoAD\Http\Action\Webhooks\UpdateWebhookEndpointAction;
 use VertoAD\Http\Auth\PermissionRequirement;
 use VertoAD\Http\Middleware\AuthenticateRequestMiddleware;
 use VertoAD\Http\Middleware\CronAuthMiddleware;
+use VertoAD\Http\Middleware\CreativeTemplateWritePermissionMiddleware;
 use VertoAD\Http\Middleware\RateLimitMiddleware;
 use VertoAD\Http\Middleware\RequirePermissionMiddleware;
 use VertoAD\Http\Middleware\SupportTicketListQueryMiddleware;
@@ -192,6 +198,21 @@ return static function (App $app): void {
         ->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/assets/upload-intents', CreateAssetUploadIntentAction::class)->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/assets/confirm', ConfirmAssetUploadAction::class)->add(AuthenticateRequestMiddleware::class);
+    $app->get('/api/v1/creative/templates', ListCreativeTemplatesAction::class)
+        ->add($permission('creative.template.read.own'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->post('/api/v1/creative/templates', CreateCreativeTemplateAction::class)
+        ->add(CreativeTemplateWritePermissionMiddleware::class)
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->post('/api/v1/creative/designs', CreateCreativeDesignAction::class)
+        ->add($permission('creative.design.write.own'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->get('/api/v1/creative/designs/{design_id}/versions', ListCreativeDesignVersionsAction::class)
+        ->add($permission('creative.design.read.own'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->post('/api/v1/creative/designs/{design_id}/versions', CreateCreativeDesignVersionAction::class)
+        ->add($permission('creative.design.write.own'))
+        ->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/campaigns', ListCampaignsAction::class)
         ->add($permission('campaign.read.own'))
         ->add(AuthenticateRequestMiddleware::class);
@@ -247,7 +268,12 @@ return static function (App $app): void {
         ->add($permission('report.read.own'))
         ->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/reports/conversion-paths', ConversionPathReportAction::class)
-        ->add($permission('report.read.own'))
+        ->add(new RequirePermissionMiddleware(
+            $app->getResponseFactory(),
+            $app->getContainer()?->get(TenantAccessService::class)
+                ?? throw new RuntimeException('Application container is required for permission middleware.'),
+            PermissionRequirement::forAuthenticatedOrganization('report.read.own'),
+        ))
         ->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/oauth/clients', ListOAuthClientsAction::class)
         ->add($permission('sdk.oauth_client.read.own'))

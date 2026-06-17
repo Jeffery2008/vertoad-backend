@@ -9,6 +9,7 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\MiddlewareInterface;
 use Psr\Http\Server\RequestHandlerInterface;
+use RuntimeException;
 use Slim\Routing\RouteContext;
 use VertoAD\Http\Auth\PermissionRequirement;
 use VertoAD\Http\Auth\RequestUserContext;
@@ -89,6 +90,19 @@ final readonly class RequirePermissionMiddleware implements MiddlewareInterface
             );
         }
 
+        if ($context->user?->isSuperAdmin === true) {
+            return $handler->handle($request);
+        }
+
+        if ($context->organizationId !== null && $context->organizationId !== $organizationId) {
+            return $this->errorResponse(
+                403,
+                'organization_scope_mismatch',
+                'The authenticated session is not scoped to the requested organization.',
+                ['required_permission' => $this->requirement->permission],
+            );
+        }
+
         if ($context->oauthToken !== null && $context->oauthToken->organizationId !== $organizationId) {
             return $this->errorResponse(
                 403,
@@ -117,21 +131,54 @@ final readonly class RequirePermissionMiddleware implements MiddlewareInterface
 
     private function resolveOrganizationId(ServerRequestInterface $request, RequestUserContext $context): ?int
     {
+        if (!$this->requirement->resolveOrganizationFromRequest) {
+            return $context->organizationId;
+        }
+
         $routeValue = $request->getAttribute($this->requirement->organizationIdAttribute);
-        if (is_int($routeValue)) {
-            return $routeValue;
+        $organizationId = $this->positiveInteger($routeValue);
+        if ($organizationId !== null) {
+            return $organizationId;
         }
 
-        if (is_string($routeValue) && ctype_digit($routeValue)) {
-            return (int) $routeValue;
+        try {
+            $routeArgument = RouteContext::fromRequest($request)->getRoute()?->getArgument($this->requirement->organizationIdAttribute);
+            $organizationId = $this->positiveInteger($routeArgument);
+            if ($organizationId !== null) {
+                return $organizationId;
+            }
+        } catch (RuntimeException) {
+            // Direct middleware tests and manually composed handlers can run before Slim has attached routing context.
         }
 
-        $routeArgument = RouteContext::fromRequest($request)->getRoute()?->getArgument($this->requirement->organizationIdAttribute);
-        if (is_string($routeArgument) && ctype_digit($routeArgument)) {
-            return (int) $routeArgument;
+        $queryValue = $request->getQueryParams()[$this->requirement->organizationIdAttribute] ?? null;
+        $organizationId = $this->positiveInteger($queryValue);
+        if ($organizationId !== null) {
+            return $organizationId;
+        }
+
+        $payload = $request->getParsedBody();
+        if (is_array($payload)) {
+            $organizationId = $this->positiveInteger($payload[$this->requirement->organizationIdAttribute] ?? null);
+            if ($organizationId !== null) {
+                return $organizationId;
+            }
         }
 
         return $context->organizationId;
+    }
+
+    private function positiveInteger(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value > 0 ? $value : null;
+        }
+
+        if (is_string($value) && ctype_digit($value) && (int) $value > 0) {
+            return (int) $value;
+        }
+
+        return null;
     }
 
     /**

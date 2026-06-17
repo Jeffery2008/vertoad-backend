@@ -14,12 +14,8 @@ final class SensitiveRoutePermissionContractTest extends TestCase
         $routes = (string) file_get_contents(dirname(__DIR__) . '/config/routes.php');
 
         foreach ($this->routePermissions() as [$method, $route, $permission, $factory]) {
-            $pattern = preg_quote("\$app->" . strtolower($method) . "('" . $route . "'", '/')
-                . '(?s:.{0,260})'
-                . preg_quote('->add($' . $factory . "('" . $permission . "'))", '/');
-
             self::assertTrue(
-                preg_match('/' . $pattern . '/', $routes) === 1,
+                $this->routeUsesPermissionFactory($routes, $method, $route, $permission, $factory),
                 $method . ' ' . $route . ' must enforce ' . $permission . ' through ' . $factory . '.',
             );
         }
@@ -75,7 +71,7 @@ final class SensitiveRoutePermissionContractTest extends TestCase
             ['POST', '/api/v1/reviews/{review_id}/approve', 'review.creative.decide.platform', 'platformPermission'],
             ['POST', '/api/v1/reviews/{review_id}/reject', 'review.creative.decide.platform', 'platformPermission'],
             ['GET', '/api/v1/reports/dashboard', 'report.read.own', 'permission'],
-            ['GET', '/api/v1/reports/conversion-paths', 'report.read.own', 'permission'],
+            ['GET', '/api/v1/reports/conversion-paths', 'report.read.own', 'authenticatedOrganizationPermission'],
             ['GET', '/api/v1/oauth/clients', 'sdk.oauth_client.read.own', 'permission'],
             ['POST', '/api/v1/oauth/clients', 'sdk.oauth_client.write.own', 'permission'],
             ['POST', '/api/v1/oauth/clients/{client_id}/rotate-secret', 'sdk.oauth_client.rotate_secret.own', 'permission'],
@@ -110,5 +106,23 @@ final class SensitiveRoutePermissionContractTest extends TestCase
             ['GET', '/api/v1/feature-flags', 'feature_flag.read.platform', 'platformPermission'],
             ['POST', '/api/v1/feature-flags/{flag_key}/evaluate', 'feature_flag.evaluate.platform', 'platformPermission'],
         ];
+    }
+
+    private function routeUsesPermissionFactory(string $routes, string $method, string $route, string $permission, string $factory): bool
+    {
+        $routePattern = preg_quote("\$app->" . strtolower($method) . "('" . $route . "'", '/');
+
+        if ($factory === 'authenticatedOrganizationPermission') {
+            $permissionPattern = preg_quote(
+                "PermissionRequirement::forAuthenticatedOrganization('" . $permission . "')",
+                '/',
+            );
+
+            return preg_match('/' . $routePattern . '(?s:.{0,520})' . $permissionPattern . '/', $routes) === 1;
+        }
+
+        $permissionPattern = preg_quote('->add($' . $factory . "('" . $permission . "'))", '/');
+
+        return preg_match('/' . $routePattern . '(?s:.{0,260})' . $permissionPattern . '/', $routes) === 1;
     }
 }

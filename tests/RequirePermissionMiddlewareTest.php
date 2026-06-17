@@ -199,6 +199,39 @@ final class RequirePermissionMiddlewareTest extends TestCase
         self::assertSame(Permission::LedgerRead, $payload['error']['required_permission'] ?? null);
     }
 
+    public function testDeniesOAuthClientWhenTokenOrganizationDoesNotMatchAuthenticatedOrganizationRequirement(): void
+    {
+        $responseFactory = new ResponseFactory();
+        $middleware = new RequirePermissionMiddleware(
+            $responseFactory,
+            new TenantAccessService(new PermissionMiddlewareMembershipRepository([]), new PermissionMatcher()),
+            PermissionRequirement::forAuthenticatedOrganization(Permission::LedgerRead),
+        );
+        $request = (new ServerRequestFactory())
+            ->createServerRequest('GET', '/api/v1/reports/example')
+            ->withAttribute(
+                RequestUserContext::ATTRIBUTE,
+                new RequestUserContext(
+                    organizationId: 10,
+                    oauthToken: new OAuthAccessTokenContext(
+                        accessTokenId: 603,
+                        clientId: 503,
+                        clientIdentifier: 'vocl_ledger_mismatch',
+                        organizationId: 99,
+                        user: null,
+                        scopes: [Permission::LedgerRead],
+                    ),
+                ),
+            );
+
+        $response = $middleware->process($request, new PermissionOkHandler($responseFactory));
+        $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame(403, $response->getStatusCode());
+        self::assertSame('organization_scope_mismatch', $payload['code'] ?? null);
+        self::assertSame(Permission::LedgerRead, $payload['required_permission'] ?? null);
+    }
+
     public function testAllowsIntegerRouteOrganizationAttribute(): void
     {
         $response = $this->processDirectlyWithRouteAttribute(10);
@@ -211,6 +244,40 @@ final class RequirePermissionMiddlewareTest extends TestCase
     public function testAllowsStringRouteOrganizationAttribute(): void
     {
         $response = $this->processDirectlyWithRouteAttribute('10');
+        $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame('permission-ok', $payload['status'] ?? null);
+    }
+
+    public function testAllowsBodyOrganizationScopeWhenRouteAndContextAreUnscoped(): void
+    {
+        $response = $this->processDirectlyWithParsedBody(['organization_id' => 10]);
+        $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame('permission-ok', $payload['status'] ?? null);
+    }
+
+    public function testCanAuthorizeAgainstContextOrganizationWithoutConsumingQueryScope(): void
+    {
+        $responseFactory = new ResponseFactory();
+        $tenantAccess = new TenantAccessService(new PermissionMiddlewareMembershipRepository([
+            '20:10' => new OrganizationMembership(10, 20, 'active', ['billing'], [Permission::LedgerRead]),
+        ]), new PermissionMatcher());
+        $middleware = new RequirePermissionMiddleware(
+            $responseFactory,
+            $tenantAccess,
+            PermissionRequirement::forAuthenticatedOrganization(Permission::LedgerRead),
+        );
+        $request = (new ServerRequestFactory())
+            ->createServerRequest('GET', '/api/v1/reports/example?organization_id=11')
+            ->withAttribute(
+                RequestUserContext::ATTRIBUTE,
+                new RequestUserContext(new AuthenticatedUser(20, 'member@example.com', false), 10),
+            );
+
+        $response = $middleware->process($request, new PermissionOkHandler($responseFactory));
         $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
 
         self::assertSame(200, $response->getStatusCode());
@@ -271,6 +338,31 @@ final class RequirePermissionMiddlewareTest extends TestCase
         $request = (new ServerRequestFactory())
             ->createServerRequest('GET', '/api/v1/orgs/10/permission-probe')
             ->withAttribute('organization_id', $organizationId)
+            ->withAttribute(
+                RequestUserContext::ATTRIBUTE,
+                new RequestUserContext(new AuthenticatedUser(20, 'member@example.com', false), null),
+            );
+
+        return $middleware->process($request, new PermissionOkHandler($responseFactory));
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function processDirectlyWithParsedBody(array $payload): ResponseInterface
+    {
+        $responseFactory = new ResponseFactory();
+        $tenantAccess = new TenantAccessService(new PermissionMiddlewareMembershipRepository([
+            '20:10' => new OrganizationMembership(10, 20, 'active', ['billing'], [Permission::LedgerRead]),
+        ]), new PermissionMatcher());
+        $middleware = new RequirePermissionMiddleware(
+            $responseFactory,
+            $tenantAccess,
+            PermissionRequirement::forOrganization(Permission::LedgerRead),
+        );
+        $request = (new ServerRequestFactory())
+            ->createServerRequest('POST', '/api/v1/permission-probe')
+            ->withParsedBody($payload)
             ->withAttribute(
                 RequestUserContext::ATTRIBUTE,
                 new RequestUserContext(new AuthenticatedUser(20, 'member@example.com', false), null),

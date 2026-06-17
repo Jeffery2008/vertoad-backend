@@ -45,6 +45,8 @@ tags:
     description: Publisher site verification, ad slot presets, and slot management endpoints.
   - name: Assets
     description: Creative asset upload intents, validation, and review preparation endpoints.
+  - name: Creative
+    description: Fabric template, structured design, and append-only design version endpoints.
   - name: Serving
     description: Public ad serving, impression tracking, and click redirect endpoints. Serving reads canonical geo when available, queues unresolved IPs asynchronously, and never waits for an external IP geo provider.
   - name: Campaigns
@@ -1301,6 +1303,229 @@ paths:
         "400":
           $ref: "#/components/responses/Error"
         "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/creative/templates:
+    get:
+      tags:
+        - Creative
+      operationId: listCreativeTemplates
+      summary: List creative templates visible to an organization.
+      description: Returns platform templates and organization-private Fabric templates according to the requested scope.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - creative.template.read.own
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: scope
+          in: query
+          required: false
+          schema:
+            type: string
+            default: all
+            enum:
+              - all
+              - platform
+              - organization
+      responses:
+        "200":
+          description: Creative templates returned.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/CreativeTemplateListData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags:
+        - Creative
+      operationId: createCreativeTemplate
+      summary: Create a platform or organization creative template.
+      description: Creates a reusable Fabric template. Organization templates require `creative.template.write.own`; platform templates require `creative.template.manage.platform`.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - creative.template.write.own
+        - creative.template.manage.platform
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreativeTemplateCreateRequest"
+      responses:
+        "201":
+          description: Creative template created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/CreativeTemplate"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/creative/designs:
+    post:
+      tags:
+        - Creative
+      operationId: createCreativeDesign
+      summary: Create an organization creative design.
+      description: Creates an organization-owned Fabric design and its initial version in one transaction. A visible template can seed width, height, JSON, and snapshot metadata.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - creative.design.write.own
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreativeDesignCreateRequest"
+      responses:
+        "201":
+          description: Creative design and initial version created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/CreativeDesignCreateData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/creative/designs/{design_id}/versions:
+    get:
+      tags:
+        - Creative
+      operationId: listCreativeDesignVersions
+      summary: List a creative design and its versions.
+      description: Returns design metadata and append-only versions ordered newest first. Cross-organization access returns 404.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - creative.design.read.own
+      parameters:
+        - name: design_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Creative design versions returned.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/CreativeDesignVersionListData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags:
+        - Creative
+      operationId: createCreativeDesignVersion
+      summary: Append a creative design version.
+      description: Appends the next design version transactionally and updates the design current_version. Cross-organization access returns 404.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - creative.design.write.own
+      parameters:
+        - name: design_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreativeDesignVersionCreateRequest"
+      responses:
+        "201":
+          description: Creative design version created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/CreativeDesignVersion"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
           $ref: "#/components/responses/Error"
         "404":
           $ref: "#/components/responses/Error"
@@ -5949,6 +6174,326 @@ components:
           type: string
           enum:
             - pending_review
+      additionalProperties: false
+    CreativeTemplateCreateRequest:
+      type: object
+      required:
+        - scope
+        - name
+        - width
+        - height
+        - fabric_json
+      properties:
+        scope:
+          type: string
+          enum:
+            - platform
+            - organization
+        organization_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+          description: Required for organization templates and omitted or null for platform templates.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 160
+        description:
+          type:
+            - string
+            - "null"
+          maxLength: 2000
+        width:
+          type: integer
+          minimum: 1
+        height:
+          type: integer
+          minimum: 1
+        fabric_json:
+          type: object
+          additionalProperties: true
+        snapshot_url:
+          type:
+            - string
+            - "null"
+          format: uri
+          maxLength: 1024
+          pattern: "^https://"
+          description: HTTPS snapshot asset URL. Inline data URLs are not accepted.
+        tags:
+          type: array
+          items:
+            type: string
+            maxLength: 40
+      additionalProperties: false
+    CreativeDesignCreateRequest:
+      type: object
+      required:
+        - organization_id
+        - name
+        - fabric_json
+      properties:
+        organization_id:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 160
+        width:
+          type: integer
+          minimum: 1
+        height:
+          type: integer
+          minimum: 1
+        template_id:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        fabric_json:
+          type: object
+          additionalProperties: true
+        snapshot_url:
+          type:
+            - string
+            - "null"
+          format: uri
+          maxLength: 1024
+          pattern: "^https://"
+          description: HTTPS snapshot asset URL. Send null until a snapshot has been uploaded to object storage. Inline data URLs are not accepted.
+        change_summary:
+          type:
+            - string
+            - "null"
+          maxLength: 512
+      additionalProperties: false
+    CreativeDesignVersionCreateRequest:
+      type: object
+      required:
+        - organization_id
+        - fabric_json
+      properties:
+        organization_id:
+          type: integer
+          minimum: 1
+        fabric_json:
+          type: object
+          additionalProperties: true
+        snapshot_url:
+          type:
+            - string
+            - "null"
+          format: uri
+          maxLength: 1024
+          pattern: "^https://"
+          description: HTTPS snapshot asset URL. Send null until a snapshot has been uploaded to object storage. Inline data URLs are not accepted.
+        change_summary:
+          type:
+            - string
+            - "null"
+          maxLength: 512
+      additionalProperties: false
+    CreativeTemplate:
+      type: object
+      required:
+        - template_id
+        - organization_id
+        - scope
+        - name
+        - description
+        - width
+        - height
+        - fabric_json
+        - snapshot_url
+        - tags
+        - created_by_user_id
+        - created_at
+        - updated_at
+      properties:
+        template_id:
+          type: string
+          minLength: 1
+        organization_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        scope:
+          type: string
+          enum:
+            - platform
+            - organization
+        name:
+          type: string
+          minLength: 1
+        description:
+          type:
+            - string
+            - "null"
+        width:
+          type: integer
+          minimum: 1
+        height:
+          type: integer
+          minimum: 1
+        fabric_json:
+          type: object
+          additionalProperties: true
+        snapshot_url:
+          type:
+            - string
+            - "null"
+          format: uri
+          maxLength: 1024
+          pattern: "^https://"
+        tags:
+          type: array
+          items:
+            type: string
+        created_by_user_id:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    CreativeDesign:
+      type: object
+      required:
+        - design_id
+        - organization_id
+        - name
+        - width
+        - height
+        - current_version
+        - template_id
+        - status
+        - created_by_user_id
+        - updated_by_user_id
+        - created_at
+        - updated_at
+      properties:
+        design_id:
+          type: string
+          minLength: 1
+        organization_id:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+        width:
+          type: integer
+          minimum: 1
+        height:
+          type: integer
+          minimum: 1
+        current_version:
+          type: integer
+          minimum: 1
+        template_id:
+          type:
+            - string
+            - "null"
+        status:
+          type: string
+          enum:
+            - draft
+            - active
+            - archived
+        created_by_user_id:
+          type: integer
+          minimum: 1
+        updated_by_user_id:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    CreativeDesignVersion:
+      type: object
+      required:
+        - version_id
+        - design_id
+        - version_number
+        - fabric_json
+        - snapshot_url
+        - change_summary
+        - created_by_user_id
+        - created_at
+      properties:
+        version_id:
+          type: string
+          minLength: 1
+        design_id:
+          type: string
+          minLength: 1
+        version_number:
+          type: integer
+          minimum: 1
+        fabric_json:
+          type: object
+          additionalProperties: true
+        snapshot_url:
+          type:
+            - string
+            - "null"
+          format: uri
+          maxLength: 1024
+          pattern: "^https://"
+        change_summary:
+          type:
+            - string
+            - "null"
+        created_by_user_id:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    CreativeTemplateListData:
+      type: object
+      required:
+        - templates
+      properties:
+        templates:
+          type: array
+          items:
+            $ref: "#/components/schemas/CreativeTemplate"
+      additionalProperties: false
+    CreativeDesignCreateData:
+      type: object
+      required:
+        - design
+        - version
+      properties:
+        design:
+          $ref: "#/components/schemas/CreativeDesign"
+        version:
+          $ref: "#/components/schemas/CreativeDesignVersion"
+      additionalProperties: false
+    CreativeDesignVersionListData:
+      type: object
+      required:
+        - design
+        - versions
+      properties:
+        design:
+          $ref: "#/components/schemas/CreativeDesign"
+        versions:
+          type: array
+          items:
+            $ref: "#/components/schemas/CreativeDesignVersion"
       additionalProperties: false
     PresignedUploadData:
       type: object
