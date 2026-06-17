@@ -64,16 +64,29 @@ final readonly class ServeFrameAction
     {
         $context = $request->getAttribute(ServingRequestContext::class);
         if ($context instanceof ServingRequestContext) {
-            return $context;
+            return $this->withEndpoint($context);
         }
 
         $ip = ($this->ipResolver ?? new ClientIpResolver())->resolve($request);
         $userAgent = trim($request->getHeaderLine('User-Agent')) ?: null;
 
-        return ($this->geoResolver ?? new NullGeoResolver())->contextForRequest(
+        return $this->withEndpoint(($this->geoResolver ?? new NullGeoResolver())->contextForRequest(
             $ip,
             $userAgent,
             RequestIdContext::fromRequest($request),
+        ));
+    }
+
+    private function withEndpoint(ServingRequestContext $context): ServingRequestContext
+    {
+        return new ServingRequestContext(
+            ipAddress: $context->ipAddress,
+            userAgent: $context->userAgent,
+            geoCode: $context->geoCode,
+            geoRecord: $context->geoRecord,
+            requestId: $context->requestId,
+            endpoint: '/api/v1/ads/serve',
+            httpMethod: 'GET',
         );
     }
 

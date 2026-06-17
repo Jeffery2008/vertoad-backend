@@ -8,7 +8,11 @@ use DateTimeImmutable;
 use PHPUnit\Framework\TestCase;
 use VertoAD\Domain\Auth\AuthenticatedUser;
 use VertoAD\Http\Auth\RequestUserContext;
+use VertoAD\Repository\Operations\InMemoryOperationErrorLogRepository;
+use VertoAD\Repository\Operations\InMemoryOperationSystemLogRepository;
+use VertoAD\Repository\Operations\OperationSystemLogRepositoryInterface;
 use VertoAD\Service\AuditLogService;
+use VertoAD\Service\Operations\OperationErrorCaptureService;
 
 final class OperationErrorCaptureServiceTest extends TestCase
 {
@@ -103,6 +107,102 @@ final class OperationErrorCaptureServiceTest extends TestCase
 
         self::assertCount(1, $listed);
         self::assertSame('req-filter-match', $this->value($listed[0], 'request_id'));
+    }
+
+    public function testCaptureWritesDurableSystemLogWithRedactedContext(): void
+    {
+        $errorRepository = new InMemoryOperationErrorLogRepository();
+        $systemLogs = new InMemoryOperationSystemLogRepository();
+        $service = new OperationErrorCaptureService(
+            $errorRepository,
+            new AuditLogService(new OperationAuditRepository()),
+            $systemLogs,
+        );
+
+        $entry = $service->captureApiError(
+            requestId: 'req-system-write',
+            severity: 'warning',
+            message: 'Track payload normalized',
+            context: [
+                'path' => '/api/v1/ads/track',
+                'method' => 'POST',
+                'ip_address' => '198.51.100.88',
+                'authorization' => 'Bearer raw-token',
+            ],
+            occurredAt: new DateTimeImmutable('2026-06-18T04:00:00Z'),
+        );
+        $logs = $systemLogs->search(['request_id' => 'req-system-write']);
+
+        self::assertCount(1, $logs);
+        self::assertSame('syslog_' . sha1((string) $this->value($entry, 'error_id')), $logs[0]->log_id);
+        self::assertSame('warning', $logs[0]->level);
+        self::assertSame('/api/v1/ads/track', $logs[0]->endpoint);
+        self::assertSame('POST', $logs[0]->http_method);
+        self::assertSame('198.51.100.88', $logs[0]->ip_address);
+        self::assertSame('[REDACTED]', $logs[0]->redacted_context['authorization'] ?? null);
+        self::assertSame('Bearer raw-token', $logs[0]->raw_context['authorization'] ?? null);
+    }
+
+    public function testCaptureSystemLogIgnoresNonScalarCorrelationContext(): void
+    {
+        $systemLogs = new InMemoryOperationSystemLogRepository();
+        $service = new OperationErrorCaptureService(
+            new InMemoryOperationErrorLogRepository(),
+            new AuditLogService(new OperationAuditRepository()),
+            $systemLogs,
+        );
+
+        $service->captureApiError(
+            requestId: 'req-system-non-scalar',
+            severity: 'warning',
+            message: 'Malformed context metadata',
+            context: [
+                'endpoint' => ['POST', '/api/v1/ads/track'],
+                'method' => ['POST'],
+                'ip_address' => ['198.51.100.88'],
+            ],
+            occurredAt: new DateTimeImmutable('2026-06-18T04:05:00Z'),
+        );
+        $logs = $systemLogs->search(['request_id' => 'req-system-non-scalar']);
+
+        self::assertCount(1, $logs);
+        self::assertNull($logs[0]->endpoint);
+        self::assertNull($logs[0]->http_method);
+        self::assertNull($logs[0]->ip_address);
+    }
+
+    public function testCaptureStillReturnsErrorWhenDurableSystemLogWriteFails(): void
+    {
+        $service = new OperationErrorCaptureService(
+            new InMemoryOperationErrorLogRepository(),
+            new AuditLogService(new OperationAuditRepository()),
+            new class implements OperationSystemLogRepositoryInterface {
+                public function append(\VertoAD\Domain\Operations\OperationSystemLog $entry): \VertoAD\Domain\Operations\OperationSystemLog
+                {
+                    throw new \RuntimeException('system log table unavailable');
+                }
+
+                public function find(string $logId): ?\VertoAD\Domain\Operations\OperationSystemLog
+                {
+                    return null;
+                }
+
+                public function search(array $filters = []): array
+                {
+                    return [];
+                }
+            },
+        );
+
+        $entry = $service->captureApiError(
+            requestId: 'req-system-log-failure',
+            severity: 'error',
+            message: 'Primary error must still be captured',
+            context: ['path' => '/api/v1/ads/track'],
+            occurredAt: new DateTimeImmutable('2026-06-18T04:10:00Z'),
+        );
+
+        self::assertSame('req-system-log-failure', $this->value($entry, 'request_id'));
     }
 
     public function testRejectsBlankErrorMetadataAndMissingRawContext(): void

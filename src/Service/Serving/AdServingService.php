@@ -5,12 +5,15 @@ declare(strict_types=1);
 namespace VertoAD\Service\Serving;
 
 use DateTimeImmutable;
+use Throwable;
 use VertoAD\Domain\Budget\SpendFailureReason;
+use VertoAD\Domain\Operations\OperationRiskDecisionLog;
 use VertoAD\Domain\Serving\AdCandidate;
 use VertoAD\Domain\Serving\AdDecision;
 use VertoAD\Domain\Serving\AdEventResult;
 use VertoAD\Domain\Serving\ServingRequestContext;
 use VertoAD\Domain\Serving\ServingEventPolicy;
+use VertoAD\Repository\Operations\OperationRiskDecisionLogRepositoryInterface;
 use VertoAD\Repository\Serving\AdCandidateRepositoryInterface;
 use VertoAD\Repository\Serving\AdDecisionRepositoryInterface;
 use VertoAD\Repository\Serving\AdEventRepositoryInterface;
@@ -37,15 +40,18 @@ final readonly class AdServingService
         ?CampaignSpendEligibilityInterface $spendEligibility = null,
         ?AdSelectionPolicyInterface $selectionPolicy = null,
         ?ServingEventPolicy $eventPolicy = null,
+        ?OperationRiskDecisionLogRepositoryInterface $riskDecisions = null,
     ) {
         $this->spendEligibility = $spendEligibility ?? new AllowAllCampaignSpendEligibility();
         $this->selectionPolicy = $selectionPolicy ?? new DefaultAdSelectionPolicy();
         $this->eventPolicy = $eventPolicy ?? new ServingEventPolicy(0.5, 1000, 30);
+        $this->riskDecisions = $riskDecisions;
     }
 
     private CampaignSpendEligibilityInterface $spendEligibility;
     private AdSelectionPolicyInterface $selectionPolicy;
     private ServingEventPolicy $eventPolicy;
+    private ?OperationRiskDecisionLogRepositoryInterface $riskDecisions;
 
     /**
      * @param array{width:int,height:int}|null $size
@@ -79,7 +85,20 @@ final readonly class AdServingService
 
         $trafficRisk = $this->selectionPolicy->trafficRisk($siteId, $slotId, $viewerId);
         if (!$trafficRisk->allowed) {
-            return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, $trafficRisk->reason ?? 'fraud_high_risk', $now, $context));
+            $decision = $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, $trafficRisk->reason ?? 'fraud_high_risk', $now, $context));
+            $this->appendRiskDecisionLog(
+                decision: $decision,
+                action: 'ads.serve.risk_rejected',
+                reasonCodes: [$trafficRisk->reason ?? 'fraud_high_risk'],
+                subjectType: 'ad_decision',
+                subjectId: $decision->decisionId,
+                occurredAt: $now,
+                requestId: $decision->requestId,
+                endpoint: $context->endpoint ?? '/api/v1/ads/serve',
+                httpMethod: $context->httpMethod ?? 'POST',
+            );
+
+            return $decision;
         }
 
         $candidates = $this->selectionPolicy->rankCandidates($candidates, $siteId, $slotId, $viewerId, $now);
@@ -177,11 +196,14 @@ final readonly class AdServingService
         string $eventId,
         DateTimeImmutable $occurredAt,
         ?string $requestId = null,
+        ?ServingRequestContext $context = null,
     ): AdEventResult {
         $decision = $this->decisions->find($decisionId);
         if ($decision === null || !$decision->filled || $decision->viewerId !== $viewerId || $decision->landingUrl === null) {
             return AdEventResult::rejected('decision_not_found');
         }
+        $requestId = $this->nullableString($requestId) ?? $this->nullableString($context?->requestId);
+        $clickDecision = $this->decisionWithRequestContext($decision, $requestId, $context);
 
         if (!$this->isSafeLandingUrl($decision->landingUrl)) {
             return AdEventResult::rejected('unsafe_landing_url');
@@ -206,12 +228,23 @@ final readonly class AdServingService
             $occurredAt,
             $this->eventPolicy->repeatClickWindowSeconds,
         )) {
-            $this->events->recordInvalidClick($decision, $eventId, $occurredAt, 'repeat_click_window', $requestId);
+            $this->events->recordInvalidClick($clickDecision, $eventId, $occurredAt, 'repeat_click_window', $requestId);
+            $this->appendRiskDecisionLog(
+                decision: $clickDecision,
+                action: 'ads.click.invalid',
+                reasonCodes: ['repeat_click_window'],
+                subjectType: 'click',
+                subjectId: $eventId,
+                occurredAt: $occurredAt,
+                requestId: $requestId,
+                endpoint: $context?->endpoint ?? '/api/v1/ads/click',
+                httpMethod: $context?->httpMethod ?? 'GET',
+            );
 
             return AdEventResult::rejected('repeat_click_window');
         }
 
-        $this->events->recordClick($decision, $eventId, $occurredAt, $requestId);
+        $this->events->recordClick($clickDecision, $eventId, $occurredAt, $requestId);
         if ($decision->campaignId !== null) {
             $this->selectionPolicy->recordClick($decision->campaignId, $decision->slotId, $viewerId, $occurredAt);
         }
@@ -224,6 +257,81 @@ final readonly class AdServingService
         $this->decisions->save($decision);
 
         return $decision;
+    }
+
+    /**
+     * @param list<string> $reasonCodes
+     */
+    private function appendRiskDecisionLog(
+        AdDecision $decision,
+        string $action,
+        array $reasonCodes,
+        ?string $subjectType,
+        ?string $subjectId,
+        DateTimeImmutable $occurredAt,
+        ?string $requestId,
+        ?string $endpoint,
+        ?string $httpMethod,
+    ): void {
+        if ($this->riskDecisions === null) {
+            return;
+        }
+
+        $requestId = $this->nullableString($requestId);
+        if ($requestId === null) {
+            return;
+        }
+
+        $reasonCodes = array_values(array_filter(
+            array_map(static fn (string $reason): string => trim($reason), $reasonCodes),
+            static fn (string $reason): bool => $reason !== '',
+        ));
+        if ($reasonCodes === []) {
+            $reasonCodes = ['invalid_traffic'];
+        }
+
+        try {
+            $this->riskDecisions->append(new OperationRiskDecisionLog(
+                decision_id: $this->riskDecisionId($action, $requestId, $subjectType, $subjectId, $occurredAt),
+                request_id: $requestId,
+                action: $action,
+                risk_score: 100,
+                reason_codes: $reasonCodes,
+                subject_type: $subjectType,
+                subject_id: $subjectId,
+                ip_address: $decision->ipAddress,
+                endpoint: $this->nullableString($endpoint),
+                http_method: $this->normalizeHttpMethod($httpMethod),
+                user_agent: $decision->userAgent,
+                site_id: $decision->siteId,
+                slot_id: $decision->slotId,
+                campaign_id: $decision->campaignId,
+                viewer_id: $decision->viewerId,
+                ad_decision_id: $decision->decisionId,
+                occurred_at: $occurredAt,
+            ));
+        } catch (Throwable) {
+            return;
+        }
+    }
+
+    private function riskDecisionId(
+        string $action,
+        string $requestId,
+        ?string $subjectType,
+        ?string $subjectId,
+        DateTimeImmutable $occurredAt,
+    ): string {
+        return 'risk:' . substr(hash(
+            'sha256',
+            implode('|', [
+                $action,
+                $requestId,
+                $subjectType ?? '',
+                $subjectId ?? '',
+                $occurredAt->format('U.u'),
+            ]),
+        ), 0, 48);
     }
 
     private function noFill(
@@ -400,6 +508,55 @@ final readonly class AdServingService
         $geo = strtoupper(trim($geo));
 
         return $geo === '' ? null : $geo;
+    }
+
+    private function decisionWithRequestContext(AdDecision $decision, ?string $requestId, ?ServingRequestContext $context): AdDecision
+    {
+        if ($context === null) {
+            return $decision;
+        }
+
+        return new AdDecision(
+            decisionId: $decision->decisionId,
+            siteId: $decision->siteId,
+            slotId: $decision->slotId,
+            viewerId: $decision->viewerId,
+            filled: $decision->filled,
+            reason: $decision->reason,
+            iframeHtml: $decision->iframeHtml,
+            width: $decision->width,
+            height: $decision->height,
+            adId: $decision->adId,
+            campaignId: $decision->campaignId,
+            advertiserOrganizationId: $decision->advertiserOrganizationId,
+            publisherOrganizationId: $decision->publisherOrganizationId,
+            impressionCostPoints: $decision->impressionCostPoints,
+            clickCostPoints: $decision->clickCostPoints,
+            landingUrl: $decision->landingUrl,
+            decidedAt: $decision->decidedAt,
+            requestId: $requestId ?? $decision->requestId,
+            ipAddress: $this->nullableString($context->ipAddress) ?? $decision->ipAddress,
+            userAgent: $this->nullableString($context->userAgent) ?? $decision->userAgent,
+            geoCode: $this->normalizeGeo($context->geoCode) ?? $decision->geoCode,
+        );
+    }
+
+    private function nullableString(?string $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $value = trim($value);
+
+        return $value === '' ? null : $value;
+    }
+
+    private function normalizeHttpMethod(?string $method): ?string
+    {
+        $method = $this->nullableString($method);
+
+        return $method === null ? null : strtoupper($method);
     }
 
     private function isSafeLandingUrl(string $url): bool

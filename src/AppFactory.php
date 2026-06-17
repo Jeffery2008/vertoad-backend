@@ -97,7 +97,11 @@ use VertoAD\Repository\OAuthTokenRepositoryInterface;
 use VertoAD\Repository\Operations\ConfigVersionRepositoryInterface;
 use VertoAD\Repository\Operations\DatabaseConfigVersionRepository;
 use VertoAD\Repository\Operations\DatabaseOperationErrorLogRepository;
+use VertoAD\Repository\Operations\DatabaseOperationRiskDecisionLogRepository;
+use VertoAD\Repository\Operations\DatabaseOperationSystemLogRepository;
 use VertoAD\Repository\Operations\OperationErrorLogRepositoryInterface;
+use VertoAD\Repository\Operations\OperationRiskDecisionLogRepositoryInterface;
+use VertoAD\Repository\Operations\OperationSystemLogRepositoryInterface;
 use VertoAD\Repository\OrganizationMemberManagementRepositoryInterface;
 use VertoAD\Repository\OrganizationMembershipRepository;
 use VertoAD\Repository\OrganizationMembershipRepositoryInterface;
@@ -464,10 +468,15 @@ final class AppFactory
                 ),
                 OperationErrorLogRepositoryInterface::class => static fn (Connection $connection): OperationErrorLogRepositoryInterface =>
                     new DatabaseOperationErrorLogRepository($connection),
+                OperationSystemLogRepositoryInterface::class => static fn (Connection $connection): OperationSystemLogRepositoryInterface =>
+                    new DatabaseOperationSystemLogRepository($connection),
+                OperationRiskDecisionLogRepositoryInterface::class => static fn (Connection $connection): OperationRiskDecisionLogRepositoryInterface =>
+                    new DatabaseOperationRiskDecisionLogRepository($connection),
                 OperationErrorCaptureService::class => static fn (
                     OperationErrorLogRepositoryInterface $errors,
                     AuditLogService $audit,
-                ): OperationErrorCaptureService => new OperationErrorCaptureService($errors, $audit),
+                    OperationSystemLogRepositoryInterface $systemLogs,
+                ): OperationErrorCaptureService => new OperationErrorCaptureService($errors, $audit, $systemLogs),
                 OperationRequestCorrelationService::class => static fn (
                     OperationErrorCaptureService $errors,
                     AuditLogService $auditLogs,
@@ -476,6 +485,8 @@ final class AppFactory
                     AdDecisionRepositoryInterface $servingDecisions,
                     AdEventRepositoryInterface $servingEvents,
                     DatabaseAdEventRepository $servingEventHistory,
+                    OperationSystemLogRepositoryInterface $systemLogs,
+                    OperationRiskDecisionLogRepositoryInterface $riskDecisions,
                 ): OperationRequestCorrelationService => new OperationRequestCorrelationService(
                     $errors,
                     $auditLogs,
@@ -484,6 +495,8 @@ final class AppFactory
                     $servingDecisions,
                     $servingEvents,
                     $servingEventHistory,
+                    $systemLogs,
+                    $riskDecisions,
                 ),
                 OperationErrorHandler::class => static fn (
                     OperationErrorCaptureService $errors,
@@ -567,6 +580,7 @@ final class AppFactory
                     CampaignSpendEligibilityInterface $spendEligibility,
                     AdSelectionPolicyInterface $selectionPolicy,
                     SystemConfigService $configs,
+                    OperationRiskDecisionLogRepositoryInterface $riskDecisions,
                 ): AdServingService => new AdServingService(
                     $inventory,
                     $candidates,
@@ -575,6 +589,7 @@ final class AppFactory
                     $spendEligibility,
                     $selectionPolicy,
                     $configs->servingEventPolicy(),
+                    $riskDecisions,
                 ),
                 AuditLogRepositoryInterface::class => static fn (Connection $connection): AuditLogRepositoryInterface =>
                     new AuditLogRepository($connection),

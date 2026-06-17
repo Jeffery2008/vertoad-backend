@@ -7969,6 +7969,9 @@ components:
         - level
         - message
         - endpoint
+        - http_method
+        - ip_address
+        - source
         - occurred_at
         - redacted_context
       properties:
@@ -7994,6 +7997,24 @@ components:
           type:
             - string
             - "null"
+        http_method:
+          type:
+            - string
+            - "null"
+          enum:
+            - GET
+            - POST
+            - PUT
+            - PATCH
+            - DELETE
+            - null
+        ip_address:
+          type:
+            - string
+            - "null"
+        source:
+          type: string
+          minLength: 1
         occurred_at:
           type: string
           format: date-time
@@ -8069,6 +8090,13 @@ components:
         - subject_id
         - ip_address
         - endpoint
+        - http_method
+        - user_agent
+        - site_id
+        - slot_id
+        - campaign_id
+        - viewer_id
+        - ad_decision_id
         - occurred_at
       properties:
         decision_id:
@@ -8102,6 +8130,44 @@ components:
             - string
             - "null"
         endpoint:
+          type:
+            - string
+            - "null"
+        http_method:
+          type:
+            - string
+            - "null"
+          enum:
+            - GET
+            - POST
+            - PUT
+            - PATCH
+            - DELETE
+            - null
+        user_agent:
+          type:
+            - string
+            - "null"
+        site_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        slot_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        campaign_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        viewer_id:
+          type:
+            - string
+            - "null"
+        ad_decision_id:
           type:
             - string
             - "null"

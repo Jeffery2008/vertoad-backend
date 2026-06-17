@@ -32,9 +32,13 @@ use VertoAD\Repository\Fraud\DatabaseFraudRiskFeatureRepository;
 use VertoAD\Repository\OrganizationMemberManagementRepositoryInterface;
 use VertoAD\Repository\OrganizationMembershipRepositoryInterface;
 use VertoAD\Repository\Operations\DatabaseOperationErrorLogRepository;
+use VertoAD\Repository\Operations\DatabaseOperationRiskDecisionLogRepository;
+use VertoAD\Repository\Operations\DatabaseOperationSystemLogRepository;
 use VertoAD\Repository\Operations\DatabaseConfigVersionRepository;
 use VertoAD\Repository\Operations\ConfigVersionRepositoryInterface;
 use VertoAD\Repository\Operations\OperationErrorLogRepositoryInterface;
+use VertoAD\Repository\Operations\OperationRiskDecisionLogRepositoryInterface;
+use VertoAD\Repository\Operations\OperationSystemLogRepositoryInterface;
 use VertoAD\Repository\PasswordResetTokenRepositoryInterface;
 use VertoAD\Repository\PointsLedgerRepositoryInterface;
 use VertoAD\Repository\PublisherSiteRepositoryInterface;
@@ -206,6 +210,10 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(CampaignSpendEligibilityInterface::class, $container->get(CampaignSpendEligibilityInterface::class));
             self::assertInstanceOf(CampaignBudgetService::class, $container->get(CampaignSpendEligibilityInterface::class));
             self::assertInstanceOf(AdServingService::class, $container->get(AdServingService::class));
+            self::assertSame(
+                $container->get(OperationRiskDecisionLogRepositoryInterface::class),
+                $this->privateProperty($container->get(AdServingService::class), 'riskDecisions'),
+            );
             self::assertInstanceOf(ArchiveRepositoryInterface::class, $container->get(ArchiveRepositoryInterface::class));
             self::assertInstanceOf(DatabaseArchiveRepository::class, $container->get(ArchiveRepositoryInterface::class));
             self::assertInstanceOf(ArchiveWriterInterface::class, $container->get(ArchiveWriterInterface::class));
@@ -221,6 +229,10 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(DatabaseWebhookDeliveryRepository::class, $container->get(WebhookDeliveryRepositoryInterface::class));
             self::assertInstanceOf(OperationErrorLogRepositoryInterface::class, $container->get(OperationErrorLogRepositoryInterface::class));
             self::assertInstanceOf(DatabaseOperationErrorLogRepository::class, $container->get(OperationErrorLogRepositoryInterface::class));
+            self::assertInstanceOf(OperationSystemLogRepositoryInterface::class, $container->get(OperationSystemLogRepositoryInterface::class));
+            self::assertInstanceOf(DatabaseOperationSystemLogRepository::class, $container->get(OperationSystemLogRepositoryInterface::class));
+            self::assertInstanceOf(OperationRiskDecisionLogRepositoryInterface::class, $container->get(OperationRiskDecisionLogRepositoryInterface::class));
+            self::assertInstanceOf(DatabaseOperationRiskDecisionLogRepository::class, $container->get(OperationRiskDecisionLogRepositoryInterface::class));
             self::assertInstanceOf(ConfigVersionRepositoryInterface::class, $container->get(ConfigVersionRepositoryInterface::class));
             self::assertInstanceOf(DatabaseConfigVersionRepository::class, $container->get(ConfigVersionRepositoryInterface::class));
             $correlations = $container->get(OperationRequestCorrelationService::class);
@@ -228,6 +240,8 @@ final class AppContainerTest extends TestCase
             self::assertSame($container->get(AdDecisionRepositoryInterface::class), $this->privateProperty($correlations, 'servingDecisions'));
             self::assertSame($container->get(AdEventRepositoryInterface::class), $this->privateProperty($correlations, 'servingEvents'));
             self::assertSame($container->get(DatabaseAdEventRepository::class), $this->privateProperty($correlations, 'servingEventHistory'));
+            self::assertSame($container->get(OperationSystemLogRepositoryInterface::class), $this->privateProperty($correlations, 'systemLogs'));
+            self::assertSame($container->get(OperationRiskDecisionLogRepositoryInterface::class), $this->privateProperty($correlations, 'riskDecisions'));
             self::assertInstanceOf(OperationErrorHandler::class, $container->get(OperationErrorHandler::class));
             self::assertInstanceOf(CronJobRegistry::class, $container->get(CronJobRegistry::class));
             self::assertInstanceOf(WebhookDeliveryJob::class, $container->get(CronJobRegistry::class)->get('webhook-retry'));

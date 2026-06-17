@@ -8,6 +8,9 @@ use DateTimeImmutable;
 use PHPUnit\Framework\TestCase;
 use VertoAD\Domain\Budget\SpendFailureReason;
 use VertoAD\Domain\Serving\AdCandidate;
+use VertoAD\Domain\Serving\ServingRequestContext;
+use VertoAD\Repository\Operations\InMemoryOperationRiskDecisionLogRepository;
+use VertoAD\Repository\Operations\OperationRiskDecisionLogRepositoryInterface;
 use VertoAD\Domain\Serving\ServingEventPolicy;
 use VertoAD\Repository\Serving\InMemoryAdDecisionRepository;
 use VertoAD\Repository\Serving\InMemoryAdEventRepository;
@@ -443,6 +446,89 @@ final class AdServingServiceTest extends TestCase
         self::assertSame('repeat_click_window', $recorded[2]->reason);
     }
 
+    public function testRepeatClickWritesDurableRiskDecisionLog(): void
+    {
+        $events = new InMemoryAdEventRepository();
+        $riskLogs = new InMemoryOperationRiskDecisionLogRepository();
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([$this->safeCandidate()]),
+            new InMemoryAdDecisionRepository(),
+            $events,
+            null,
+            null,
+            null,
+            $riskLogs,
+        );
+        $decision = $service->serve(
+            10,
+            20,
+            'viewer-1',
+            null,
+            false,
+            new DateTimeImmutable('2026-06-08 10:00:00'),
+            new ServingRequestContext(
+                ipAddress: '198.51.100.44',
+                userAgent: 'Repeat Browser',
+                geoCode: 'US-CA',
+                requestId: 'req-serve-repeat',
+            ),
+        );
+        $service->trackImpression($decision->decisionId, 'viewer-1', 0.5, 1000, 'imp-1', new DateTimeImmutable('2026-06-08 10:00:02'), 'req-track-repeat');
+        $service->recordClick($decision->decisionId, 'viewer-1', 'clk-1', new DateTimeImmutable('2026-06-08 10:00:35'), 'req-click-accepted');
+
+        $repeat = $service->recordClick(
+            $decision->decisionId,
+            'viewer-1',
+            'clk-2',
+            new DateTimeImmutable('2026-06-08 10:00:45'),
+            'req-click-repeat',
+            new ServingRequestContext(
+                ipAddress: '203.0.113.99',
+                userAgent: 'Click Browser',
+                geoCode: 'JP-13',
+                requestId: 'req-click-repeat',
+                endpoint: '/api/v1/ads/click',
+                httpMethod: 'GET',
+            ),
+        );
+        $logs = $riskLogs->search(['request_id' => 'req-click-repeat', 'action' => 'ads.click.invalid']);
+
+        self::assertFalse($repeat->accepted);
+        self::assertSame('repeat_click_window', $repeat->reason);
+        self::assertCount(1, $logs);
+        self::assertSame('click', $logs[0]->subject_type);
+        self::assertSame('clk-2', $logs[0]->subject_id);
+        self::assertSame($decision->decisionId, $logs[0]->ad_decision_id);
+        self::assertSame(['repeat_click_window'], $logs[0]->reason_codes);
+        self::assertSame('203.0.113.99', $logs[0]->ip_address);
+        self::assertSame('Click Browser', $logs[0]->user_agent);
+    }
+
+    public function testRepeatClickStillReturnsRejectionWhenRiskDecisionLogWriteFails(): void
+    {
+        $events = new InMemoryAdEventRepository();
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([$this->safeCandidate()]),
+            new InMemoryAdDecisionRepository(),
+            $events,
+            null,
+            null,
+            null,
+            new ThrowingRiskDecisionLogRepository(),
+        );
+        $decision = $service->serve(10, 20, 'viewer-1', null, false, new DateTimeImmutable('2026-06-08 10:00:00'));
+        $service->trackImpression($decision->decisionId, 'viewer-1', 0.5, 1000, 'imp-1', new DateTimeImmutable('2026-06-08 10:00:02'));
+        $service->recordClick($decision->decisionId, 'viewer-1', 'clk-1', new DateTimeImmutable('2026-06-08 10:00:35'));
+
+        $repeat = $service->recordClick($decision->decisionId, 'viewer-1', 'clk-2', new DateTimeImmutable('2026-06-08 10:00:45'), 'req-click-repeat');
+
+        self::assertFalse($repeat->accepted);
+        self::assertSame('repeat_click_window', $repeat->reason);
+        self::assertSame('repeat_click_window', $events->findEvent('click', 'clk-2')?->reason);
+    }
+
     public function testDuplicateInvalidRepeatClickReplaysRejectedOutcome(): void
     {
         $events = new InMemoryAdEventRepository();
@@ -848,6 +934,7 @@ final class AdServingServiceTest extends TestCase
 
     public function testServeBlocksHighRiskTrafficBeforeCandidateSelection(): void
     {
+        $riskLogs = new InMemoryOperationRiskDecisionLogRepository();
         $service = new AdServingService(
             new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
             new StaticAdCandidateRepository([$this->safeCandidate()]),
@@ -857,12 +944,134 @@ final class AdServingServiceTest extends TestCase
             new DefaultAdSelectionPolicy(
                 riskAssessor: new FixedServingRiskAssessor(new AdTrafficRiskDecision(false, 'fraud_high_risk_viewer')),
             ),
+            null,
+            $riskLogs,
         );
 
-        $decision = $service->serve(10, 20, 'viewer-risk', null, false, new DateTimeImmutable('2026-06-08 10:00:00'));
+        $decision = $service->serve(
+            10,
+            20,
+            'viewer-risk',
+            null,
+            false,
+            new DateTimeImmutable('2026-06-08 10:00:00'),
+            new ServingRequestContext(
+                ipAddress: '198.51.100.9',
+                userAgent: 'Risk Browser',
+                geoCode: 'CN-SH',
+                requestId: 'req-risk-serve',
+            ),
+        );
+        $logs = $riskLogs->search(['request_id' => 'req-risk-serve', 'action' => 'ads.serve.risk_rejected']);
 
         self::assertFalse($decision->filled);
         self::assertSame('fraud_high_risk_viewer', $decision->reason);
+        self::assertCount(1, $logs);
+        self::assertSame('req-risk-serve', $logs[0]->request_id);
+        self::assertSame('no-fill:10:20:viewer-risk', $logs[0]->ad_decision_id);
+        self::assertSame(['fraud_high_risk_viewer'], $logs[0]->reason_codes);
+        self::assertSame('198.51.100.9', $logs[0]->ip_address);
+        self::assertSame('Risk Browser', $logs[0]->user_agent);
+    }
+
+    public function testServeStillReturnsNoFillWhenRiskDecisionLogWriteFails(): void
+    {
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([$this->safeCandidate()]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+            null,
+            new DefaultAdSelectionPolicy(
+                riskAssessor: new FixedServingRiskAssessor(new AdTrafficRiskDecision(false, 'fraud_high_risk_viewer')),
+            ),
+            null,
+            new ThrowingRiskDecisionLogRepository(),
+        );
+
+        $decision = $service->serve(
+            10,
+            20,
+            'viewer-risk',
+            null,
+            false,
+            new DateTimeImmutable('2026-06-08 10:00:00'),
+            new ServingRequestContext(
+                ipAddress: '198.51.100.9',
+                userAgent: 'Risk Browser',
+                geoCode: 'CN-SH',
+                requestId: 'req-risk-serve',
+            ),
+        );
+
+        self::assertFalse($decision->filled);
+        self::assertSame('fraud_high_risk_viewer', $decision->reason);
+    }
+
+    public function testRiskDecisionLogSkipsMissingRequestIdAndDefaultsEmptyReasonCodes(): void
+    {
+        $riskLogs = new InMemoryOperationRiskDecisionLogRepository();
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([$this->safeCandidate()]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+            null,
+            new DefaultAdSelectionPolicy(
+                riskAssessor: new FixedServingRiskAssessor(new AdTrafficRiskDecision(false, 'fraud_high_risk_viewer')),
+            ),
+            null,
+            $riskLogs,
+        );
+        $rejected = $service->serve(
+            10,
+            20,
+            'viewer-missing-request',
+            null,
+            false,
+            new DateTimeImmutable('2026-06-08 10:00:00'),
+            new ServingRequestContext(ipAddress: '198.51.100.9'),
+        );
+
+        self::assertFalse($rejected->filled);
+        self::assertSame([], $riskLogs->search(['action' => 'ads.serve.risk_rejected']));
+
+        $decision = (new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([$this->safeCandidate()]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+            null,
+            DefaultAdSelectionPolicy::inMemory(),
+            null,
+            $riskLogs,
+        ))->serve(
+            10,
+            20,
+            'viewer-empty-reason',
+            null,
+            false,
+            new DateTimeImmutable('2026-06-08 10:01:00'),
+            new ServingRequestContext(requestId: 'req-empty-reason'),
+        );
+
+        $method = new \ReflectionMethod(AdServingService::class, 'appendRiskDecisionLog');
+        $method->invokeArgs($service, [
+            $decision,
+            'ads.click.invalid',
+            [],
+            'click',
+            'clk-empty-reason',
+            new DateTimeImmutable('2026-06-08 10:01:05'),
+            'req-empty-reason',
+            '/api/v1/ads/click',
+            null,
+        ]);
+        $logs = $riskLogs->search(['request_id' => 'req-empty-reason']);
+
+        self::assertCount(1, $logs);
+        self::assertSame(['invalid_traffic'], $logs[0]->reason_codes);
+        self::assertNull($logs[0]->http_method);
     }
 
     private function safeCandidate(): AdCandidate
@@ -927,5 +1136,23 @@ final readonly class FixedServingRiskAssessor implements ServingRiskAssessorInte
     public function assess(int $siteId, int $slotId, string $viewerId): AdTrafficRiskDecision
     {
         return $this->decision;
+    }
+}
+
+final class ThrowingRiskDecisionLogRepository implements OperationRiskDecisionLogRepositoryInterface
+{
+    public function append(\VertoAD\Domain\Operations\OperationRiskDecisionLog $entry): \VertoAD\Domain\Operations\OperationRiskDecisionLog
+    {
+        throw new \RuntimeException('risk decision log table unavailable');
+    }
+
+    public function find(string $decisionId): ?\VertoAD\Domain\Operations\OperationRiskDecisionLog
+    {
+        return null;
+    }
+
+    public function search(array $filters = []): array
+    {
+        return [];
     }
 }

@@ -11,6 +11,8 @@ use PHPUnit\Framework\TestCase;
 use VertoAD\Domain\Audit\AuditLogEntry;
 use VertoAD\Domain\Auth\AuthenticatedUser;
 use VertoAD\Domain\IpGeo\GeoIpRecord;
+use VertoAD\Domain\Operations\OperationRiskDecisionLog;
+use VertoAD\Domain\Operations\OperationSystemLog;
 use VertoAD\Domain\Serving\AdDecision;
 use VertoAD\Domain\Serving\AdEvent;
 use VertoAD\Domain\Webhooks\WebhookDelivery;
@@ -18,6 +20,10 @@ use VertoAD\Domain\Webhooks\WebhookEndpoint;
 use VertoAD\Http\Auth\RequestUserContext;
 use VertoAD\Repository\IpGeo\IpGeoRepositoryInterface;
 use VertoAD\Repository\Operations\InMemoryOperationErrorLogRepository;
+use VertoAD\Repository\Operations\InMemoryOperationRiskDecisionLogRepository;
+use VertoAD\Repository\Operations\InMemoryOperationSystemLogRepository;
+use VertoAD\Repository\Operations\OperationRiskDecisionLogRepositoryInterface;
+use VertoAD\Repository\Operations\OperationSystemLogRepositoryInterface;
 use VertoAD\Repository\Serving\AdDecisionRepositoryInterface;
 use VertoAD\Repository\Serving\AdEventRepositoryInterface;
 use VertoAD\Repository\Serving\DatabaseAdEventRepository;
@@ -470,6 +476,77 @@ final class OperationRequestCorrelationServiceTest extends TestCase
         ]));
     }
 
+    public function testFindUsesDurableSystemAndRiskLogsInsteadOfDerivedFallback(): void
+    {
+        $systemLogs = new InMemoryOperationSystemLogRepository();
+        $systemLogs->append(new OperationSystemLog(
+            log_id: 'syslog-durable-1',
+            request_id: 'req-durable-correlation',
+            level: 'warning',
+            message: 'Durable system log',
+            endpoint: '/api/v1/ads/track',
+            http_method: 'POST',
+            ip_address: '203.0.113.70',
+            source: 'serving',
+            redacted_context: ['ip_address' => '203.0.113.70', 'token' => '[REDACTED]'],
+            raw_context: null,
+            occurred_at: new DateTimeImmutable('2026-06-18T03:00:00Z'),
+        ));
+        $riskLogs = new InMemoryOperationRiskDecisionLogRepository();
+        $riskLogs->append(new OperationRiskDecisionLog(
+            decision_id: 'risk-durable-1',
+            request_id: 'req-durable-correlation',
+            action: 'ads.serve.risk_rejected',
+            risk_score: 95,
+            reason_codes: ['fraud_high_risk_viewer'],
+            subject_type: 'ad_decision',
+            subject_id: 'no-fill:10:20:viewer-risk',
+            ip_address: '203.0.113.70',
+            endpoint: '/api/v1/ads/serve',
+            http_method: 'POST',
+            user_agent: 'Durable Risk Browser',
+            site_id: 10,
+            slot_id: 20,
+            campaign_id: null,
+            viewer_id: 'viewer-risk',
+            ad_decision_id: 'no-fill:10:20:viewer-risk',
+            occurred_at: new DateTimeImmutable('2026-06-18T03:01:00Z'),
+        ));
+
+        $service = $this->service(
+            fixtures: [
+                'errors' => [[
+                    'request_id' => 'req-durable-correlation',
+                    'severity' => 'error',
+                    'message' => 'Legacy derived system log should not be counted.',
+                    'redacted_context' => ['path' => '/api/v1/legacy'],
+                    'occurred_at' => '2026-06-18T03:02:00Z',
+                ]],
+            ],
+            systemLogs: $systemLogs,
+            riskDecisions: $riskLogs,
+        );
+
+        $result = $service->find('req-durable-correlation', $this->context());
+        $riskSearch = $service->search([
+            'request_id' => 'req-durable-correlation',
+            'entry_type' => 'risk_decision',
+            'subject_type' => 'ad_decision',
+            'subject_id' => 'no-fill:10:20:viewer-risk',
+            'endpoint' => 'POST:/api/v1/ads/serve',
+        ], $this->context());
+
+        self::assertSame(1, $result['counts']['system_logs']);
+        self::assertSame(1, $result['counts']['risk_decisions']);
+        self::assertSame('syslog-durable-1', $result['system_logs'][0]['log_id']);
+        self::assertArrayNotHasKey('raw_context', $result['system_logs'][0]);
+        self::assertSame('risk-durable-1', $result['risk_decisions'][0]['decision_id']);
+        self::assertSame('POST', $result['risk_decisions'][0]['http_method']);
+        self::assertSame('viewer-risk', $result['risk_decisions'][0]['viewer_id']);
+        self::assertSame(1, $riskSearch['page']['total']);
+        self::assertSame('risk_decision', $riskSearch['entries'][0]['entry_type']);
+    }
+
     public function testRiskDecisionFilterDefensesSkipMismatchedEndpointAndIp(): void
     {
         $service = $this->service();
@@ -566,6 +643,8 @@ final class OperationRequestCorrelationServiceTest extends TestCase
         ?AdDecisionRepositoryInterface $servingDecisions = null,
         ?AdEventRepositoryInterface $servingEvents = null,
         ?DatabaseAdEventRepository $servingEventHistory = null,
+        ?OperationSystemLogRepositoryInterface $systemLogs = null,
+        ?OperationRiskDecisionLogRepositoryInterface $riskDecisions = null,
     ): OperationRequestCorrelationService {
         $fixtures ??= [];
         $auditRepository = new OperationAuditRepository();
@@ -692,6 +771,8 @@ final class OperationRequestCorrelationServiceTest extends TestCase
             $servingDecisions,
             $servingEvents,
             $servingEventHistory,
+            $systemLogs,
+            $riskDecisions,
         );
     }
 

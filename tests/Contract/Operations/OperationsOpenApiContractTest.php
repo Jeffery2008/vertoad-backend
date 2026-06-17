@@ -111,9 +111,31 @@ final class OperationsOpenApiContractTest extends TestCase
 
         $singleSchema = $openApi['components']['schemas']['OperationRequestCorrelation'] ?? null;
         self::assertIsArray($singleSchema);
-        foreach (['request_id', 'timeline', 'operation_errors', 'audit_logs', 'webhook_deliveries', 'counts'] as $field) {
+        foreach (['request_id', 'timeline', 'operation_errors', 'audit_logs', 'webhook_deliveries', 'system_logs', 'risk_decisions', 'counts'] as $field) {
             self::assertContains($field, $singleSchema['required'] ?? []);
             self::assertArrayHasKey($field, $singleSchema['properties'] ?? []);
+        }
+        self::assertSame(
+            '#/components/schemas/OperationSystemLogEntry',
+            $singleSchema['properties']['system_logs']['items']['$ref'] ?? null,
+        );
+        self::assertSame(
+            '#/components/schemas/OperationRiskDecisionLogEntry',
+            $singleSchema['properties']['risk_decisions']['items']['$ref'] ?? null,
+        );
+
+        $systemLogSchema = $openApi['components']['schemas']['OperationSystemLogEntry'] ?? null;
+        self::assertIsArray($systemLogSchema);
+        foreach (['http_method', 'ip_address', 'source'] as $field) {
+            self::assertContains($field, $systemLogSchema['required'] ?? []);
+            self::assertArrayHasKey($field, $systemLogSchema['properties'] ?? []);
+        }
+
+        $riskDecisionSchema = $openApi['components']['schemas']['OperationRiskDecisionLogEntry'] ?? null;
+        self::assertIsArray($riskDecisionSchema);
+        foreach (['http_method', 'user_agent', 'site_id', 'slot_id', 'campaign_id', 'viewer_id', 'ad_decision_id'] as $field) {
+            self::assertContains($field, $riskDecisionSchema['required'] ?? []);
+            self::assertArrayHasKey($field, $riskDecisionSchema['properties'] ?? []);
         }
 
         $ipGeoLookupSchema = $openApi['components']['schemas']['OperationIpGeoLookupLogEntry'] ?? null;

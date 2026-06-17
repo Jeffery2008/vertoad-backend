@@ -10,6 +10,8 @@ use InvalidArgumentException;
 use VertoAD\Domain\IpGeo\GeoIpRecord;
 use VertoAD\Http\Auth\RequestUserContext;
 use VertoAD\Repository\IpGeo\IpGeoRepositoryInterface;
+use VertoAD\Repository\Operations\OperationRiskDecisionLogRepositoryInterface;
+use VertoAD\Repository\Operations\OperationSystemLogRepositoryInterface;
 use VertoAD\Repository\Serving\DatabaseAdEventRepository;
 use VertoAD\Repository\Serving\AdDecisionRepositoryInterface;
 use VertoAD\Repository\Serving\AdEventRepositoryInterface;
@@ -32,6 +34,8 @@ final readonly class OperationRequestCorrelationService
         private ?AdDecisionRepositoryInterface $servingDecisions = null,
         private ?AdEventRepositoryInterface $servingEvents = null,
         private ?DatabaseAdEventRepository $servingEventHistory = null,
+        private ?OperationSystemLogRepositoryInterface $systemLogs = null,
+        private ?OperationRiskDecisionLogRepositoryInterface $riskDecisions = null,
     ) {
     }
 
@@ -344,6 +348,25 @@ final readonly class OperationRequestCorrelationService
             return [];
         }
 
+        if ($this->systemLogs !== null) {
+            $items = array_map(
+                static fn (object $entry): array => $entry->toArray(),
+                $this->systemLogs->search([
+                    'request_id' => $filters['request_id'],
+                    'ip_address' => $filters['ip_address'],
+                    'endpoint' => $filters['endpoint'],
+                    'occurred_from' => $filters['occurred_from'],
+                    'occurred_to' => $filters['occurred_to'],
+                    'limit' => self::MAX_LIMIT,
+                ]),
+            );
+
+            return array_values(array_filter(
+                $items,
+                fn (array $entry): bool => $this->matchesSubject('system_log', $entry['log_id'] ?? null, $filters),
+            ));
+        }
+
         $items = [];
         foreach ($operationErrors as $entry) {
             $systemLog = $this->systemLogPayload($entry);
@@ -373,6 +396,28 @@ final readonly class OperationRequestCorrelationService
         if ($filters['actor_user_id'] !== null || $filters['actor'] !== null) {
             return [];
         }
+        if ($this->riskDecisions !== null) {
+            $items = array_map(
+                static fn (object $entry): array => $entry->toArray(),
+                $this->riskDecisions->search([
+                    'request_id' => $filters['request_id'],
+                    'action' => $filters['action'],
+                    'subject_type' => $filters['subject_type'],
+                    'subject_id' => $filters['subject_id'],
+                    'ip_address' => $filters['ip_address'],
+                    'endpoint' => $filters['endpoint'],
+                    'occurred_from' => $filters['occurred_from'],
+                    'occurred_to' => $filters['occurred_to'],
+                    'limit' => self::MAX_LIMIT,
+                ]),
+            );
+
+            return array_values(array_filter(
+                $items,
+                fn (array $entry): bool => $this->matchesSubject($entry['subject_type'] ?? null, $entry['subject_id'] ?? null, $filters),
+            ));
+        }
+
         $items = [];
         foreach ($servingEvents as $event) {
             if (($event->eventType ?? null) !== 'click' || ($event->valid ?? true) === true) {
@@ -667,7 +712,9 @@ final readonly class OperationRequestCorrelationService
             'level' => $this->severity((string) ($entry['severity'] ?? 'error')),
             'message' => (string) ($entry['message'] ?? 'Operation system log captured.'),
             'endpoint' => $endpoint['endpoint'],
-            'http_method' => $endpoint['method'],
+            'http_method' => $this->nullableScalar($entry['http_method'] ?? null) ?? $endpoint['method'],
+            'ip_address' => $this->nullableScalar($entry['ip_address'] ?? null) ?? $this->nullableScalar($context['ip_address'] ?? null),
+            'source' => $this->nullableScalar($entry['source'] ?? null) ?? 'operation_error',
             'occurred_at' => (string) ($entry['occurred_at'] ?? ''),
             'redacted_context' => $context,
         ];
@@ -693,7 +740,7 @@ final readonly class OperationRequestCorrelationService
             'summary' => (string) $entry['message'],
             'actor' => $this->actor(null, null),
             'subject' => $this->subject('system_log', $sourceId),
-            'ip_address' => $entry['redacted_context']['ip_address'] ?? null,
+            'ip_address' => $entry['ip_address'] ?? $entry['redacted_context']['ip_address'] ?? null,
             'endpoint' => $entry['endpoint'] ?? null,
             'http_method' => $entry['http_method'] ?? null,
             'geo' => null,
@@ -888,6 +935,13 @@ final readonly class OperationRequestCorrelationService
             'subject_id' => $eventId,
             'ip_address' => $event->ipAddress,
             'endpoint' => '/api/v1/ads/click',
+            'http_method' => 'GET',
+            'user_agent' => $event->userAgent ?? null,
+            'site_id' => $event->siteId ?? null,
+            'slot_id' => $event->slotId ?? null,
+            'campaign_id' => $event->campaignId ?? null,
+            'viewer_id' => $event->viewerId ?? null,
+            'ad_decision_id' => $event->decisionId ?? null,
             'occurred_at' => $event->occurredAt->format(DATE_ATOM),
         ];
     }
@@ -914,13 +968,18 @@ final readonly class OperationRequestCorrelationService
             'subject' => $this->subject($entry['subject_type'], $entry['subject_id']),
             'ip_address' => $entry['ip_address'],
             'endpoint' => $entry['endpoint'],
-            'http_method' => 'GET',
+            'http_method' => $entry['http_method'] ?? 'GET',
             'geo' => null,
             'raw_context_available' => false,
             'context_redacted' => true,
             'redacted_context' => [
                 'risk_score' => $entry['risk_score'],
                 'reason_codes' => $entry['reason_codes'],
+                'site_id' => $entry['site_id'] ?? null,
+                'slot_id' => $entry['slot_id'] ?? null,
+                'campaign_id' => $entry['campaign_id'] ?? null,
+                'viewer_id' => $entry['viewer_id'] ?? null,
+                'ad_decision_id' => $entry['ad_decision_id'] ?? null,
             ],
         ];
     }

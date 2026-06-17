@@ -14,6 +14,8 @@ final readonly class ServingRequestContext
         public ?string $geoCode = null,
         public ?GeoIpRecord $geoRecord = null,
         public ?string $requestId = null,
+        public ?string $endpoint = null,
+        public ?string $httpMethod = null,
     ) {
     }
 }

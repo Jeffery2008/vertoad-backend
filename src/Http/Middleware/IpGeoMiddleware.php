@@ -54,6 +54,15 @@ final readonly class IpGeoMiddleware implements MiddlewareInterface
             $regionHint,
             RequestIdContext::fromRequest($request),
         );
+        $context = new ServingRequestContext(
+            ipAddress: $context->ipAddress,
+            userAgent: $context->userAgent,
+            geoCode: $context->geoCode,
+            geoRecord: $context->geoRecord,
+            requestId: $context->requestId,
+            endpoint: '/' . ltrim($request->getUri()->getPath(), '/'),
+            httpMethod: strtoupper($request->getMethod()),
+        );
 
         return $handler->handle($request->withAttribute(ServingRequestContext::class, $context));
     }
