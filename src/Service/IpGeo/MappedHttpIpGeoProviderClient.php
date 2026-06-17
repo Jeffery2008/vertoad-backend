@@ -32,13 +32,13 @@ final readonly class MappedHttpIpGeoProviderClient
     ): GeoIpRecord
     {
         $apiKey = $provider->apiKeyEnvVar === null ? null : getenv($provider->apiKeyEnvVar);
-        if (str_contains($provider->endpointTemplate, '{api_key}') && (!is_string($apiKey) || trim($apiKey) === '')) {
+        if ($this->requiresApiKey($provider) && (!is_string($apiKey) || trim($apiKey) === '')) {
             throw new \RuntimeException('IP geo provider ' . $provider->id . ' requires api_key_env_var ' . ($provider->apiKeyEnvVar ?? '(unset)') . '.');
         }
 
         $response = ($this->transport)(
             $provider->endpointForIp($ipAddress, is_string($apiKey) ? $apiKey : null),
-            $this->headers($provider),
+            $this->headers($provider, is_string($apiKey) ? $apiKey : null),
             $provider->timeoutSeconds,
         );
         $status = (int) ($response['status'] ?? 0);
@@ -102,18 +102,30 @@ final readonly class MappedHttpIpGeoProviderClient
     /**
      * @return array<string, string>
      */
-    private function headers(IpGeoProviderDefinition $provider): array
+    private function headers(IpGeoProviderDefinition $provider, ?string $apiKey): array
     {
         $headers = $provider->headers;
-        if ($provider->apiKeyEnvVar !== null) {
-            $apiKey = getenv($provider->apiKeyEnvVar);
-            if (is_string($apiKey) && $apiKey !== '') {
-                foreach ($headers as $name => $value) {
-                    $headers[$name] = str_replace('{api_key}', $apiKey, $value);
-                }
+        if ($apiKey !== null && $apiKey !== '') {
+            foreach ($headers as $name => $value) {
+                $headers[$name] = str_replace('{api_key}', $apiKey, $value);
             }
         }
 
         return $headers;
+    }
+
+    private function requiresApiKey(IpGeoProviderDefinition $provider): bool
+    {
+        if (str_contains($provider->endpointTemplate, '{api_key}')) {
+            return true;
+        }
+
+        foreach ($provider->headers as $value) {
+            if (str_contains($value, '{api_key}')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

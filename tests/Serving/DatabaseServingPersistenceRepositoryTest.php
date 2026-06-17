@@ -95,6 +95,28 @@ final class DatabaseServingPersistenceRepositoryTest extends TestCase
         self::assertSame($decision->clickCostPoints, $invalid->costPoints);
     }
 
+    public function testRecordsNonBillableVideoEventsWithoutViewabilityFields(): void
+    {
+        $connection = $this->createConnection();
+        $decision = $this->decision();
+        (new DatabaseAdDecisionRepository($connection))->save($decision);
+        $events = new DatabaseAdEventRepository($connection);
+
+        $events->recordVideoEvent($decision, 'video_75', 'video-75-db', new DateTimeImmutable('2026-06-08T10:00:30+00:00'), 'req-video-db');
+
+        $stored = $events->findEvent('video_75', 'video-75-db');
+        $rawPayload = json_decode((string) $connection->fetchOne(
+            "SELECT payload_json FROM raw_events WHERE event_uuid = 'video_75:video-75-db'",
+        ), true, flags: JSON_THROW_ON_ERROR);
+        self::assertNotNull($stored);
+        self::assertSame(0, $stored->costPoints);
+        self::assertNull($stored->visibleRatio);
+        self::assertNull($stored->visibleMs);
+        self::assertSame('req-video-db', $stored->requestId);
+        self::assertSame('video_75', $rawPayload['event_type'] ?? null);
+        self::assertSame(0, $rawPayload['cost_points'] ?? null);
+    }
+
     public function testServingDecisionsAndEventsPersistRequestCorrelationFields(): void
     {
         $connection = $this->createConnection();

@@ -6,6 +6,7 @@ namespace VertoAD\Tests\Campaigns;
 
 use DateTimeImmutable;
 use Doctrine\DBAL\Connection;
+use Doctrine\DBAL\Exception as DbalException;
 use Doctrine\DBAL\DriverManager;
 use PHPUnit\Framework\TestCase;
 use VertoAD\Domain\Campaign\CampaignTargeting;
@@ -83,6 +84,56 @@ final class CampaignServiceValidationTest extends TestCase
             ['campaign_budget_invalid', ['name' => 'Bad', 'pricing_model' => 'cpm', 'bid_points' => 1, 'landing_url' => 'https://landing.example', 'creative_asset_id' => 1, 'budget' => ['total_cap_points' => '100']]],
         ] as [$code, $payload]) {
             $this->assertCampaignError($code, static fn () => $service->create(99, $payload));
+        }
+    }
+
+    public function testReviewOnlyStatusesAreRejectedAsCampaignStatus(): void
+    {
+        $connection = $this->connection();
+        $this->insertApprovedAsset($connection);
+        $service = $this->service($connection);
+        $basePayload = [
+            'name' => 'Review status leak',
+            'pricing_model' => 'cpm',
+            'bid_points' => 1,
+            'landing_url' => 'https://landing.example',
+            'creative_asset_id' => 1,
+        ];
+
+        foreach (['pending_ai', 'ai_reviewing', 'needs_human', 'approved', 'rejected'] as $reviewOnlyStatus) {
+            $this->assertCampaignError(
+                'campaign_status_invalid',
+                static fn () => $service->create(99, $basePayload + ['status' => $reviewOnlyStatus]),
+            );
+        }
+    }
+
+    public function testCampaignSchemaRejectsReviewOnlyStatusesAtDatabaseLayer(): void
+    {
+        $connection = $this->connection();
+        $baseRow = [
+            'organization_id' => 99,
+            'name' => 'Stored status leak',
+            'pricing_model' => 'cpm',
+            'bid_points' => 1,
+            'landing_url' => 'https://landing.example',
+            'creative_asset_id' => 1,
+            'starts_at' => null,
+            'ends_at' => null,
+            'targeting_json' => '{}',
+        ];
+        $id = 1;
+
+        foreach (['pending_ai', 'ai_reviewing', 'needs_human', 'approved', 'rejected'] as $reviewOnlyStatus) {
+            try {
+                $connection->insert('campaigns', $baseRow + ['id' => $id++, 'status' => $reviewOnlyStatus]);
+                self::fail('Expected campaigns.status CHECK to reject ' . $reviewOnlyStatus . '.');
+            } catch (DbalException) {
+                self::assertFalse((bool) $connection->fetchOne(
+                    'SELECT COUNT(*) FROM campaigns WHERE status = ?',
+                    [$reviewOnlyStatus],
+                ));
+            }
         }
     }
 

@@ -2395,9 +2395,9 @@ paths:
     post:
       tags:
         - Serving
-      operationId: trackAdImpression
-      summary: Record a valid viewable impression event.
-      description: Accepts only impression events that meet the configured visible ratio and dwell-time threshold, with event-id idempotency. Normal SDK telemetry does not require Turnstile; submissions flagged with `risk`, `traffic_risk`, `abnormal`, `high_risk`, or matching risk headers are treated as abnormal traffic and must include `CF-Turnstile-Token`. Tracking accepts unknown geo and does not wait on provider registry lookups; unresolved IPs are handled by the async IP geo queue.
+      operationId: trackAdEvent
+      summary: Record impression or non-billable video playback telemetry.
+      description: Accepts billable impression events that meet the configured visible ratio and dwell-time threshold, plus non-billable video playback telemetry events with event-id idempotency. Impression requests use the default `event_type=impression` and must include `visible_ratio` and `visible_ms`; video telemetry requests set one of the `video_*` event types and do not require viewability fields. Normal SDK telemetry does not require Turnstile; submissions flagged with `risk`, `traffic_risk`, `abnormal`, `high_risk`, or matching risk headers are treated as abnormal traffic and must include `CF-Turnstile-Token`. Tracking accepts unknown geo and does not wait on provider registry lookups; unresolved IPs are handled by the async IP geo queue.
       security: []
       parameters:
         - $ref: "#/components/parameters/OptionalTrafficRisk"
@@ -2410,7 +2410,7 @@ paths:
               $ref: "#/components/schemas/AdTrackRequest"
       responses:
         "200":
-          description: Impression accepted or already recorded.
+          description: Event accepted or already recorded.
           content:
             application/json:
               schema:
@@ -3743,7 +3743,7 @@ paths:
         - Operations
       operationId: lookupOperationIpGeo
       summary: Resolve an IP address through the admin real-time geo path.
-      description: Authenticated and audited real-time lookup for the admin logs page and support debugging. The request body accepts only ip_address; provider selection and canonical-store persistence are controlled by the backend serving.geo_provider policy. Serving, track, click, and risk paths only read canonical geo when present, queue unresolved IPs asynchronously, and never wait on this endpoint or an external provider response.
+      description: Authenticated and audited real-time lookup for the admin logs page and support debugging. The request body accepts only ip_address; provider selection and canonical-store persistence are controlled by the backend serving.geo_provider policy. Serving, track, and click requests, including serve-time risk evaluation, only read canonical geo when present, queue unresolved IPs asynchronously, and never wait on this endpoint or an external provider response; there is no standalone risk HTTP route.
       security:
         - BearerAuth: []
       x-permissions:
@@ -3973,6 +3973,20 @@ paths:
           in: query
           required: false
           description: Filter audit logs by the stable request correlation ID stored in audit metadata.
+          schema:
+            type: string
+            minLength: 1
+        - name: ip_address
+          in: query
+          required: false
+          description: Filter audit logs by the raw client IP address, available only to super administrator readers.
+          schema:
+            type: string
+            minLength: 1
+        - name: endpoint
+          in: query
+          required: false
+          description: Filter audit logs by the HTTP endpoint path or route template captured in metadata.
           schema:
             type: string
             minLength: 1
@@ -4454,11 +4468,9 @@ paths:
                       status: completed
                       acquired_lock: true
                       metrics:
-                        queued: 100
+                        leased: 100
                         resolved: 96
                         failed: 3
-                        dead: 1
-                        refreshed_canonical_records: 96
                       message: null
                     error: null
                     meta: {}
@@ -6774,8 +6786,61 @@ components:
         - decision_id
         - viewer_id
         - event_id
-        - visible_ratio
-        - visible_ms
+      oneOf:
+        - title: Impression tracking event
+          required:
+            - decision_id
+            - viewer_id
+            - event_id
+            - visible_ratio
+            - visible_ms
+          properties:
+            decision_id:
+              type: string
+              minLength: 1
+            viewer_id:
+              type: string
+              minLength: 1
+            event_id:
+              type: string
+              minLength: 1
+            event_type:
+              type: string
+              enum:
+                - impression
+            visible_ratio:
+              type: number
+              minimum: 0
+              maximum: 1
+            visible_ms:
+              type: integer
+              minimum: 0
+        - title: Video playback telemetry event
+          required:
+            - decision_id
+            - viewer_id
+            - event_id
+            - event_type
+          properties:
+            decision_id:
+              type: string
+              minLength: 1
+            viewer_id:
+              type: string
+              minLength: 1
+            event_id:
+              type: string
+              minLength: 1
+            event_type:
+              type: string
+              enum:
+                - video_start
+                - video_25
+                - video_50
+                - video_75
+                - video_complete
+                - video_mute
+                - video_pause
       properties:
         decision_id:
           type: string
@@ -6786,12 +6851,27 @@ components:
         event_id:
           type: string
           minLength: 1
+        event_type:
+          type: string
+          default: impression
+          description: Omit or set to `impression` for billable viewable impressions; set a `video_*` value for non-billable video playback telemetry.
+          enum:
+            - impression
+            - video_start
+            - video_25
+            - video_50
+            - video_75
+            - video_complete
+            - video_mute
+            - video_pause
         visible_ratio:
           type: number
+          description: Required for impression events and ignored for video playback telemetry.
           minimum: 0
           maximum: 1
         visible_ms:
           type: integer
+          description: Required for impression events and ignored for video playback telemetry.
           minimum: 0
       additionalProperties: false
     AdEventAcceptedData:
@@ -8539,7 +8619,7 @@ components:
           type: integer
           minimum: 1
           default: 86400
-          description: Canonical geo record freshness window used by the IP geo middleware and Cron refresh policy.
+          description: Canonical geo Redis record TTL and freshness window; expired or missing records are queued asynchronously instead of synchronously calling a provider.
         queue_source:
           type: string
           minLength: 1

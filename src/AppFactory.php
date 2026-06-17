@@ -380,8 +380,9 @@ final class AppFactory
                     ServingFrequencyCapStoreInterface $frequencyCaps,
                     ServingRiskAssessorInterface $riskAssessor,
                 ): AdSelectionPolicyInterface => new DefaultAdSelectionPolicy($frequencyCaps, $riskAssessor),
-                IpGeoRepositoryInterface::class => static fn (): IpGeoRepositoryInterface =>
-                    self::ipGeoRepository($settings),
+                IpGeoRepositoryInterface::class => static fn (
+                    IpGeoProviderPolicy $policy,
+                ): IpGeoRepositoryInterface => self::ipGeoRepository($settings, $policy),
                 IpGeoProviderPolicy::class => static fn (SystemConfigService $configs): IpGeoProviderPolicy =>
                     $configs->ipGeoProviderPolicy(),
                 IpGeoProviderSelector::class => static fn (IpGeoProviderPolicy $policy): IpGeoProviderSelector =>
@@ -1080,7 +1081,7 @@ final class AppFactory
     }
 
     /** @param array<string, mixed> $settings */
-    private static function ipGeoRepository(array $settings): IpGeoRepositoryInterface
+    private static function ipGeoRepository(array $settings, ?IpGeoProviderPolicy $policy = null): IpGeoRepositoryInterface
     {
         $redis = $settings['redis'] ?? [];
         if (!is_array($redis) || (string) ($redis['password'] ?? '') === '') {
@@ -1089,6 +1090,10 @@ final class AppFactory
             }
 
             return new InMemoryIpGeoRepository();
+        }
+
+        if ($policy !== null) {
+            $redis['ip_geo_record_ttl_seconds'] = $policy->cacheTtlSeconds;
         }
 
         return RedisIpGeoRepository::fromSettings($redis);

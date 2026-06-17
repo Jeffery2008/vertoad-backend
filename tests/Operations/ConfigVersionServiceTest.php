@@ -228,6 +228,27 @@ final class ConfigVersionServiceTest extends TestCase
                     ],
                     'Invalid serving.geo_provider ',
                 ],
+                'serving geo providers not array' => [
+                    'serving.geo_provider',
+                    [...$this->validServingGeoProviderConfig(), 'providers' => 'pconline'],
+                    'Invalid serving.geo_provider ',
+                ],
+                'serving geo provider item not array' => [
+                    'serving.geo_provider',
+                    [...$this->validServingGeoProviderConfig(), 'providers' => ['pconline']],
+                    'Invalid serving.geo_provider ',
+                ],
+                'serving geo provider headers not array' => [
+                    'serving.geo_provider',
+                    [
+                        ...$this->validServingGeoProviderConfig(),
+                        'providers' => [[
+                            ...$this->validServingGeoProviderConfig()['providers'][0],
+                            'headers' => 'Authorization: Bearer {api_key}',
+                        ]],
+                    ],
+                    'Invalid serving.geo_provider ',
+                ],
                 'serving geo non-integer ttl' => [
                     'serving.geo_provider',
                     [...$this->validServingGeoProviderConfig(), 'cache_ttl_seconds' => '60'],
@@ -269,6 +290,10 @@ final class ConfigVersionServiceTest extends TestCase
                 'regions' => ['US'],
                 'weight' => 2,
                 'api_key_env_var' => 'IP_GEO_CUSTOM_KEY',
+                'headers' => [
+                    'Authorization' => 'Bearer {api_key}',
+                    'X-Provider' => 'VertoAD',
+                ],
                 'fields' => [
                     'country_code' => 'country_code',
                     'region_code' => 'region.code',
@@ -306,6 +331,77 @@ final class ConfigVersionServiceTest extends TestCase
                     self::assertSame('Secret config values must stay in environment secrets.', $exception->getMessage());
                 } else {
                     self::assertStringStartsWith('Invalid serving.geo_provider ', $exception->getMessage());
+                }
+            }
+        }
+    }
+
+    public function testServingGeoProviderHeadersRejectPlaintextSecretsAndMissingEnvReferences(): void
+    {
+        $service = new ConfigVersionService(new InMemoryConfigVersionRepository(), new AuditLogService(new ConfigAuditRepository()));
+        $baseProvider = [
+            'id' => 'keyed-provider',
+            'endpoint_template' => 'https://geo.example/lookup/{ip}',
+            'regions' => ['global'],
+            'fields' => ['country_code' => 'country_code'],
+        ];
+        $basePolicy = [
+            'enabled' => true,
+            'include_builtins' => false,
+            'batch_size' => 50,
+            'max_attempts' => 3,
+            'retry_backoff_seconds' => 120,
+            'cache_ttl_seconds' => 86400,
+        ];
+
+        foreach (
+            [
+                'top-level plaintext api key' => [
+                    ...$basePolicy,
+                    'api_key' => 'must-not-store',
+                    'providers' => [$baseProvider],
+                ],
+                'plaintext authorization header' => [
+                    ...$basePolicy,
+                    'providers' => [[
+                        ...$baseProvider,
+                        'api_key_env_var' => 'IP_GEO_CUSTOM_KEY',
+                        'headers' => ['Authorization' => 'Bearer literal-secret'],
+                    ]],
+                ],
+                'api key template without env reference' => [
+                    ...$basePolicy,
+                    'providers' => [[
+                        ...$baseProvider,
+                        'headers' => ['Authorization' => 'Bearer {api_key}'],
+                    ]],
+                ],
+                'api key template with non-scalar env reference' => [
+                    ...$basePolicy,
+                    'providers' => [[
+                        ...$baseProvider,
+                        'api_key_env_var' => ['IP_GEO_CUSTOM_KEY'],
+                        'headers' => ['Authorization' => 'Bearer {api_key}'],
+                    ]],
+                ],
+                'plaintext token header' => [
+                    ...$basePolicy,
+                    'providers' => [[
+                        ...$baseProvider,
+                        'api_key_env_var' => 'IP_GEO_CUSTOM_KEY',
+                        'headers' => ['X-Provider-Token' => 'literal-secret'],
+                    ]],
+                ],
+            ] as $case => $value
+        ) {
+            try {
+                $service->createVersion('serving.geo_provider', $value, 7);
+                self::fail('Invalid IP geo provider header secret must be rejected: ' . $case);
+            } catch (\InvalidArgumentException $exception) {
+                if ($case === 'api key template without env reference' || $case === 'api key template with non-scalar env reference') {
+                    self::assertStringContainsString('api_key_env_var', $exception->getMessage());
+                } else {
+                    self::assertSame('Secret config values must stay in environment secrets.', $exception->getMessage());
                 }
             }
         }

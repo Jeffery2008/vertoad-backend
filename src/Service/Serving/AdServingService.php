@@ -19,6 +19,15 @@ use VertoAD\Repository\Serving\ServingInventoryRepositoryInterface;
 final readonly class AdServingService
 {
     private const FRAME_SANDBOX = 'allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts';
+    private const VIDEO_EVENT_TYPES = [
+        'video_start',
+        'video_25',
+        'video_50',
+        'video_75',
+        'video_complete',
+        'video_mute',
+        'video_pause',
+    ];
 
     public function __construct(
         private ServingInventoryRepositoryInterface $inventory,
@@ -131,6 +140,33 @@ final readonly class AdServingService
         }
 
         $this->events->recordImpression($decision, $eventId, $visibleRatio, $visibleMs, $occurredAt, $requestId);
+
+        return AdEventResult::accepted();
+    }
+
+    public function trackVideoEvent(
+        string $decisionId,
+        string $viewerId,
+        string $eventType,
+        string $eventId,
+        DateTimeImmutable $occurredAt,
+        ?string $requestId = null,
+    ): AdEventResult {
+        $eventType = trim($eventType);
+        if (!in_array($eventType, self::VIDEO_EVENT_TYPES, true)) {
+            return AdEventResult::rejected('invalid_event_type');
+        }
+
+        $decision = $this->decisions->find($decisionId);
+        if ($decision === null || !$decision->filled || $decision->viewerId !== $viewerId) {
+            return AdEventResult::rejected('decision_not_found');
+        }
+
+        if ($this->events->hasEvent($eventType, $eventId)) {
+            return AdEventResult::accepted(duplicate: true);
+        }
+
+        $this->events->recordVideoEvent($decision, $eventType, $eventId, $occurredAt, $requestId);
 
         return AdEventResult::accepted();
     }

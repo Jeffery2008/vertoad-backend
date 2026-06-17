@@ -136,6 +136,53 @@ final class IpGeoProviderPolicyTest extends TestCase
         ]);
     }
 
+    public function testProviderHeaderTemplatesRequireApiKeyEnvironmentVariableNames(): void
+    {
+        $provider = IpGeoProviderDefinition::fromArray([
+            'id' => 'header-template-provider',
+            'endpoint_template' => 'https://geo.example/lookup/{ip}',
+            'api_key_env_var' => 'IP_GEO_HEADER_KEY',
+            'headers' => [
+                'Authorization' => 'Bearer {api_key}',
+                'X-Static' => 'VertoAD',
+            ],
+            'fields' => ['country_code' => 'country_code'],
+        ]);
+
+        self::assertSame('Bearer {api_key}', $provider->headers['Authorization']);
+        self::assertSame('IP_GEO_HEADER_KEY', $provider->apiKeyEnvVar);
+
+        $this->assertInvalidProviderConfiguration(
+            [
+                'id' => 'missing-env-header-template',
+                'endpoint_template' => 'https://geo.example/lookup/{ip}',
+                'headers' => ['Authorization' => 'Bearer {api_key}'],
+                'fields' => ['country_code' => 'country_code'],
+            ],
+            'IP geo provider headers using {api_key} require api_key_env_var.',
+        );
+        $this->assertInvalidProviderConfiguration(
+            [
+                'id' => 'plaintext-authorization-header',
+                'endpoint_template' => 'https://geo.example/lookup/{ip}',
+                'api_key_env_var' => 'IP_GEO_HEADER_KEY',
+                'headers' => ['Authorization' => 'Bearer literal-secret'],
+                'fields' => ['country_code' => 'country_code'],
+            ],
+            'Provider API keys must stay in environment variables.',
+        );
+        $this->assertInvalidProviderConfiguration(
+            [
+                'id' => 'plaintext-token-header',
+                'endpoint_template' => 'https://geo.example/lookup/{ip}',
+                'api_key_env_var' => 'IP_GEO_HEADER_KEY',
+                'headers' => ['X-Provider-Token' => 'literal-secret'],
+                'fields' => ['country_code' => 'country_code'],
+            ],
+            'Provider API keys must stay in environment variables.',
+        );
+    }
+
     public function testPconlineNormalizerDefaultsCountryAndMapsChinaRegionIdentifiers(): void
     {
         $provider = IpGeoProviderPolicy::default()->provider('pconline');
@@ -331,6 +378,31 @@ final class IpGeoProviderPolicyTest extends TestCase
             self::assertSame('IP geo provider missing-key-provider requires api_key_env_var IP_GEO_MISSING_TEST_KEY.', $exception->getMessage());
         } finally {
             $previous === false ? putenv('IP_GEO_MISSING_TEST_KEY') : putenv('IP_GEO_MISSING_TEST_KEY=' . $previous);
+        }
+
+        $previousHeaderKey = getenv('IP_GEO_MISSING_HEADER_TEST_KEY');
+        putenv('IP_GEO_MISSING_HEADER_TEST_KEY');
+        $headerOnlyProvider = new IpGeoProviderDefinition(
+            id: 'missing-header-key-provider',
+            endpointTemplate: 'https://geo.example/lookup/{ip}',
+            fieldMap: ['country_code' => 'country_code'],
+            apiKeyEnvVar: 'IP_GEO_MISSING_HEADER_TEST_KEY',
+            headers: ['Authorization' => 'Bearer {api_key}'],
+        );
+        $headerOnlyClient = new MappedHttpIpGeoProviderClient(
+            new MappedIpGeoResponseNormalizer(),
+            static function (): array {
+                self::fail('The provider transport must not run when a header API key template is missing.');
+            },
+        );
+
+        try {
+            $headerOnlyClient->lookup('203.0.113.31', $headerOnlyProvider, new DateTimeImmutable('2026-06-16T00:00:00+00:00'));
+            self::fail('Expected the missing header provider API key to be rejected.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('IP geo provider missing-header-key-provider requires api_key_env_var IP_GEO_MISSING_HEADER_TEST_KEY.', $exception->getMessage());
+        } finally {
+            $previousHeaderKey === false ? putenv('IP_GEO_MISSING_HEADER_TEST_KEY') : putenv('IP_GEO_MISSING_HEADER_TEST_KEY=' . $previousHeaderKey);
         }
 
         $invalidJsonProvider = new IpGeoProviderDefinition(

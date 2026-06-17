@@ -21,15 +21,25 @@ final readonly class TrackAction
     {
         try {
             $body = $this->body($request);
-            $result = $this->serving->trackImpression(
-                decisionId: $this->stringField($body, 'decision_id'),
-                viewerId: $this->stringField($body, 'viewer_id'),
-                visibleRatio: $this->floatField($body, 'visible_ratio'),
-                visibleMs: $this->intField($body, 'visible_ms'),
-                eventId: $this->stringField($body, 'event_id'),
-                occurredAt: new DateTimeImmutable(),
-                requestId: RequestIdContext::fromRequest($request),
-            );
+            $eventType = $this->optionalStringField($body, 'event_type') ?? 'impression';
+            $result = $eventType === 'impression'
+                ? $this->serving->trackImpression(
+                    decisionId: $this->stringField($body, 'decision_id'),
+                    viewerId: $this->stringField($body, 'viewer_id'),
+                    visibleRatio: $this->floatField($body, 'visible_ratio'),
+                    visibleMs: $this->intField($body, 'visible_ms'),
+                    eventId: $this->stringField($body, 'event_id'),
+                    occurredAt: new DateTimeImmutable(),
+                    requestId: RequestIdContext::fromRequest($request),
+                )
+                : $this->serving->trackVideoEvent(
+                    decisionId: $this->stringField($body, 'decision_id'),
+                    viewerId: $this->stringField($body, 'viewer_id'),
+                    eventType: $eventType,
+                    eventId: $this->stringField($body, 'event_id'),
+                    occurredAt: new DateTimeImmutable(),
+                    requestId: RequestIdContext::fromRequest($request),
+                );
         } catch (InvalidArgumentException $exception) {
             return $this->json($response, ['code' => 'invalid_request', 'message' => $exception->getMessage()], 422);
         }
@@ -61,6 +71,18 @@ final readonly class TrackAction
         }
 
         return trim($body[$field]);
+    }
+
+    /**
+     * @param array<string, mixed> $body
+     */
+    private function optionalStringField(array $body, string $field): ?string
+    {
+        if (!isset($body[$field])) {
+            return null;
+        }
+
+        return $this->stringField($body, $field);
     }
 
     /**

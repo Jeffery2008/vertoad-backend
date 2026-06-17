@@ -91,6 +91,32 @@ final class EventConsumptionJobTest extends TestCase
         ));
     }
 
+    public function testConsumesVideoEventsWithoutBillingAdvertiserOrPublisher(): void
+    {
+        $connection = $this->createConnection();
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        (new PointsLedgerService($ledgerRepository))->credit(99, 'advertiser_balance', null, 1_000, 'recharge:advertiser');
+        (new RevenueShareRepository($connection))->createRule('global', null, null, null, 5000, null, new DateTimeImmutable('2026-06-08 09:00:00'));
+        $buffer = new InMemoryServingEventBuffer([
+            $this->event('video_25', 'video-25-cron', true, 0),
+        ]);
+        $job = new EventConsumptionJob($buffer, new DatabaseAdEventRepository($connection), $this->billingService($connection), 100);
+
+        $result = $job->run();
+
+        self::assertSame(1, $result->metrics['consumed'] ?? null);
+        self::assertSame(0, $result->metrics['billed'] ?? null);
+        self::assertSame(1, $result->metrics['skipped'] ?? null);
+        self::assertSame([], $buffer->pending());
+        self::assertSame(1_000, $ledgerRepository->balanceForOrganization(99));
+        self::assertSame(0, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+        self::assertSame('skipped', $this->billingStatus($connection, 'video_25', 'video-25-cron'));
+        self::assertSame('non_billable_event', $connection->fetchOne(
+            "SELECT billing_reason FROM ad_serving_events WHERE event_type = 'video_25' AND event_id = 'video-25-cron'",
+        ));
+        self::assertSame('video_25:video-25-cron', (new DatabaseArchiveRepository($connection))->pendingEvents()[0]->eventId);
+    }
+
     public function testRepeatingConsumptionWindowDoesNotDoubleBillAckedEvents(): void
     {
         $connection = $this->createConnection();

@@ -336,6 +336,31 @@ final class ServingRepositoryTest extends TestCase
         self::assertSame(['imp-old', 'imp-match', 'clk-match'], array_map(static fn ($event): string => $event->eventId, $repository->searchEvents([])));
     }
 
+    public function testInMemoryEventRepositoryStoresNonBillableVideoEvents(): void
+    {
+        $repository = new InMemoryAdEventRepository();
+        $decision = $this->inMemoryDecision(
+            decisionId: 'decision-video',
+            requestId: 'req-video-decision',
+            ipAddress: '198.51.100.4',
+            decidedAt: new DateTimeImmutable('2026-06-08T10:00:00Z'),
+        );
+
+        $repository->recordVideoEvent($decision, 'video_complete', 'video-complete-1', new DateTimeImmutable('2026-06-08T10:00:30Z'), 'req-video-event');
+
+        $event = $repository->findEvent('video_complete', 'video-complete-1');
+        self::assertNotNull($event);
+        self::assertSame(0, $event->costPoints);
+        self::assertNull($event->visibleRatio);
+        self::assertNull($event->visibleMs);
+        self::assertSame('req-video-event', $event->requestId);
+        self::assertSame(['video-complete-1'], array_map(
+            static fn ($event): string => $event->eventId,
+            $repository->searchEvents(['event_type' => 'video_complete']),
+        ));
+        self::assertSame(0, $repository->impressionCount());
+    }
+
     private function createConnection(): Connection
     {
         $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);

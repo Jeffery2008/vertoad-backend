@@ -781,6 +781,62 @@ final class AdServingServiceTest extends TestCase
         self::assertSame('req-click-1', $events->findEvent('click', 'clk-request-id')?->requestId);
     }
 
+    public function testTracksVideoPlaybackTelemetryWithoutViewabilityOrBillingCost(): void
+    {
+        $events = new InMemoryAdEventRepository();
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([$this->safeCandidate()]),
+            new InMemoryAdDecisionRepository(),
+            $events,
+        );
+        $now = new DateTimeImmutable('2026-06-08 10:00:00');
+
+        $decision = $service->serve(10, 20, 'viewer-video', null, false, $now);
+        $accepted = $service->trackVideoEvent($decision->decisionId, 'viewer-video', 'video_50', 'video-progress-1', $now->modify('+10 seconds'), 'req-video-1');
+        $duplicate = $service->trackVideoEvent($decision->decisionId, 'viewer-video', 'video_50', 'video-progress-1', $now->modify('+11 seconds'), 'req-video-duplicate');
+        $unknown = $service->trackVideoEvent($decision->decisionId, 'viewer-video', 'video_replay', 'video-replay-1', $now->modify('+12 seconds'), 'req-video-invalid');
+
+        $event = $events->findEvent('video_50', 'video-progress-1');
+        self::assertTrue($accepted->accepted);
+        self::assertFalse($accepted->duplicate);
+        self::assertTrue($duplicate->accepted);
+        self::assertTrue($duplicate->duplicate);
+        self::assertFalse($unknown->accepted);
+        self::assertSame('invalid_event_type', $unknown->reason);
+        self::assertSame(0, $events->impressionCount());
+        self::assertNotNull($event);
+        self::assertSame(0, $event->costPoints);
+        self::assertNull($event->visibleRatio);
+        self::assertNull($event->visibleMs);
+        self::assertSame('req-video-1', $event->requestId);
+    }
+
+    public function testVideoTelemetryRejectsMissingNoFillAndWrongViewerDecisions(): void
+    {
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([$this->safeCandidate()]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+        );
+        $now = new DateTimeImmutable('2026-06-08 10:00:00');
+
+        $decision = $service->serve(10, 20, 'viewer-video', null, false, $now);
+        $noFill = $service->serve(10, 21, 'viewer-video', null, false, $now);
+
+        $missing = $service->trackVideoEvent('missing', 'viewer-video', 'video_start', 'video-missing', $now->modify('+10 seconds'));
+        $noFillResult = $service->trackVideoEvent($noFill->decisionId, 'viewer-video', 'video_start', 'video-no-fill', $now->modify('+11 seconds'));
+        $wrongViewer = $service->trackVideoEvent($decision->decisionId, 'viewer-other', 'video_start', 'video-wrong-viewer', $now->modify('+12 seconds'));
+
+        self::assertFalse($missing->accepted);
+        self::assertSame('decision_not_found', $missing->reason);
+        self::assertFalse($noFillResult->accepted);
+        self::assertSame('decision_not_found', $noFillResult->reason);
+        self::assertFalse($wrongViewer->accepted);
+        self::assertSame('decision_not_found', $wrongViewer->reason);
+    }
+
     public function testInMemoryFrequencyCapStoreRejectsUnsupportedWindow(): void
     {
         $this->expectException(\InvalidArgumentException::class);

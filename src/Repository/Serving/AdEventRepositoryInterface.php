@@ -24,6 +24,8 @@ interface AdEventRepositoryInterface
 
     public function recordInvalidClick(AdDecision $decision, string $eventId, DateTimeImmutable $occurredAt, string $reason, ?string $requestId = null): void;
 
+    public function recordVideoEvent(AdDecision $decision, string $eventType, string $eventId, DateTimeImmutable $occurredAt, ?string $requestId = null): void;
+
     /**
      * @param array{
      *     request_id?: string|null,

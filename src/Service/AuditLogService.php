@@ -177,16 +177,16 @@ final class AuditLogService
             return $requestId;
         }
 
+        $current = RequestIdContext::current();
+        if (is_string($current) && trim($current) !== '') {
+            return trim($current);
+        }
+
         foreach (['request_id', 'requestId', 'correlation_id'] as $key) {
             $value = $metadata[$key] ?? null;
             if (is_scalar($value) && trim((string) $value) !== '') {
                 return trim((string) $value);
             }
-        }
-
-        $current = RequestIdContext::current();
-        if (is_string($current) && trim($current) !== '') {
-            return trim($current);
         }
 
         return null;

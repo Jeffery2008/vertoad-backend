@@ -103,6 +103,11 @@ final readonly class RedisAdEventRepository implements AdEventRepositoryInterfac
         $this->index($this->validClickIndex($decision->decisionId, $decision->viewerId), $event);
     }
 
+    public function recordVideoEvent(AdDecision $decision, string $eventType, string $eventId, DateTimeImmutable $occurredAt, ?string $requestId = null): void
+    {
+        $this->record($this->event($eventType, $decision, $eventId, $occurredAt, true, null, null, null, $requestId));
+    }
+
     public function searchEvents(array $filters): array
     {
         if (isset($filters['request_id']) && trim((string) $filters['request_id']) !== '') {
@@ -361,7 +366,7 @@ LUA,
             campaignId: $decision->campaignId,
             advertiserOrganizationId: $decision->advertiserOrganizationId,
             publisherOrganizationId: $decision->publisherOrganizationId,
-            costPoints: $eventType === 'impression' ? $decision->impressionCostPoints : $decision->clickCostPoints,
+            costPoints: $this->costPoints($eventType, $decision),
             occurredAt: $occurredAt,
             valid: $valid,
             reason: $reason,
@@ -372,6 +377,15 @@ LUA,
             userAgent: $decision->userAgent,
             geoCode: $decision->geoCode,
         );
+    }
+
+    private function costPoints(string $eventType, AdDecision $decision): ?int
+    {
+        return match ($eventType) {
+            'impression' => $decision->impressionCostPoints,
+            'click' => $decision->clickCostPoints,
+            default => 0,
+        };
     }
 
     private function eventKey(string $eventType, string $eventId): string

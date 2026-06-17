@@ -13,11 +13,12 @@ final class CampaignSchema
     {
         ReviewSchema::create($connection);
         $connection->executeStatement(
-            'CREATE TABLE campaigns (
+            <<<'SQL'
+            CREATE TABLE campaigns (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 organization_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT "draft",
+                status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'active', 'paused', 'archived')),
                 pause_reason TEXT NULL,
                 pricing_model TEXT NOT NULL,
                 bid_points INTEGER NOT NULL,
@@ -28,7 +29,8 @@ final class CampaignSchema
                 targeting_json TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )',
+            )
+            SQL,
         );
         $connection->executeStatement(
             'CREATE TABLE campaign_budget_caps (

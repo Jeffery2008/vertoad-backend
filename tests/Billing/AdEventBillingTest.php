@@ -185,6 +185,35 @@ final class AdEventBillingTest extends TestCase
         self::assertSame(1_000, $ledgerRepository->balanceForOrganization(99));
     }
 
+    public function testSkipsNonBillableVideoServingEvents(): void
+    {
+        $connection = $this->createConnection();
+        $ledgerRepository = new PointsLedgerRepository($connection);
+        (new PointsLedgerService($ledgerRepository))->credit(99, 'advertiser_balance', null, 1_000, 'recharge:advertiser');
+
+        $result = $this->createService($connection)->billServingEvent(new AdEvent(
+            eventType: 'video_complete',
+            eventId: 'video-complete-billing',
+            decisionId: 'decision-1',
+            siteId: 5,
+            slotId: 10,
+            viewerId: 'viewer-1',
+            adId: 'ad-1',
+            campaignId: 123,
+            advertiserOrganizationId: 99,
+            publisherOrganizationId: 42,
+            costPoints: 0,
+            occurredAt: new DateTimeImmutable('2026-06-08 10:00:00'),
+            valid: true,
+            reason: null,
+        ));
+
+        self::assertFalse($result->billed);
+        self::assertSame('non_billable_event', $result->reason);
+        self::assertSame(1_000, $ledgerRepository->balanceForOrganization(99));
+        self::assertSame(0, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
+    }
+
     public function testDoesNotBillInvalidOrZeroCostEvents(): void
     {
         $connection = $this->createConnection();

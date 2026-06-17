@@ -203,8 +203,10 @@ namespace VertoAD\Tests\Serving {
             $repository->recordImpression($decision, 'imp-1', 0.90, 2500, new DateTimeImmutable('2026-06-08T10:00:01Z'));
             $repository->recordClick($decision, 'clk-1', new DateTimeImmutable('2026-06-08T10:00:20Z'));
             $repository->recordInvalidClick($decision, 'clk-invalid', new DateTimeImmutable('2026-06-08T10:00:25Z'), 'repeat_click_window');
+            $repository->recordVideoEvent($decision, 'video_start', 'video-start-1', new DateTimeImmutable('2026-06-08T10:00:30Z'), 'req-video-redis');
 
             self::assertTrue($repository->hasEvent('impression', 'imp-1'));
+            self::assertTrue($repository->hasEvent('video_start', 'video-start-1'));
             self::assertTrue($repository->hasValidImpression($decision->decisionId, $decision->viewerId));
             self::assertTrue($repository->hasRecentValidClick($decision->decisionId, $decision->viewerId, new DateTimeImmutable('2026-06-08T10:00:30Z'), 30));
 
@@ -212,9 +214,15 @@ namespace VertoAD\Tests\Serving {
             self::assertNotNull($invalid);
             self::assertFalse($invalid->valid);
             self::assertSame('repeat_click_window', $invalid->reason);
+            $video = $repository->findEvent('video_start', 'video-start-1');
+            self::assertNotNull($video);
+            self::assertSame(0, $video->costPoints);
+            self::assertNull($video->visibleRatio);
+            self::assertNull($video->visibleMs);
+            self::assertSame('req-video-redis', $video->requestId);
 
             $leased = $repository->lease(10);
-            self::assertSame(['imp-1', 'clk-1', 'clk-invalid'], array_map(static fn ($event): string => $event->eventId, $leased));
+            self::assertSame(['imp-1', 'clk-1', 'clk-invalid', 'video-start-1'], array_map(static fn ($event): string => $event->eventId, $leased));
         }
 
         public function testFactoryAppliesRedisConnectionSettings(): void

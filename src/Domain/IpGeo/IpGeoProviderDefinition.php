@@ -62,6 +62,8 @@ final readonly class IpGeoProviderDefinition
             throw new \InvalidArgumentException('IP geo provider api_key_env_var must be an environment variable name.');
         }
 
+        self::assertSafeHeaders($headers, $apiKeyEnvVar);
+
         $this->id = $id;
         $this->endpointTemplate = $endpointTemplate;
         $this->fieldMap = $fieldMap;
@@ -165,6 +167,26 @@ final readonly class IpGeoProviderDefinition
         return $map;
     }
 
+    /**
+     * @param array<string, string> $headers
+     */
+    private static function assertSafeHeaders(array $headers, ?string $apiKeyEnvVar): void
+    {
+        foreach ($headers as $name => $value) {
+            if (str_contains($value, '{api_key}')) {
+                if ($apiKeyEnvVar === null || $apiKeyEnvVar === '') {
+                    throw new \InvalidArgumentException('IP geo provider headers using {api_key} require api_key_env_var.');
+                }
+
+                continue;
+            }
+
+            if (self::isPlaintextSecretField($name)) {
+                throw new \InvalidArgumentException('Provider API keys must stay in environment variables.');
+            }
+        }
+    }
+
     private static function isPlaintextSecretField(string $key): bool
     {
         if ($key === 'api_key_env_var') {
@@ -174,6 +196,9 @@ final readonly class IpGeoProviderDefinition
         $compact = preg_replace('/[^a-z0-9]+/', '', strtolower($key)) ?? strtolower($key);
 
         return in_array($compact, ['apikey', 'key', 'token', 'authorization', 'secret'], true)
+            || str_contains($compact, 'apikey')
+            || str_contains($compact, 'authorization')
+            || str_contains($compact, 'token')
             || str_contains($compact, 'secret')
             || str_contains($compact, 'password');
     }

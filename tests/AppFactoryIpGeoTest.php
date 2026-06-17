@@ -63,6 +63,29 @@ namespace VertoAD\Tests {
             self::assertInstanceOf(RedisIpGeoRepository::class, $repository);
         }
 
+        public function testIpGeoRepositoryUsesServingGeoPolicyCacheTtlForRedisRecords(): void
+        {
+            $policy = IpGeoProviderPolicy::fromArray([
+                'enabled' => true,
+                'include_builtins' => false,
+                'cache_ttl_seconds' => 4321,
+            ]);
+
+            $repository = $this->invokeAppFactory('ipGeoRepository', [[
+                'app' => ['env' => 'production'],
+                'redis' => [
+                    'driver' => 'predis',
+                    'password' => 'redis-secret',
+                    'prefix' => 'test:',
+                    'ip_geo_record_ttl_seconds' => 9999,
+                ],
+            ], $policy]);
+            $recordTtl = new \ReflectionProperty(RedisIpGeoRepository::class, 'recordTtlSeconds');
+
+            self::assertInstanceOf(RedisIpGeoRepository::class, $repository);
+            self::assertSame(4321, $recordTtl->getValue($repository));
+        }
+
         public function testGeoResolversSwitchBetweenDisabledAndAsyncImplementations(): void
         {
             $repository = new InMemoryIpGeoRepository();

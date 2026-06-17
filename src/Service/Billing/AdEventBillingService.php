@@ -89,6 +89,10 @@ final readonly class AdEventBillingService
 
     public function billServingEvent(AdEvent $event): AdEventBillingResult
     {
+        if (!in_array($event->eventType, ['impression', 'click'], true)) {
+            return AdEventBillingResult::skipped('non_billable_event');
+        }
+
         if (
             $event->publisherOrganizationId === null
             || $event->advertiserOrganizationId === null

@@ -84,6 +84,12 @@ final class InMemoryAdEventRepository implements AdEventRepositoryInterface, Ser
         $this->events[] = $this->event('click', $decision, $eventId, $occurredAt, false, $reason, null, null, $requestId);
     }
 
+    public function recordVideoEvent(AdDecision $decision, string $eventType, string $eventId, DateTimeImmutable $occurredAt, ?string $requestId = null): void
+    {
+        $this->eventIds[$this->key($eventType, $eventId)] = true;
+        $this->events[] = $this->event($eventType, $decision, $eventId, $occurredAt, true, null, null, null, $requestId);
+    }
+
     public function searchEvents(array $filters): array
     {
         $items = array_values(array_filter(
@@ -190,7 +196,7 @@ final class InMemoryAdEventRepository implements AdEventRepositoryInterface, Ser
             campaignId: $decision->campaignId,
             advertiserOrganizationId: $decision->advertiserOrganizationId,
             publisherOrganizationId: $decision->publisherOrganizationId,
-            costPoints: $eventType === 'impression' ? $decision->impressionCostPoints : $decision->clickCostPoints,
+            costPoints: $this->costPoints($eventType, $decision),
             occurredAt: $occurredAt,
             valid: $valid,
             reason: $reason,
@@ -201,6 +207,15 @@ final class InMemoryAdEventRepository implements AdEventRepositoryInterface, Ser
             userAgent: $decision->userAgent,
             geoCode: $decision->geoCode,
         );
+    }
+
+    private function costPoints(string $eventType, AdDecision $decision): ?int
+    {
+        return match ($eventType) {
+            'impression' => $decision->impressionCostPoints,
+            'click' => $decision->clickCostPoints,
+            default => 0,
+        };
     }
 
     private function validCount(string $eventType): int

@@ -88,6 +88,11 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
         $this->record('click', $decision, $eventId, $occurredAt, false, trim($reason), null, null, $requestId);
     }
 
+    public function recordVideoEvent(AdDecision $decision, string $eventType, string $eventId, DateTimeImmutable $occurredAt, ?string $requestId = null): void
+    {
+        $this->record($eventType, $decision, $eventId, $occurredAt, true, null, null, null, $requestId);
+    }
+
     public function searchEvents(array $filters): array
     {
         $query = $this->connection->createQueryBuilder()
@@ -280,7 +285,7 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
             campaignId: $decision->campaignId,
             advertiserOrganizationId: $decision->advertiserOrganizationId,
             publisherOrganizationId: $decision->publisherOrganizationId,
-            costPoints: $eventType === 'impression' ? $decision->impressionCostPoints : $decision->clickCostPoints,
+            costPoints: $this->costPoints($eventType, $decision),
             occurredAt: $occurredAt,
             valid: $valid,
             reason: $reason,
@@ -291,6 +296,15 @@ final readonly class DatabaseAdEventRepository implements AdEventRepositoryInter
             userAgent: $decision->userAgent,
             geoCode: $decision->geoCode,
         ));
+    }
+
+    private function costPoints(string $eventType, AdDecision $decision): ?int
+    {
+        return match ($eventType) {
+            'impression' => $decision->impressionCostPoints,
+            'click' => $decision->clickCostPoints,
+            default => 0,
+        };
     }
 
     private function persistRawEvent(AdEvent $event): void

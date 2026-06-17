@@ -142,6 +142,46 @@ final class AuditLogServiceTest extends TestCase
         self::assertSame(['endpoint' => '/api/v1/operations/config/versions'], $repository->entry->metadata);
     }
 
+    public function testRecordKeepsCurrentRequestIdAheadOfMetadataFallbacks(): void
+    {
+        $repository = new class implements AuditLogRepositoryInterface {
+            /** @var list<AuditLogEntry> */
+            public array $entries = [];
+
+            public function append(AuditLogEntry $entry): void
+            {
+                $this->entries[] = $entry;
+            }
+        };
+        $service = new AuditLogService($repository);
+        RequestIdContext::begin((new ServerRequestFactory())
+            ->createServerRequest('POST', '/api/v1/operations/config/versions')
+            ->withHeader('X-Request-Id', 'req-current'));
+
+        $service->record(
+            action: 'admin.config.update',
+            subjectType: 'system_config',
+            metadata: [
+                'request_id' => 'req-stale',
+                'requestId' => 'req-stale',
+                'correlation_id' => 'req-stale',
+            ],
+        );
+
+        $service->record(
+            action: 'admin.config.update',
+            subjectType: 'system_config',
+            requestId: 'req-explicit',
+            metadata: [
+                'request_id' => 'req-stale',
+                'correlation_id' => 'req-stale',
+            ],
+        );
+
+        self::assertSame('req-current', $repository->entries[0]->requestId);
+        self::assertSame('req-explicit', $repository->entries[1]->requestId);
+    }
+
     public function testRecordRejectsInvalidIpAddress(): void
     {
         $service = new AuditLogService(new class implements AuditLogRepositoryInterface {

@@ -134,14 +134,18 @@ final readonly class ConfigVersionService
             throw new InvalidArgumentException('Config value must not be empty.');
         }
 
-        foreach ($value as $key => $item) {
-            $normalized = strtolower((string) $key);
-            if ($this->isSecretKey($normalized)) {
-                throw new InvalidArgumentException('Secret config values must stay in environment secrets.');
-            }
+        if ($configKey === self::SERVING_GEO_PROVIDER_KEY) {
+            $this->assertNoIpGeoPlaintextSecrets($value);
+        } else {
+            foreach ($value as $key => $item) {
+                $normalized = strtolower((string) $key);
+                if ($this->isSecretKey($normalized)) {
+                    throw new InvalidArgumentException('Secret config values must stay in environment secrets.');
+                }
 
-            if (is_array($item)) {
-                $this->assertNoSecretKeys($item);
+                if (is_array($item)) {
+                    $this->assertNoSecretKeys($item);
+                }
             }
         }
 
@@ -199,6 +203,72 @@ final readonly class ConfigVersionService
         }
     }
 
+    /**
+     * @param array<string, mixed> $value
+     */
+    private function assertNoIpGeoPlaintextSecrets(array $value): void
+    {
+        foreach ($value as $key => $_) {
+            $normalized = strtolower((string) $key);
+            if ($this->isSecretKey($normalized)) {
+                throw new InvalidArgumentException('Secret config values must stay in environment secrets.');
+            }
+        }
+
+        $providers = $value['providers'] ?? [];
+        if (!is_array($providers)) {
+            return;
+        }
+
+        foreach ($providers as $provider) {
+            if (!is_array($provider)) {
+                continue;
+            }
+
+            foreach ($provider as $key => $_) {
+                $key = (string) $key;
+                if ($key === 'headers') {
+                    continue;
+                }
+
+                $normalized = strtolower($key);
+                if ($this->isSecretKey($normalized)) {
+                    throw new InvalidArgumentException('Secret config values must stay in environment secrets.');
+                }
+            }
+
+            $this->assertNoIpGeoPlaintextHeaderSecrets($provider);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $provider
+     */
+    private function assertNoIpGeoPlaintextHeaderSecrets(array $provider): void
+    {
+        $headers = $provider['headers'] ?? [];
+        if (!is_array($headers)) {
+            return;
+        }
+
+        $apiKeyEnvVar = $this->nullableString($provider['api_key_env_var'] ?? null);
+        foreach ($headers as $name => $value) {
+            $name = strtolower((string) $name);
+            $value = is_scalar($value) ? (string) $value : '';
+            if (str_contains($value, '{api_key}')) {
+                if ($apiKeyEnvVar === null) {
+                    throw new InvalidArgumentException('Invalid serving.geo_provider IP geo provider headers using {api_key} require api_key_env_var.');
+                }
+
+                continue;
+            }
+
+            if ($this->isSecretKey($name)) {
+                throw new InvalidArgumentException('Secret config values must stay in environment secrets.');
+            }
+        }
+    }
+
     private function isSecretKey(string $normalized): bool
     {
         if (in_array($normalized, ['max_input_tokens', 'max_output_tokens', 'api_key_env_var'], true)) {
@@ -211,6 +281,17 @@ final readonly class ConfigVersionService
         }
 
         return str_contains($compact, 'apikey') || str_contains($compact, 'authorization');
+    }
+
+    private function nullableString(mixed $value): ?string
+    {
+        if (!is_scalar($value)) {
+            return null;
+        }
+
+        $value = trim((string) $value);
+
+        return $value === '' ? null : $value;
     }
 
     /**

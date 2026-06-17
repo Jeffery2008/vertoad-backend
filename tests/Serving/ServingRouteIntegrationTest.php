@@ -378,6 +378,39 @@ final class ServingRouteIntegrationTest extends TestCase
         self::assertSame(1, $events->impressionCount());
     }
 
+    public function testTrackAcceptsNonBillableVideoProgressEvents(): void
+    {
+        $events = new InMemoryAdEventRepository();
+        $app = $this->createApp([$this->safeCandidate()], $events);
+        $served = $this->handleJson($app, 'POST', '/api/v1/ads/serve', [
+            'site_id' => 10,
+            'slot_id' => 20,
+            'viewer_id' => 'viewer-video',
+        ]);
+
+        $accepted = $this->handleJson($app, 'POST', '/api/v1/ads/track', [
+            'decision_id' => $served['data']['decision_id'],
+            'viewer_id' => 'viewer-video',
+            'event_id' => 'video-25-1',
+            'event_type' => 'video_25',
+        ]);
+        $duplicate = $this->handleJson($app, 'POST', '/api/v1/ads/track', [
+            'decision_id' => $served['data']['decision_id'],
+            'viewer_id' => 'viewer-video',
+            'event_id' => 'video-25-1',
+            'event_type' => 'video_25',
+        ]);
+
+        self::assertTrue($accepted['data']['accepted']);
+        self::assertFalse($accepted['data']['duplicate']);
+        self::assertTrue($duplicate['data']['accepted']);
+        self::assertTrue($duplicate['data']['duplicate']);
+        self::assertSame(0, $events->impressionCount());
+        self::assertSame('video_25', $events->events()[0]->eventType);
+        self::assertSame(0, $events->events()[0]->costPoints);
+        self::assertSame('video-25-1', $events->events()[0]->eventId);
+    }
+
     public function testTrackRejectsInvalidThresholdAndClickRedirectsOnlyValidatedUrl(): void
     {
         $app = $this->createApp([$this->safeCandidate()]);
