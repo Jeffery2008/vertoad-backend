@@ -116,7 +116,23 @@ final class OperationsActionIntegrationTest extends TestCase
         );
         $created = $configs->createVersion('security.rate_limit', ['limit' => 60, 'window_seconds' => 60], 7);
         $delivery = $deliveryRepository->queueForEndpoint($endpoint, 'operations.error.created', ['error_id' => 'err_1']);
-        $app = $this->createApp($errors, $configs, $deliveryRepository, $deliveries, audit: $audit);
+        $ipGeoRepository = new InMemoryIpGeoRepository();
+        $ipGeoRepository->ensureQueued(
+            '203.0.113.121',
+            'Operations summary browser',
+            'CN',
+            'serving',
+            new \DateTimeImmutable('2026-06-08T13:05:00Z'),
+            'req-route-ip-geo',
+        );
+        $app = $this->createApp(
+            $errors,
+            $configs,
+            $deliveryRepository,
+            $deliveries,
+            audit: $audit,
+            ipGeoRepository: $ipGeoRepository,
+        );
 
         $summary = $this->handle($app, 'GET', '/api/v1/operations/summary');
         $errorsList = $this->handle($app, 'GET', '/api/v1/operations/errors');
@@ -150,6 +166,9 @@ final class OperationsActionIntegrationTest extends TestCase
         $retryMissing = $this->handle($app, 'POST', '/api/v1/operations/webhooks/deliveries/missing/retry');
 
         self::assertSame('unknown', $summary['body']['data']['backup_status']['status']);
+        self::assertArrayHasKey('ip_geo_queue', $summary['body']['data']);
+        self::assertSame(1, $summary['body']['data']['ip_geo_queue']['counts']['pending']);
+        self::assertSame('2026-06-08T13:05:00+00:00', $summary['body']['data']['ip_geo_queue']['oldest_pending_at']);
         self::assertSame('req-route-1', $errorsList['body']['data']['errors'][0]['request_id']);
         self::assertSame('req-route-1', $filteredErrorsList['body']['data']['errors'][0]['request_id']);
         self::assertNull($errorsList['body']['data']['errors'][0]['raw_context']);
@@ -766,6 +785,7 @@ SQL);
                     'key_prefix' => 'vertoad:test:',
                     'prefix_collision_risk' => 'low',
                 ],
+                ipGeoRepository: $ipGeoRepository ?? new InMemoryIpGeoRepository(),
             ),
             OperationErrorCaptureService::class => static fn (): OperationErrorCaptureService => $errors,
             ConfigVersionService::class => static fn (): ConfigVersionService => $configs,

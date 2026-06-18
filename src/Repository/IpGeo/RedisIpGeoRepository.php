@@ -101,6 +101,75 @@ final readonly class RedisIpGeoRepository implements IpGeoRepositoryInterface
         return $tasks;
     }
 
+    public function lookupQueueSummary(): array
+    {
+        $counts = $this->emptyCounts();
+        $oldestPendingAt = null;
+        $nextRetryAt = null;
+        $latestFailure = null;
+        $latestFailureAt = null;
+        $tasks = [];
+
+        $offset = 0;
+        $chunkSize = 500;
+        do {
+            $members = $this->client->zRangeByScore($this->lookupIndexKey(), '-inf', '+inf', $offset, $chunkSize);
+            foreach ($members as $taskKey) {
+                $task = $this->loadTask($taskKey);
+                if ($task === null) {
+                    $this->client->zRem($this->lookupIndexKey(), $taskKey);
+                    continue;
+                }
+
+                if (array_key_exists($task->status, $counts)) {
+                    $counts[$task->status]++;
+                }
+                $counts['total']++;
+
+                if ($task->status === 'pending') {
+                    $oldestPendingAt = $this->earlier($oldestPendingAt, $task->createdAt);
+                }
+
+                if (in_array($task->status, ['pending', 'failed'], true) && $task->nextAttemptAt !== null) {
+                    $nextRetryAt = $this->earlier($nextRetryAt, $task->nextAttemptAt);
+                }
+
+                if (in_array($task->status, ['failed', 'dead'], true)) {
+                    $failureAt = $this->taskActivityAt($task);
+                    if ($latestFailureAt === null || $failureAt > $latestFailureAt) {
+                        $latestFailureAt = $failureAt;
+                        $latestFailure = $this->summaryEntry($task);
+                    }
+                }
+
+                $tasks[] = [
+                    'key' => $taskKey,
+                    'task' => $task,
+                    'occurred_at' => $this->taskActivityAt($task),
+                ];
+            }
+
+            $offset += $chunkSize;
+        } while (count($members) === $chunkSize);
+
+        usort(
+            $tasks,
+            static fn (array $left, array $right): int =>
+                ($right['occurred_at'] <=> $left['occurred_at']) ?: strcmp($left['key'], $right['key']),
+        );
+
+        return [
+            'counts' => $counts,
+            'oldest_pending_at' => $oldestPendingAt?->format(DATE_ATOM),
+            'next_retry_at' => $nextRetryAt?->format(DATE_ATOM),
+            'latest_failure' => $latestFailure,
+            'recent_tasks' => array_map(
+                fn (array $item): array => $this->summaryEntry($item['task']),
+                array_slice($tasks, 0, 5),
+            ),
+        ];
+    }
+
     public function leasePending(int $limit, DateTimeImmutable $now): array
     {
         if ($limit <= 0) {
@@ -393,6 +462,60 @@ LUA,
     private function lookupIndexKey(): string
     {
         return $this->prefix . 'ip-geo:lookups';
+    }
+
+    /**
+     * @return array{pending: int, processing: int, failed: int, dead: int, resolved: int, total: int}
+     */
+    private function emptyCounts(): array
+    {
+        return [
+            'pending' => 0,
+            'processing' => 0,
+            'failed' => 0,
+            'dead' => 0,
+            'resolved' => 0,
+            'total' => 0,
+        ];
+    }
+
+    private function earlier(?DateTimeImmutable $current, DateTimeImmutable $candidate): DateTimeImmutable
+    {
+        return $current === null || $candidate < $current ? $candidate : $current;
+    }
+
+    private function taskActivityAt(GeoIpLookupTask $task): DateTimeImmutable
+    {
+        return $task->resolvedAt ?? $task->nextAttemptAt ?? $task->createdAt;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function summaryEntry(GeoIpLookupTask $task): array
+    {
+        $queuedAt = $task->createdAt->format(DATE_ATOM);
+        $requestId = $task->requestId;
+        $record = $this->findResolved($task->ipAddress);
+
+        return [
+            'lookup_id' => sha1($task->ipAddress . '|' . $queuedAt . '|' . ($requestId ?? '')),
+            'request_id' => $requestId,
+            'ip_hash' => GeoIpRecord::hashIp($task->ipAddress),
+            'ip_address' => $task->ipAddress,
+            'source' => $task->source,
+            'status' => $task->status,
+            'provider_id' => $task->providerId,
+            'canonical_geo_code' => $record?->canonicalGeoCode(),
+            'queued_at' => $queuedAt,
+            'resolved_at' => $task->resolvedAt?->format(DATE_ATOM),
+            'attempts' => $task->attempts,
+            'last_error' => $task->lastError,
+            'next_attempt_at' => $task->nextAttemptAt?->format(DATE_ATOM),
+            'user_agent' => $task->userAgent,
+            'region_hint' => $task->regionHint,
+            'request_ids' => $task->requestIds,
+        ];
     }
 
     private function nullableString(mixed $value): ?string

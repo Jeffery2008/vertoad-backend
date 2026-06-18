@@ -508,7 +508,9 @@ final class AppFactory
                     ConfigVersionRepositoryInterface $versions,
                     AuditLogService $audit,
                 ): ConfigVersionService => new ConfigVersionService($versions, $audit),
-                OperationsSummaryService::class => static fn (): OperationsSummaryService => new OperationsSummaryService(
+                OperationsSummaryService::class => static fn (
+                    IpGeoRepositoryInterface $ipGeoRepository,
+                ): OperationsSummaryService => new OperationsSummaryService(
                     backupStatus: $settings['operations']['backup_status'] ?? [
                         'status' => 'unknown',
                         'last_backup_at' => null,
@@ -526,6 +528,7 @@ final class AppFactory
                         'prefix_collision_risk' => 'unknown',
                         'auth_failure_alerting_configured' => false,
                     ], $settings['operations']['redis_hardening_inventory'] ?? []),
+                    ipGeoRepository: $ipGeoRepository,
                 ),
                 WebhookSigner::class => static fn (): WebhookSigner => new WebhookSigner(
                     (string) ($settings['webhooks']['signing_secret'] ?? 'whsec_local_dev_secret'),

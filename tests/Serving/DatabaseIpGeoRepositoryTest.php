@@ -199,7 +199,12 @@ final class DatabaseIpGeoRepositoryTest extends TestCase
         $record = $this->record('203.0.113.83', new DateTimeImmutable('2026-06-18T00:01:00+00:00'));
         $repository->markResolved($record);
 
-        $stored = (new DatabaseIpGeoRepository($connection, 3600))->findResolved('203.0.113.83');
+        $stored = (new DatabaseIpGeoRepository(
+            $connection,
+            3600,
+            60,
+            static fn (): DateTimeImmutable => new DateTimeImmutable('2026-06-18T00:30:00+00:00'),
+        ))->findResolved('203.0.113.83');
         $task = $repository->searchLookups(['status' => 'resolved', 'request_id' => 'req-resolve', 'limit' => 10])[0] ?? null;
 
         self::assertNotNull($stored);
@@ -295,6 +300,82 @@ final class DatabaseIpGeoRepositoryTest extends TestCase
         self::assertSame(1, $tasks[0]->attempts);
         self::assertSame('2026-06-18T00:00:15+00:00', $tasks[0]->nextAttemptAt?->format(DATE_ATOM));
         self::assertSame([], $tasks[0]->requestIds);
+    }
+
+    public function testLookupQueueSummaryUsesFullTableCountsAndQueueSignals(): void
+    {
+        $connection = $this->createConnection();
+        $repository = new DatabaseIpGeoRepository($connection);
+        $now = new DateTimeImmutable('2026-06-18T00:00:00+00:00');
+
+        $repository->ensureQueued('203.0.113.93', null, null, 'serving', $now, 'req-processing');
+        $repository->leasePending(1, $now);
+        $repository->ensureQueued('203.0.113.94', null, null, 'serving', $now->modify('+1 minute'), 'req-pending-old');
+        $repository->ensureQueued('203.0.113.95', null, null, 'serving', $now->modify('+2 minutes'), 'req-pending-new');
+        $repository->ensureQueued('203.0.113.96', null, null, 'serving', $now->modify('+3 minutes'), 'req-failed');
+        $repository->markFailed('203.0.113.96', 'provider-failed', 'retry later', $now->modify('+4 minutes'), 3, 60);
+        $repository->ensureQueued('203.0.113.97', null, null, 'serving', $now->modify('+5 minutes'), 'req-dead');
+        $repository->markFailed('203.0.113.97', 'provider-dead', 'dead letter', $now->modify('+6 minutes'), 1, 60);
+        $repository->markResolved($this->record('203.0.113.98', $now->modify('+7 minutes')));
+
+        $summary = $repository->lookupQueueSummary();
+
+        self::assertSame([
+            'pending' => 2,
+            'processing' => 1,
+            'failed' => 1,
+            'dead' => 1,
+            'resolved' => 1,
+            'total' => 6,
+        ], $summary['counts']);
+        self::assertSame('2026-06-18T00:01:00+00:00', $summary['oldest_pending_at']);
+        self::assertSame('2026-06-18T00:01:00+00:00', $summary['next_retry_at']);
+        self::assertSame('dead', $summary['latest_failure']['status']);
+        self::assertSame('provider-dead', $summary['latest_failure']['provider_id']);
+        self::assertSame('dead letter', $summary['latest_failure']['last_error']);
+        self::assertCount(5, $summary['recent_tasks']);
+        self::assertSame(6, (int) $connection->fetchOne('SELECT COUNT(*) FROM ip_geo_lookup_tasks'));
+    }
+
+    public function testLookupQueueSummaryIgnoresUnknownStatusRows(): void
+    {
+        $connection = $this->createConnection();
+        $repository = new DatabaseIpGeoRepository($connection);
+        $now = new DateTimeImmutable('2026-06-18T00:00:00+00:00');
+        $repository->ensureQueued('203.0.113.99', null, null, 'serving', $now, 'req-known');
+        $connection->insert('ip_geo_lookup_tasks', [
+            'ip_hash' => GeoIpRecord::hashIp('203.0.113.100'),
+            'ip_address' => '203.0.113.100',
+            'user_agent' => null,
+            'region_hint' => null,
+            'request_id' => 'req-unknown-status',
+            'request_ids_json' => '["req-unknown-status"]',
+            'source' => 'serving',
+            'status' => 'unknown-status',
+            'attempts' => 0,
+            'provider_id' => null,
+            'last_error' => null,
+            'next_attempt_at' => null,
+            'leased_until' => null,
+            'lease_token' => null,
+            'resolved_at' => null,
+            'created_at' => $now->modify('+1 minute')->format('Y-m-d H:i:s'),
+            'updated_at' => $now->modify('+1 minute')->format('Y-m-d H:i:s'),
+        ]);
+
+        $summary = $repository->lookupQueueSummary();
+
+        self::assertSame([
+            'pending' => 1,
+            'processing' => 0,
+            'failed' => 0,
+            'dead' => 0,
+            'resolved' => 0,
+            'total' => 1,
+        ], $summary['counts']);
+        self::assertCount(1, $summary['recent_tasks']);
+        self::assertSame('203.0.113.99', $summary['recent_tasks'][0]['ip_address']);
+        self::assertSame(2, (int) $connection->fetchOne('SELECT COUNT(*) FROM ip_geo_lookup_tasks'));
     }
 
     public function testSearchSkipsMalformedTaskRowsAndNormalizesScalarRequestIdJson(): void

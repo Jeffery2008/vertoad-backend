@@ -68,6 +68,68 @@ final class InMemoryIpGeoRepository implements IpGeoRepositoryInterface
         return $items;
     }
 
+    public function lookupQueueSummary(): array
+    {
+        $counts = $this->emptyCounts();
+        $oldestPendingAt = null;
+        $nextRetryAt = null;
+        $latestFailure = null;
+        $latestFailureAt = null;
+        $tasks = [];
+
+        foreach ($this->rows as $hash => $row) {
+            $task = $this->taskFromRow($row, new DateTimeImmutable());
+            if ($task === null) {
+                continue;
+            }
+
+            if (array_key_exists($task->status, $counts)) {
+                $counts[$task->status]++;
+            }
+            $counts['total']++;
+
+            if ($task->status === 'pending') {
+                $oldestPendingAt = $this->earlier($oldestPendingAt, $task->createdAt);
+            }
+
+            if (in_array($task->status, ['pending', 'failed'], true) && $task->nextAttemptAt !== null) {
+                $nextRetryAt = $this->earlier($nextRetryAt, $task->nextAttemptAt);
+            }
+
+            if (in_array($task->status, ['failed', 'dead'], true)) {
+                $failureAt = $this->dateFromRow($row, 'failed_at') ?? $this->taskActivityAt($task);
+                if ($latestFailureAt === null || $failureAt > $latestFailureAt) {
+                    $latestFailureAt = $failureAt;
+                    $latestFailure = $this->summaryEntry($task, (string) $hash, $row);
+                }
+            }
+
+            $tasks[] = [
+                'hash' => (string) $hash,
+                'task' => $task,
+                'row' => $row,
+                'occurred_at' => $this->taskActivityAt($task),
+            ];
+        }
+
+        usort(
+            $tasks,
+            static fn (array $left, array $right): int =>
+                ($right['occurred_at'] <=> $left['occurred_at']) ?: strcmp($left['hash'], $right['hash']),
+        );
+
+        return [
+            'counts' => $counts,
+            'oldest_pending_at' => $oldestPendingAt?->format(DATE_ATOM),
+            'next_retry_at' => $nextRetryAt?->format(DATE_ATOM),
+            'latest_failure' => $latestFailure,
+            'recent_tasks' => array_map(
+                fn (array $item): array => $this->summaryEntry($item['task'], $item['hash'], $item['row']),
+                array_slice($tasks, 0, 5),
+            ),
+        ];
+    }
+
     public function leasePending(int $limit, DateTimeImmutable $now): array
     {
         if ($limit <= 0) {
@@ -140,6 +202,7 @@ final class InMemoryIpGeoRepository implements IpGeoRepositoryInterface
         $this->rows[$hash]['provider_id'] = $providerId;
         $this->rows[$hash]['last_error'] = substr(trim($message), 0, 255);
         $this->rows[$hash]['next_attempt_at'] = $failedAt->modify('+' . max(1, $retryBackoffSeconds * $attempts) . ' seconds');
+        $this->rows[$hash]['failed_at'] = $failedAt;
         $this->rows[$hash]['lease_token'] = null;
     }
 
@@ -236,6 +299,72 @@ final class InMemoryIpGeoRepository implements IpGeoRepositoryInterface
         $value = trim((string) $value);
 
         return $value === '' ? null : $value;
+    }
+
+    /**
+     * @return array{pending: int, processing: int, failed: int, dead: int, resolved: int, total: int}
+     */
+    private function emptyCounts(): array
+    {
+        return [
+            'pending' => 0,
+            'processing' => 0,
+            'failed' => 0,
+            'dead' => 0,
+            'resolved' => 0,
+            'total' => 0,
+        ];
+    }
+
+    private function earlier(?DateTimeImmutable $current, DateTimeImmutable $candidate): DateTimeImmutable
+    {
+        return $current === null || $candidate < $current ? $candidate : $current;
+    }
+
+    private function taskActivityAt(GeoIpLookupTask $task): DateTimeImmutable
+    {
+        return $task->resolvedAt ?? $task->nextAttemptAt ?? $task->createdAt;
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private function summaryEntry(GeoIpLookupTask $task, string $ipHash, array $row): array
+    {
+        $canonicalGeoCode = null;
+        if (($row['record'] ?? null) instanceof GeoIpRecord) {
+            $canonicalGeoCode = $row['record']->canonicalGeoCode();
+        }
+        $queuedAt = $task->createdAt->format(DATE_ATOM);
+        $requestId = $task->requestId;
+
+        return [
+            'lookup_id' => sha1($task->ipAddress . '|' . $queuedAt . '|' . ($requestId ?? '')),
+            'request_id' => $requestId,
+            'ip_hash' => $ipHash,
+            'ip_address' => $task->ipAddress,
+            'source' => $task->source,
+            'status' => $task->status,
+            'provider_id' => $task->providerId,
+            'canonical_geo_code' => $canonicalGeoCode,
+            'queued_at' => $queuedAt,
+            'resolved_at' => $task->resolvedAt?->format(DATE_ATOM),
+            'attempts' => $task->attempts,
+            'last_error' => $task->lastError,
+            'next_attempt_at' => $task->nextAttemptAt?->format(DATE_ATOM),
+            'user_agent' => $task->userAgent,
+            'region_hint' => $task->regionHint,
+            'request_ids' => $task->requestIds,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     */
+    private function dateFromRow(array $row, string $key): ?DateTimeImmutable
+    {
+        return ($row[$key] ?? null) instanceof DateTimeImmutable ? $row[$key] : null;
     }
 
     /**

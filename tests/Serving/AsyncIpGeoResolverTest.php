@@ -116,6 +116,17 @@ final class AsyncIpGeoResolverTest extends TestCase
                 return [];
             }
 
+            public function lookupQueueSummary(): array
+            {
+                return [
+                    'counts' => ['pending' => 0, 'processing' => 0, 'failed' => 0, 'dead' => 0, 'resolved' => 0, 'total' => 0],
+                    'oldest_pending_at' => null,
+                    'next_retry_at' => null,
+                    'latest_failure' => null,
+                    'recent_tasks' => [],
+                ];
+            }
+
             public function leasePending(int $limit, DateTimeImmutable $now): array
             {
                 return [];
@@ -154,6 +165,17 @@ final class AsyncIpGeoResolverTest extends TestCase
             public function searchLookups(array $filters): array
             {
                 return [];
+            }
+
+            public function lookupQueueSummary(): array
+            {
+                return [
+                    'counts' => ['pending' => 0, 'processing' => 0, 'failed' => 0, 'dead' => 0, 'resolved' => 0, 'total' => 0],
+                    'oldest_pending_at' => null,
+                    'next_retry_at' => null,
+                    'latest_failure' => null,
+                    'recent_tasks' => [],
+                ];
             }
 
             public function leasePending(int $limit, DateTimeImmutable $now): array

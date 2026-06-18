@@ -153,6 +153,62 @@ final readonly class DatabaseIpGeoRepository implements IpGeoRepositoryInterface
         return $tasks;
     }
 
+    public function lookupQueueSummary(): array
+    {
+        $counts = $this->emptyCounts();
+        foreach ($this->connection->fetchAllAssociative('SELECT status, COUNT(*) AS lookup_count FROM ip_geo_lookup_tasks GROUP BY status') as $row) {
+            $status = $this->source($row['status'] ?? 'unknown');
+            if (!array_key_exists($status, $counts)) {
+                continue;
+            }
+
+            $counts[$status] = (int) $row['lookup_count'];
+            $counts['total'] += (int) $row['lookup_count'];
+        }
+
+        $oldestPendingAt = $this->dateTime($this->connection->fetchOne(
+            "SELECT MIN(created_at) FROM ip_geo_lookup_tasks WHERE status = 'pending'",
+        ));
+        $nextRetryAt = $this->dateTime($this->connection->fetchOne(
+            "SELECT MIN(next_attempt_at) FROM ip_geo_lookup_tasks WHERE status IN ('pending', 'failed') AND next_attempt_at IS NOT NULL",
+        ));
+
+        $latestFailureRow = $this->connection->fetchAssociative(
+            'SELECT ' . implode(', ', $this->taskColumns()) . "
+             FROM ip_geo_lookup_tasks
+             WHERE status IN ('failed', 'dead')
+             ORDER BY updated_at DESC, created_at DESC, ip_hash ASC
+             LIMIT 1",
+        );
+        $latestFailureTask = is_array($latestFailureRow) ? $this->taskFromRow($latestFailureRow) : null;
+
+        $recentRows = $this->connection->fetchAllAssociative(
+            'SELECT ' . implode(', ', $this->taskColumns()) . '
+             FROM ip_geo_lookup_tasks
+             ORDER BY COALESCE(resolved_at, next_attempt_at, updated_at, created_at) DESC, ip_hash ASC
+             LIMIT 5',
+        );
+        $recentTasks = [];
+        foreach ($recentRows as $row) {
+            $task = $this->taskFromRow($row);
+            if ($task === null) {
+                continue;
+            }
+
+            $recentTasks[] = $this->summaryEntry($task, (string) $row['ip_hash']);
+        }
+
+        return [
+            'counts' => $counts,
+            'oldest_pending_at' => $oldestPendingAt?->format(DATE_ATOM),
+            'next_retry_at' => $nextRetryAt?->format(DATE_ATOM),
+            'latest_failure' => $latestFailureTask === null || !is_array($latestFailureRow)
+                ? null
+                : $this->summaryEntry($latestFailureTask, (string) $latestFailureRow['ip_hash']),
+            'recent_tasks' => $recentTasks,
+        ];
+    }
+
     public function leasePending(int $limit, DateTimeImmutable $now): array
     {
         if ($limit <= 0) {
@@ -443,6 +499,57 @@ final readonly class DatabaseIpGeoRepository implements IpGeoRepositoryInterface
             ->where('ip_hash = :ip_hash')
             ->setParameter('ip_hash', $ipHash)
             ->fetchAssociative();
+    }
+
+    /**
+     * @return array{pending: int, processing: int, failed: int, dead: int, resolved: int, total: int}
+     */
+    private function emptyCounts(): array
+    {
+        return [
+            'pending' => 0,
+            'processing' => 0,
+            'failed' => 0,
+            'dead' => 0,
+            'resolved' => 0,
+            'total' => 0,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function summaryEntry(GeoIpLookupTask $task, string $ipHash): array
+    {
+        $queuedAt = $task->createdAt->format(DATE_ATOM);
+        $requestId = $task->requestId;
+
+        return [
+            'lookup_id' => sha1($task->ipAddress . '|' . $queuedAt . '|' . ($requestId ?? '')),
+            'request_id' => $requestId,
+            'ip_hash' => $ipHash,
+            'ip_address' => $task->ipAddress,
+            'source' => $task->source,
+            'status' => $task->status,
+            'provider_id' => $task->providerId,
+            'canonical_geo_code' => $this->canonicalGeoCodeForHash($ipHash),
+            'queued_at' => $queuedAt,
+            'resolved_at' => $task->resolvedAt?->format(DATE_ATOM),
+            'attempts' => $task->attempts,
+            'last_error' => $task->lastError,
+            'next_attempt_at' => $task->nextAttemptAt?->format(DATE_ATOM),
+            'user_agent' => $task->userAgent,
+            'region_hint' => $task->regionHint,
+            'request_ids' => $task->requestIds,
+        ];
+    }
+
+    private function canonicalGeoCodeForHash(string $ipHash): ?string
+    {
+        return $this->nullableString($this->connection->fetchOne(
+            'SELECT canonical_geo_code FROM ip_geo_records WHERE ip_hash = :ip_hash',
+            ['ip_hash' => $ipHash],
+        ));
     }
 
     private function recordExists(string $ipHash): bool

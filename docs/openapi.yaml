@@ -7451,6 +7451,7 @@ components:
         - restore_drill_evidence
         - redis_hardening_inventory
         - audit_on_view
+        - ip_geo_queue
       properties:
         backup_status:
           $ref: "#/components/schemas/BackupStatus"
@@ -7487,6 +7488,68 @@ components:
             config_rollback:
               type: boolean
           additionalProperties: false
+        ip_geo_queue:
+          $ref: "#/components/schemas/OperationIpGeoQueueSummary"
+      additionalProperties: false
+    OperationIpGeoQueueSummary:
+      type: object
+      required:
+        - counts
+        - oldest_pending_at
+        - next_retry_at
+        - latest_failure
+        - recent_tasks
+      properties:
+        counts:
+          $ref: "#/components/schemas/OperationIpGeoQueueCounts"
+        oldest_pending_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        next_retry_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        latest_failure:
+          oneOf:
+            - $ref: "#/components/schemas/OperationIpGeoLookupLogEntry"
+            - type: "null"
+        recent_tasks:
+          type: array
+          maxItems: 5
+          items:
+            $ref: "#/components/schemas/OperationIpGeoLookupLogEntry"
+      additionalProperties: false
+    OperationIpGeoQueueCounts:
+      type: object
+      required:
+        - pending
+        - processing
+        - failed
+        - dead
+        - resolved
+        - total
+      properties:
+        pending:
+          type: integer
+          minimum: 0
+        processing:
+          type: integer
+          minimum: 0
+        failed:
+          type: integer
+          minimum: 0
+        dead:
+          type: integer
+          minimum: 0
+        resolved:
+          type: integer
+          minimum: 0
+        total:
+          type: integer
+          minimum: 0
       additionalProperties: false
     BackupStatus:
       type: object

@@ -29,6 +29,17 @@ interface IpGeoRepositoryInterface
     public function searchLookups(array $filters): array;
 
     /**
+     * @return array{
+     *     counts: array{pending: int, processing: int, failed: int, dead: int, resolved: int, total: int},
+     *     oldest_pending_at: string|null,
+     *     next_retry_at: string|null,
+     *     latest_failure: array<string, mixed>|null,
+     *     recent_tasks: list<array<string, mixed>>
+     * }
+     */
+    public function lookupQueueSummary(): array;
+
+    /**
      * @return list<GeoIpLookupTask>
      */
     public function leasePending(int $limit, DateTimeImmutable $now): array;

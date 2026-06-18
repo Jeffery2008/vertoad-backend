@@ -270,6 +270,43 @@ final class RedisIpGeoRepositoryTest extends TestCase
         self::assertSame('failed', $data['status']);
     }
 
+    public function testLookupQueueSummaryScansLookupIndexForQueueSignals(): void
+    {
+        $client = new RedisIpGeoRepositoryRedisClient();
+        $repository = new RedisIpGeoRepository($client, 'vertoad:test:', 3600, 300);
+        $now = new DateTimeImmutable('2026-06-16T00:00:00+00:00');
+
+        $repository->ensureQueued('198.51.100.80', null, null, 'serving', $now, 'req-processing');
+        $repository->leasePending(1, $now);
+        $repository->ensureQueued('198.51.100.81', null, null, 'serving', $now->modify('+1 minute'), 'req-pending-old');
+        $repository->ensureQueued('198.51.100.82', null, null, 'serving', $now->modify('+2 minutes'), 'req-pending-new');
+        $repository->ensureQueued('198.51.100.83', null, null, 'serving', $now->modify('+3 minutes'), 'req-failed');
+        $repository->markFailed('198.51.100.83', 'provider-failed', 'retry later', $now->modify('+4 minutes'), 3, 60);
+        $repository->ensureQueued('198.51.100.84', null, null, 'serving', $now->modify('+5 minutes'), 'req-dead');
+        $repository->markFailed('198.51.100.84', 'provider-dead', 'dead letter', $now->modify('+6 minutes'), 1, 60);
+        $repository->ensureQueued('198.51.100.85', null, null, 'serving', $now->modify('+7 minutes'), 'req-resolved');
+        $repository->markResolved($this->record('198.51.100.85', $now->modify('+8 minutes')));
+        $client->zAdd('vertoad:test:ip-geo:lookups', (float) $now->modify('+9 minutes')->getTimestamp(), 'vertoad:test:ip-geo:task:missing-summary');
+
+        $summary = $repository->lookupQueueSummary();
+
+        self::assertSame([
+            'pending' => 2,
+            'processing' => 1,
+            'failed' => 1,
+            'dead' => 1,
+            'resolved' => 1,
+            'total' => 6,
+        ], $summary['counts']);
+        self::assertSame('2026-06-16T00:01:00+00:00', $summary['oldest_pending_at']);
+        self::assertSame('2026-06-16T00:01:00+00:00', $summary['next_retry_at']);
+        self::assertSame('dead', $summary['latest_failure']['status']);
+        self::assertSame('provider-dead', $summary['latest_failure']['provider_id']);
+        self::assertSame('dead letter', $summary['latest_failure']['last_error']);
+        self::assertCount(5, $summary['recent_tasks']);
+        self::assertFalse($client->zContains('vertoad:test:ip-geo:lookups', 'vertoad:test:ip-geo:task:missing-summary'));
+    }
+
     private function replaceJson(RedisIpGeoRepositoryRedisClient $client, string $key, array $values): void
     {
         $payload = $client->get($key);

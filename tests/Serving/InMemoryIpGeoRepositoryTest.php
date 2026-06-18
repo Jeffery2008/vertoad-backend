@@ -142,6 +142,40 @@ final class InMemoryIpGeoRepositoryTest extends TestCase
         self::assertSame('provider-b', $second['provider_id']);
     }
 
+    public function testLookupQueueSummaryCountsStatusesAndReturnsQueueSignals(): void
+    {
+        $repository = new InMemoryIpGeoRepository();
+        $now = new DateTimeImmutable('2026-06-16T00:00:00+00:00');
+
+        $repository->ensureQueued('203.0.113.70', null, null, 'serving', $now, 'req-processing');
+        $repository->leasePending(1, $now);
+        $repository->ensureQueued('203.0.113.71', null, null, 'serving', $now->modify('+1 minute'), 'req-pending-old');
+        $repository->ensureQueued('203.0.113.72', null, null, 'serving', $now->modify('+2 minutes'), 'req-pending-new');
+        $repository->ensureQueued('203.0.113.73', null, null, 'serving', $now->modify('+3 minutes'), 'req-failed');
+        $repository->markFailed('203.0.113.73', 'provider-failed', 'retry later', $now->modify('+4 minutes'), 3, 60);
+        $repository->ensureQueued('203.0.113.74', null, null, 'serving', $now->modify('+5 minutes'), 'req-dead');
+        $repository->markFailed('203.0.113.74', 'provider-dead', 'dead letter', $now->modify('+6 minutes'), 1, 60);
+        $repository->markResolved($this->record('203.0.113.75', $now->modify('+7 minutes')));
+
+        $summary = $repository->lookupQueueSummary();
+
+        self::assertSame([
+            'pending' => 2,
+            'processing' => 1,
+            'failed' => 1,
+            'dead' => 1,
+            'resolved' => 1,
+            'total' => 6,
+        ], $summary['counts']);
+        self::assertSame('2026-06-16T00:01:00+00:00', $summary['oldest_pending_at']);
+        self::assertSame('2026-06-16T00:01:00+00:00', $summary['next_retry_at']);
+        self::assertSame('dead', $summary['latest_failure']['status']);
+        self::assertSame('provider-dead', $summary['latest_failure']['provider_id']);
+        self::assertSame('dead letter', $summary['latest_failure']['last_error']);
+        self::assertCount(5, $summary['recent_tasks']);
+        self::assertContains('resolved', array_column($summary['recent_tasks'], 'status'));
+    }
+
     public function testSearchLimitFiltersAndMalformedRowsAreHandled(): void
     {
         $repository = new InMemoryIpGeoRepository();
@@ -171,6 +205,17 @@ final class InMemoryIpGeoRepositoryTest extends TestCase
         ]);
 
         self::assertSame([], $repository->searchLookups(['limit' => 10]));
+
+        $summary = $repository->lookupQueueSummary();
+        self::assertSame([
+            'pending' => 0,
+            'processing' => 0,
+            'failed' => 0,
+            'dead' => 0,
+            'resolved' => 0,
+            'total' => 0,
+        ], $summary['counts']);
+        self::assertSame([], $summary['recent_tasks']);
     }
 
     public function testLeaseSkipsNonPendingFutureAndMalformedRows(): void

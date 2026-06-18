@@ -38,6 +38,7 @@ final class OperationsOpenApiContractTest extends TestCase
                 'OperationLogCorrelationCounts:',
                 'OperationLogCorrelationEntryType:',
                 'OperationRequestCorrelation:',
+                'OperationIpGeoQueueSummary:',
                 'OperationIpGeoLookupRequest:',
                 'OperationIpGeoLookupResult:',
                 'ConfigVersion:',
@@ -154,5 +155,38 @@ final class OperationsOpenApiContractTest extends TestCase
         self::assertIsArray($webhookSchema);
         self::assertContains('request_id', $webhookSchema['required'] ?? []);
         self::assertArrayHasKey('request_id', $webhookSchema['properties'] ?? []);
+    }
+
+    public function testOperationsSummaryRequiresIpGeoQueueSummarySchema(): void
+    {
+        $openApi = Yaml::parseFile(dirname(__DIR__, 3) . '/docs/openapi.yaml');
+        self::assertIsArray($openApi);
+
+        $summary = $openApi['components']['schemas']['OperationsSummary'] ?? null;
+        self::assertIsArray($summary);
+        self::assertContains('ip_geo_queue', $summary['required'] ?? []);
+        self::assertSame(
+            '#/components/schemas/OperationIpGeoQueueSummary',
+            $summary['properties']['ip_geo_queue']['$ref'] ?? null,
+        );
+
+        $queue = $openApi['components']['schemas']['OperationIpGeoQueueSummary'] ?? null;
+        self::assertIsArray($queue);
+        self::assertSame(
+            ['counts', 'oldest_pending_at', 'next_retry_at', 'latest_failure', 'recent_tasks'],
+            $queue['required'] ?? null,
+        );
+        self::assertSame(
+            '#/components/schemas/OperationIpGeoQueueCounts',
+            $queue['properties']['counts']['$ref'] ?? null,
+        );
+        self::assertSame(
+            '#/components/schemas/OperationIpGeoLookupLogEntry',
+            $queue['properties']['recent_tasks']['items']['$ref'] ?? null,
+        );
+
+        $counts = $openApi['components']['schemas']['OperationIpGeoQueueCounts'] ?? null;
+        self::assertIsArray($counts);
+        self::assertSame(['pending', 'processing', 'failed', 'dead', 'resolved', 'total'], $counts['required'] ?? null);
     }
 }
