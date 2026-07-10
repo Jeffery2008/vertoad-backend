@@ -22,6 +22,10 @@ final class OperationsRouteContractTest extends TestCase
         foreach (
             [
                 'GET /api/v1/operations/summary',
+                'GET /api/v1/operations/backups',
+                'POST /api/v1/operations/backups',
+                'GET /api/v1/operations/backups/{job_id}',
+                'POST /api/v1/operations/backups/{job_id}/restore',
                 'GET /api/v1/operations/errors',
                 'GET /api/v1/operations/request-correlations',
                 'GET /api/v1/operations/request-correlations/{request_id}',

@@ -35,6 +35,9 @@ use VertoAD\Repository\Operations\DatabaseOperationErrorLogRepository;
 use VertoAD\Repository\Operations\DatabaseOperationRiskDecisionLogRepository;
 use VertoAD\Repository\Operations\DatabaseOperationSystemLogRepository;
 use VertoAD\Repository\Operations\DatabaseConfigVersionRepository;
+use VertoAD\Repository\Operations\BackupJobRepositoryInterface;
+use VertoAD\Repository\Operations\DatabaseBackupJobRepository;
+use VertoAD\Repository\Operations\InMemoryBackupJobRepository;
 use VertoAD\Repository\Operations\ConfigVersionRepositoryInterface;
 use VertoAD\Repository\Operations\OperationErrorLogRepositoryInterface;
 use VertoAD\Repository\Operations\OperationRiskDecisionLogRepositoryInterface;
@@ -74,6 +77,8 @@ use VertoAD\Service\Cron\AiReviewQueueJob;
 use VertoAD\Service\Cron\AggregateStatisticsJob;
 use VertoAD\Service\Cron\ArchiveParquetJob;
 use VertoAD\Service\Cron\BackupCheckJob;
+use VertoAD\Service\Cron\BackupCreateJob;
+use VertoAD\Service\Cron\BackupRestoreJob;
 use VertoAD\Service\Cron\CronJobRegistry;
 use VertoAD\Service\Cron\CronLockStoreInterface;
 use VertoAD\Service\Cron\CronRunner;
@@ -96,6 +101,12 @@ use VertoAD\Service\Review\CreativeReviewProviderInterface;
 use VertoAD\Service\Review\DeterministicCreativeReviewProvider;
 use VertoAD\Service\Review\OpenAiCompatibleCreativeReviewProvider;
 use VertoAD\Service\Operations\OperationRequestCorrelationService;
+use VertoAD\Service\Operations\Backup\BackupExecutor;
+use VertoAD\Service\Operations\Backup\BackupObjectStorageInterface;
+use VertoAD\Service\Operations\Backup\BackupService;
+use VertoAD\Service\Operations\Backup\MysqlBackupRunnerInterface;
+use VertoAD\Service\Operations\Backup\ProcessMysqlBackupRunner;
+use VertoAD\Service\Operations\Backup\UnavailableMysqlBackupRunner;
 use VertoAD\Service\Serving\AdSelectionPolicyInterface;
 use VertoAD\Service\Serving\AdServingService;
 use VertoAD\Service\Serving\CampaignSpendEligibilityInterface;
@@ -124,10 +135,97 @@ use VertoAD\Infrastructure\Storage\DeterministicPresignedUploadSigner;
 use VertoAD\Infrastructure\Storage\ObjectStorageInspectorInterface;
 use VertoAD\Infrastructure\Storage\ObjectStorageUploadSignerInterface;
 use VertoAD\Infrastructure\Storage\S3ArchiveObjectStorage;
+use VertoAD\Infrastructure\Storage\S3BackupObjectStorage;
+use VertoAD\Infrastructure\Storage\UnavailableBackupObjectStorage;
 use VertoAD\Infrastructure\Storage\UnavailableObjectStorageInspector;
 
 final class AppContainerTest extends TestCase
 {
+    public function testBackupFactoriesEnforceProductionConfigurationAndLocalFallbacks(): void
+    {
+        $storageFactory = new \ReflectionMethod(AppFactory::class, 'backupObjectStorage');
+        $mysqlFactory = new \ReflectionMethod(AppFactory::class, 'mysqlBackupRunner');
+        $summaryFactory = new \ReflectionMethod(AppFactory::class, 'backupSummaryRepository');
+
+        $local = ['app' => ['env' => 'local'], 'storage' => ['s3' => []], 'backup' => 'invalid'];
+        self::assertInstanceOf(UnavailableBackupObjectStorage::class, $storageFactory->invoke(null, $local));
+        self::assertInstanceOf(UnavailableMysqlBackupRunner::class, $mysqlFactory->invoke(null, [
+            'app' => ['env' => 'testing'],
+            'database' => ['driver' => 'pdo_sqlite'],
+        ]));
+
+        self::assertInstanceOf(S3BackupObjectStorage::class, $storageFactory->invoke(null, [
+            'app' => ['env' => 'testing'],
+            'backup' => [
+                's3' => [
+                    'endpoint' => 'http://127.0.0.1:9000',
+                    'region' => 'auto',
+                    'bucket' => 'backup-bucket',
+                    'access_key_id' => 'access-key',
+                    'secret_access_key' => 'secret-key',
+                ],
+                'server_side_encryption' => 'AES256',
+            ],
+        ]));
+
+        $productionBackup = [
+            'app' => ['env' => 'production'],
+            'storage' => ['s3' => [
+                'endpoint' => 'https://primary.example.test',
+                'bucket' => 'primary-bucket',
+            ]],
+            'backup' => ['s3' => [
+                'endpoint' => 'https://backup.example.test',
+                'region' => 'us-east-1',
+                'bucket' => 'backup-bucket',
+                'access_key_id' => 'access-key',
+                'secret_access_key' => 'secret-key',
+            ]],
+        ];
+        self::assertInstanceOf(S3BackupObjectStorage::class, $storageFactory->invoke(null, $productionBackup));
+        self::assertInstanceOf(ProcessMysqlBackupRunner::class, $mysqlFactory->invoke(null, [
+            'app' => ['env' => 'testing'],
+            'database' => [
+                'driver' => 'pdo_mysql',
+                'host' => '127.0.0.1',
+                'database' => 'vertoad_test',
+                'username' => 'vertoad',
+            ],
+            'backup' => [],
+        ]));
+
+        foreach ([
+            [$storageFactory, ['app' => ['env' => 'production'], 'storage' => ['s3' => []]], 'object storage'],
+            [$storageFactory, array_replace_recursive($productionBackup, [
+                'backup' => ['s3' => ['endpoint' => 'http://backup.example.test']],
+            ]), 'must use HTTPS'],
+            [$storageFactory, array_replace_recursive($productionBackup, [
+                'backup' => ['s3' => [
+                    'endpoint' => 'https://primary.example.test/',
+                    'bucket' => 'primary-bucket',
+                ]],
+            ]), 'bucket isolated'],
+            [$mysqlFactory, ['app' => ['env' => 'production'], 'database' => ['driver' => 'pdo_sqlite']], 'MySQL database'],
+        ] as [$factory, $settings, $expected]) {
+            try {
+                $factory->invoke(null, $settings);
+                self::fail('Expected production backup factory configuration failure.');
+            } catch (\RuntimeException $exception) {
+                self::assertStringContainsString($expected, $exception->getMessage());
+            }
+        }
+
+        $connection = \Doctrine\DBAL\DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        $repository = new InMemoryBackupJobRepository();
+        self::assertNull($summaryFactory->invoke(null, ['app' => ['env' => 'local']], $repository, $connection));
+        self::assertSame($repository, $summaryFactory->invoke(
+            null,
+            ['app' => ['env' => 'production']],
+            $repository,
+            $connection,
+        ));
+    }
+
     public function testContainerProvidesDatabaseAndSystemConfigBoundary(): void
     {
         $previousAppKey = getenv('APP_KEY');
@@ -236,6 +334,12 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(DatabaseOperationRiskDecisionLogRepository::class, $container->get(OperationRiskDecisionLogRepositoryInterface::class));
             self::assertInstanceOf(ConfigVersionRepositoryInterface::class, $container->get(ConfigVersionRepositoryInterface::class));
             self::assertInstanceOf(DatabaseConfigVersionRepository::class, $container->get(ConfigVersionRepositoryInterface::class));
+            self::assertInstanceOf(BackupJobRepositoryInterface::class, $container->get(BackupJobRepositoryInterface::class));
+            self::assertInstanceOf(DatabaseBackupJobRepository::class, $container->get(BackupJobRepositoryInterface::class));
+            self::assertInstanceOf(BackupObjectStorageInterface::class, $container->get(BackupObjectStorageInterface::class));
+            self::assertInstanceOf(MysqlBackupRunnerInterface::class, $container->get(MysqlBackupRunnerInterface::class));
+            self::assertInstanceOf(BackupService::class, $container->get(BackupService::class));
+            self::assertInstanceOf(BackupExecutor::class, $container->get(BackupExecutor::class));
             $correlations = $container->get(OperationRequestCorrelationService::class);
             self::assertInstanceOf(OperationRequestCorrelationService::class, $correlations);
             self::assertSame($container->get(AdDecisionRepositoryInterface::class), $this->privateProperty($correlations, 'servingDecisions'));
@@ -254,6 +358,8 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(ArchiveParquetJob::class, $container->get(CronJobRegistry::class)->get('archive-parquet'));
             self::assertInstanceOf(DuckDbColdQueryJob::class, $container->get(CronJobRegistry::class)->get('duckdb-cold-query'));
             self::assertInstanceOf(BackupCheckJob::class, $container->get(CronJobRegistry::class)->get('backup-check'));
+            self::assertInstanceOf(BackupCreateJob::class, $container->get(CronJobRegistry::class)->get('backup-create'));
+            self::assertInstanceOf(BackupRestoreJob::class, $container->get(CronJobRegistry::class)->get('backup-restore'));
             self::assertInstanceOf(PartitionMaintenanceJob::class, $container->get(CronJobRegistry::class)->get('partition-maintenance'));
             self::assertInstanceOf(IpGeoLookupJob::class, $container->get(CronJobRegistry::class)->get('ip-geo-resolve'));
             self::assertInstanceOf(CronRunner::class, $container->get(CronRunner::class));

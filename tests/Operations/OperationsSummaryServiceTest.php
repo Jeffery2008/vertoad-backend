@@ -9,7 +9,10 @@ use Defuse\Crypto\Key;
 use PHPUnit\Framework\TestCase;
 use VertoAD\AppFactory;
 use VertoAD\Domain\IpGeo\GeoIpRecord;
+use VertoAD\Domain\Operations\BackupJob;
 use VertoAD\Repository\IpGeo\InMemoryIpGeoRepository;
+use VertoAD\Repository\Operations\InMemoryBackupJobRepository;
+use VertoAD\Service\Operations\OperationsSummaryService;
 
 final class OperationsSummaryServiceTest extends TestCase
 {
@@ -48,6 +51,44 @@ final class OperationsSummaryServiceTest extends TestCase
         self::assertSame('vertoad:prod:', $this->value($this->value($summary, 'redis_hardening_inventory'), 'key_prefix'));
         self::assertSame('low', $this->value($this->value($summary, 'redis_hardening_inventory'), 'prefix_collision_risk'));
         self::assertTrue($this->value($this->value($summary, 'redis_hardening_inventory'), 'auth_failure_alerting_configured'));
+        self::assertTrue($summary['audit_on_view']['backup_restore']);
+    }
+
+    public function testSummaryDerivesBackupAndRestoreEvidenceFromPersistedJobs(): void
+    {
+        $jobs = new InMemoryBackupJobRepository();
+        $service = new OperationsSummaryService(
+            backupStatus: ['status' => 'stale-static-value'],
+            restoreDrillEvidence: ['last_drill_at' => 'stale-static-value'],
+            redisHardeningInventory: [],
+            backupJobs: $jobs,
+        );
+
+        self::assertSame([
+            'status' => 'unknown',
+            'last_backup_at' => null,
+            'last_successful_backup_id' => null,
+        ], $service->summary()['backup_status']);
+
+        $jobs->save($this->backupJob('backup_queued', 'backup', 'queued', '2026-07-10T01:00:00Z'));
+        self::assertSame('pending', $service->summary()['backup_status']['status']);
+
+        $jobs->save($this->backupJob('backup_failed', 'backup', 'failed', '2026-07-10T02:00:00Z'));
+        self::assertSame('unhealthy', $service->summary()['backup_status']['status']);
+
+        $jobs->save($this->backupJob('backup_completed', 'backup', 'completed', '2026-07-10T03:00:00Z'));
+        self::assertSame([
+            'status' => 'healthy',
+            'last_backup_at' => '2026-07-10T03:01:00+00:00',
+            'last_successful_backup_id' => 'backup_completed',
+        ], $service->summary()['backup_status']);
+
+        $jobs->save($this->backupJob('restore_completed', 'restore', 'completed', '2026-07-10T04:00:00Z'));
+        self::assertSame([
+            'last_drill_at' => '2026-07-10T04:01:00+00:00',
+            'evidence_url' => 'backups/restore-evidence/restore_completed.json',
+            'verified_by' => 7,
+        ], $service->summary()['restore_drill_evidence']);
     }
 
     public function testSummaryExposesIpGeoQueueResolverStatus(): void
@@ -184,5 +225,35 @@ final class OperationsSummaryServiceTest extends TestCase
         }
 
         return null;
+    }
+
+    private function backupJob(string $id, string $type, string $status, string $createdAt): BackupJob
+    {
+        $completedAt = $status === 'completed' ? new DateTimeImmutable($createdAt)->modify('+1 minute') : null;
+
+        return new BackupJob(
+            jobId: $id,
+            jobType: $type,
+            sourceBackupId: $type === 'restore' ? 'backup_completed' : null,
+            status: $status,
+            requestedByUserId: 7,
+            requestId: 'req-' . $id,
+            environment: 'staging',
+            reason: $type === 'restore' ? 'Scheduled restore drill' : null,
+            manifestObjectKey: $status === 'completed' ? 'backups/' . $id . '/manifest.json' : null,
+            manifestSha256: $status === 'completed' ? str_repeat('b', 64) : null,
+            mysqlObjectKey: $status === 'completed' ? 'backups/' . $id . '/mysql.sql' : null,
+            mysqlSha256: $status === 'completed' ? str_repeat('a', 64) : null,
+            configObjectKey: $status === 'completed' ? 'backups/' . $id . '/configuration.json' : null,
+            evidenceObjectKey: $type === 'restore' && $status === 'completed'
+                ? 'backups/restore-evidence/' . $id . '.json'
+                : null,
+            objectCount: 0,
+            byteCount: 0,
+            errorMessage: $status === 'failed' ? 'backup failed' : null,
+            createdAt: new DateTimeImmutable($createdAt),
+            startedAt: $status === 'queued' ? null : new DateTimeImmutable($createdAt),
+            completedAt: $completedAt,
+        );
     }
 }

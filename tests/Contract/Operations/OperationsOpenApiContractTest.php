@@ -16,6 +16,9 @@ final class OperationsOpenApiContractTest extends TestCase
         foreach (
             [
                 '/api/v1/operations/summary:',
+                '/api/v1/operations/backups:',
+                '/api/v1/operations/backups/{job_id}:',
+                '/api/v1/operations/backups/{job_id}/restore:',
                 '/api/v1/operations/errors:',
                 '/api/v1/operations/request-correlations:',
                 '/api/v1/operations/request-correlations/{request_id}:',
@@ -47,6 +50,9 @@ final class OperationsOpenApiContractTest extends TestCase
                 'billing.default_revenue_share',
                 'WebhookDelivery:',
                 'BackupStatus:',
+                'BackupJob:',
+                'BackupJobListData:',
+                'BackupRestoreRequest:',
                 'RedisHardeningInventory:',
                 'raw_context',
                 'audit_on_view',
@@ -188,5 +194,56 @@ final class OperationsOpenApiContractTest extends TestCase
         $counts = $openApi['components']['schemas']['OperationIpGeoQueueCounts'] ?? null;
         self::assertIsArray($counts);
         self::assertSame(['pending', 'processing', 'failed', 'dead', 'resolved', 'total'], $counts['required'] ?? null);
+    }
+
+    public function testBackupOperationsContractMatchesRoutesAndJobPayloads(): void
+    {
+        $openApi = Yaml::parseFile(dirname(__DIR__, 3) . '/docs/openapi.yaml');
+        self::assertIsArray($openApi);
+
+        $list = $openApi['paths']['/api/v1/operations/backups']['get'] ?? null;
+        $create = $openApi['paths']['/api/v1/operations/backups']['post'] ?? null;
+        $get = $openApi['paths']['/api/v1/operations/backups/{job_id}']['get'] ?? null;
+        $restore = $openApi['paths']['/api/v1/operations/backups/{job_id}/restore']['post'] ?? null;
+        self::assertIsArray($list);
+        self::assertIsArray($create);
+        self::assertIsArray($get);
+        self::assertIsArray($restore);
+        self::assertSame(['ops.backup.read.platform'], $list['x-permissions'] ?? null);
+        self::assertSame(['ops.backup.create.platform'], $create['x-permissions'] ?? null);
+        self::assertSame(['ops.backup.read.platform'], $get['x-permissions'] ?? null);
+        self::assertSame(['ops.backup.restore.platform'], $restore['x-permissions'] ?? null);
+        self::assertSame(
+            '#/components/schemas/BackupJobListData',
+            $list['responses']['200']['content']['application/json']['schema']['allOf'][1]['properties']['data']['$ref'] ?? null,
+        );
+        self::assertSame(
+            '#/components/schemas/BackupJob',
+            $create['responses']['202']['content']['application/json']['schema']['allOf'][1]['properties']['data']['$ref'] ?? null,
+        );
+        self::assertSame(
+            '#/components/schemas/BackupRestoreRequest',
+            $restore['requestBody']['content']['application/json']['schema']['$ref'] ?? null,
+        );
+
+        $job = $openApi['components']['schemas']['BackupJob'] ?? null;
+        self::assertIsArray($job);
+        foreach (['job_id', 'job_type', 'source_backup_id', 'status', 'request_id', 'manifest_object_key', 'manifest_sha256', 'mysql_sha256', 'evidence_object_key', 'created_at', 'completed_at'] as $field) {
+            self::assertContains($field, $job['required'] ?? []);
+            self::assertArrayHasKey($field, $job['properties'] ?? []);
+        }
+        self::assertSame(['backup', 'restore'], $job['properties']['job_type']['enum'] ?? null);
+        self::assertSame(['queued', 'running', 'completed', 'failed'], $job['properties']['status']['enum'] ?? null);
+
+        $summary = $openApi['components']['schemas']['OperationsSummary'] ?? null;
+        self::assertContains('backup_restore', $summary['properties']['audit_on_view']['required'] ?? []);
+        self::assertSame(
+            ['healthy', 'unhealthy', 'pending', 'unknown'],
+            $openApi['components']['schemas']['BackupStatus']['properties']['status']['enum'] ?? null,
+        );
+
+        $cronExample = $openApi['paths']['/api/v1/cron/status']['get']['responses']['200']['content']['application/json']['examples']['available']['value']['data']['jobs'] ?? [];
+        self::assertContains('backup-create', $cronExample);
+        self::assertContains('backup-restore', $cronExample);
     }
 }

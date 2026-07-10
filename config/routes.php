@@ -9,6 +9,7 @@ use VertoAD\Http\Action\Cron\CronRunAction;
 use VertoAD\Http\Action\Cron\CronStatusAction;
 use VertoAD\Http\Action\HealthAction;
 use VertoAD\Http\Action\Operations\CreateConfigVersionAction;
+use VertoAD\Http\Action\Operations\BackupAction;
 use VertoAD\Http\Action\Operations\GetOperationRequestCorrelationsAction;
 use VertoAD\Http\Action\Operations\GetRawOperationErrorContextAction;
 use VertoAD\Http\Action\Operations\LookupOperationIpGeoAction;
@@ -335,6 +336,18 @@ return static function (App $app): void {
         ->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/operations/summary', OperationsSummaryAction::class)
         ->add($platformPermission('ops.dashboard.read.platform'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->get('/api/v1/operations/backups', [BackupAction::class, 'list'])
+        ->add($platformPermission('ops.backup.read.platform'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->post('/api/v1/operations/backups', [BackupAction::class, 'create'])
+        ->add($platformPermission('ops.backup.create.platform'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->get('/api/v1/operations/backups/{job_id}', [BackupAction::class, 'get'])
+        ->add($platformPermission('ops.backup.read.platform'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->post('/api/v1/operations/backups/{job_id}/restore', [BackupAction::class, 'restore'])
+        ->add($platformPermission('ops.backup.restore.platform'))
         ->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/operations/errors', ListOperationErrorsAction::class)
         ->add($platformPermission('ops.error_log.read_redacted.platform'))

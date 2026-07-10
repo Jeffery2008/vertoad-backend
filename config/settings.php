@@ -59,6 +59,29 @@ return [
             ),
         ],
     ],
+    'backup' => [
+        's3' => [
+            'endpoint' => getenv('BACKUP_S3_ENDPOINT') ?: '',
+            'region' => getenv('BACKUP_S3_REGION') ?: 'auto',
+            'bucket' => getenv('BACKUP_S3_BUCKET') ?: '',
+            'access_key_id' => getenv('BACKUP_S3_ACCESS_KEY_ID') ?: '',
+            'secret_access_key' => getenv('BACKUP_S3_SECRET_ACCESS_KEY') ?: '',
+            'path_style_endpoint' => filter_var(
+                getenv('BACKUP_S3_PATH_STYLE_ENDPOINT') ?: true,
+                FILTER_VALIDATE_BOOL
+            ),
+        ],
+        'base_object_key' => getenv('BACKUP_BASE_OBJECT_KEY') ?: 'backups',
+        'temp_dir' => getenv('BACKUP_TEMP_DIR') ?: sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'vertoad-backups',
+        'mysql_dump_binary' => getenv('BACKUP_MYSQL_DUMP_BINARY') ?: 'mysqldump',
+        'mysql_restore_binary' => getenv('BACKUP_MYSQL_RESTORE_BINARY') ?: 'mysql',
+        'command_timeout_seconds' => (int) (getenv('BACKUP_COMMAND_TIMEOUT_SECONDS') ?: 900),
+        'restore_allowed_environments' => array_values(array_filter(array_map(
+            static fn (string $environment): string => strtolower(trim($environment)),
+            explode(',', getenv('BACKUP_RESTORE_ALLOWED_ENVIRONMENTS') ?: 'staging')
+        ))),
+        'server_side_encryption' => getenv('BACKUP_S3_SERVER_SIDE_ENCRYPTION') ?: 'AES256',
+    ],
     'ip_geo' => [
         'repository' => $ipGeoRepository === false ? null : $ipGeoRepository,
         'visibility_timeout_seconds' => (int) (getenv('IP_GEO_VISIBILITY_TIMEOUT_SECONDS') ?: 300),
@@ -119,6 +142,8 @@ return [
             'expired-token-cleanup',
             'config-cache-refresh',
             'backup-check',
+            'backup-create',
+            'backup-restore',
             'partition-maintenance',
             'webhook-retry',
         ],

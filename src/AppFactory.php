@@ -51,6 +51,8 @@ use VertoAD\Infrastructure\Storage\ObjectStorageInspectorInterface;
 use VertoAD\Infrastructure\Storage\ObjectStorageUploadSignerInterface;
 use VertoAD\Infrastructure\Storage\PublicUrlObjectStorageInspector;
 use VertoAD\Infrastructure\Storage\S3ArchiveObjectStorage;
+use VertoAD\Infrastructure\Storage\S3BackupObjectStorage;
+use VertoAD\Infrastructure\Storage\UnavailableBackupObjectStorage;
 use VertoAD\Infrastructure\Storage\UnavailableObjectStorageInspector;
 use VertoAD\Install\BootstrapSeeder;
 use VertoAD\Install\InstallFilesystem;
@@ -107,6 +109,8 @@ use VertoAD\Repository\OAuthConsentRepositoryInterface;
 use VertoAD\Repository\OAuthTokenRepository;
 use VertoAD\Repository\OAuthTokenRepositoryInterface;
 use VertoAD\Repository\Operations\ConfigVersionRepositoryInterface;
+use VertoAD\Repository\Operations\BackupJobRepositoryInterface;
+use VertoAD\Repository\Operations\DatabaseBackupJobRepository;
 use VertoAD\Repository\Operations\DatabaseConfigVersionRepository;
 use VertoAD\Repository\Operations\DatabaseOperationErrorLogRepository;
 use VertoAD\Repository\Operations\DatabaseOperationRiskDecisionLogRepository;
@@ -160,6 +164,8 @@ use VertoAD\Service\Cron\ArchiveParquetJob;
 use VertoAD\Service\Cron\AiReviewQueueJob;
 use VertoAD\Service\Cron\AggregateStatisticsJob;
 use VertoAD\Service\Cron\BackupCheckJob;
+use VertoAD\Service\Cron\BackupCreateJob;
+use VertoAD\Service\Cron\BackupRestoreJob;
 use VertoAD\Service\Attribution\AttributionService;
 use VertoAD\Service\AuditLogService;
 use VertoAD\Service\AuthService;
@@ -195,6 +201,13 @@ use VertoAD\Service\IpGeo\MappedIpGeoResponseNormalizer;
 use VertoAD\Service\OAuthClientSecretHasher;
 use VertoAD\Service\OAuthTokenService;
 use VertoAD\Service\Operations\ConfigVersionService;
+use VertoAD\Service\Operations\Backup\BackupExecutor;
+use VertoAD\Service\Operations\Backup\BackupInventory;
+use VertoAD\Service\Operations\Backup\BackupObjectStorageInterface;
+use VertoAD\Service\Operations\Backup\BackupService;
+use VertoAD\Service\Operations\Backup\MysqlBackupRunnerInterface;
+use VertoAD\Service\Operations\Backup\ProcessMysqlBackupRunner;
+use VertoAD\Service\Operations\Backup\UnavailableMysqlBackupRunner;
 use VertoAD\Service\Operations\OperationErrorCaptureService;
 use VertoAD\Service\Operations\OperationRequestCorrelationService;
 use VertoAD\Service\Operations\OperationsSummaryService;
@@ -535,8 +548,46 @@ final class AppFactory
                     ConfigVersionRepositoryInterface $versions,
                     AuditLogService $audit,
                 ): ConfigVersionService => new ConfigVersionService($versions, $audit),
+                BackupJobRepositoryInterface::class => static fn (Connection $connection): BackupJobRepositoryInterface =>
+                    new DatabaseBackupJobRepository($connection),
+                BackupObjectStorageInterface::class => static fn (): BackupObjectStorageInterface =>
+                    self::backupObjectStorage($settings),
+                MysqlBackupRunnerInterface::class => static fn (): MysqlBackupRunnerInterface =>
+                    self::mysqlBackupRunner($settings),
+                BackupInventory::class => static fn (Connection $connection): BackupInventory => new BackupInventory($connection),
+                BackupService::class => static fn (
+                    BackupJobRepositoryInterface $jobs,
+                    AuditLogService $audit,
+                ): BackupService => new BackupService(
+                    $jobs,
+                    $audit,
+                    (string) ($settings['app']['env'] ?? 'production'),
+                    is_array($settings['backup']['restore_allowed_environments'] ?? null)
+                        ? array_values(array_map('strval', $settings['backup']['restore_allowed_environments']))
+                        : ['staging'],
+                ),
+                BackupExecutor::class => static fn (
+                    BackupJobRepositoryInterface $jobs,
+                    MysqlBackupRunnerInterface $mysql,
+                    BackupObjectStorageInterface $storage,
+                    BackupInventory $inventory,
+                    AuditLogService $audit,
+                ): BackupExecutor => new BackupExecutor(
+                    $jobs,
+                    $mysql,
+                    $storage,
+                    $inventory,
+                    $audit,
+                    (string) ($settings['backup']['base_object_key'] ?? 'backups'),
+                    (string) ($settings['backup']['temp_dir'] ?? ''),
+                    is_array($settings['backup']['restore_allowed_environments'] ?? null)
+                        ? array_values(array_map('strval', $settings['backup']['restore_allowed_environments']))
+                        : ['staging'],
+                ),
                 OperationsSummaryService::class => static fn (
                     IpGeoRepositoryInterface $ipGeoRepository,
+                    BackupJobRepositoryInterface $backupJobs,
+                    Connection $connection,
                 ): OperationsSummaryService => new OperationsSummaryService(
                     backupStatus: $settings['operations']['backup_status'] ?? [
                         'status' => 'unknown',
@@ -556,6 +607,7 @@ final class AppFactory
                         'auth_failure_alerting_configured' => false,
                     ], $settings['operations']['redis_hardening_inventory'] ?? []),
                     ipGeoRepository: $ipGeoRepository,
+                    backupJobs: self::backupSummaryRepository($settings, $backupJobs, $connection),
                 ),
                 WebhookSigner::class => static fn (): WebhookSigner => new WebhookSigner(
                     (string) ($settings['webhooks']['signing_secret'] ?? 'whsec_local_dev_secret'),
@@ -743,6 +795,10 @@ final class AppFactory
                     new DuckDbColdQueryJob($queries),
                 BackupCheckJob::class => static fn (OperationsSummaryService $operations): BackupCheckJob =>
                     new BackupCheckJob($operations),
+                BackupCreateJob::class => static fn (BackupExecutor $executor): BackupCreateJob =>
+                    new BackupCreateJob($executor),
+                BackupRestoreJob::class => static fn (BackupExecutor $executor): BackupRestoreJob =>
+                    new BackupRestoreJob($executor),
                 EventTablePartitionMaintainer::class => static fn (Connection $connection): EventTablePartitionMaintainer =>
                     new EventTablePartitionMaintainer(
                         $connection,
@@ -768,6 +824,8 @@ final class AppFactory
                     ArchiveParquetJob $archiveParquet,
                     DuckDbColdQueryJob $duckDbColdQuery,
                     BackupCheckJob $backupCheck,
+                    BackupCreateJob $backupCreate,
+                    BackupRestoreJob $backupRestore,
                     PartitionMaintenanceJob $partitionMaintenance,
                     IpGeoLookupJob $ipGeoLookup,
                 ) use ($settings): CronJobRegistry {
@@ -782,6 +840,8 @@ final class AppFactory
                         $archiveParquet,
                         $duckDbColdQuery,
                         $backupCheck,
+                        $backupCreate,
+                        $backupRestore,
                         $partitionMaintenance,
                         $ipGeoLookup,
                     ];
@@ -958,6 +1018,89 @@ final class AppFactory
         }
 
         throw new \RuntimeException('R2_PUBLIC_BASE_URL is required for uploaded asset inspection.');
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function backupObjectStorage(array $settings): BackupObjectStorageInterface
+    {
+        $backup = $settings['backup'] ?? [];
+        $backup = is_array($backup) ? $backup : [];
+        $config = $backup['s3'] ?? [];
+        $config = is_array($config) ? $config : [];
+        $config['server_side_encryption'] = (string) ($backup['server_side_encryption'] ?? 'AES256');
+        $configured = trim((string) ($config['endpoint'] ?? '')) !== ''
+            && trim((string) ($config['bucket'] ?? '')) !== ''
+            && trim((string) ($config['access_key_id'] ?? '')) !== ''
+            && trim((string) ($config['secret_access_key'] ?? '')) !== '';
+        if ($configured) {
+            if (!self::localFallbackAllowed($settings)) {
+                $endpoint = parse_url((string) $config['endpoint']);
+                if (!is_array($endpoint) || strtolower((string) ($endpoint['scheme'] ?? '')) !== 'https') {
+                    throw new \RuntimeException('BACKUP_S3_ENDPOINT must use HTTPS outside local/testing.');
+                }
+                $primary = $settings['storage']['s3'] ?? [];
+                $primary = is_array($primary) ? $primary : [];
+                if (
+                    self::normalizedS3Endpoint((string) ($primary['endpoint'] ?? ''))
+                        === self::normalizedS3Endpoint((string) $config['endpoint'])
+                    && trim((string) ($primary['bucket'] ?? '')) === trim((string) $config['bucket'])
+                ) {
+                    throw new \RuntimeException('Backup storage must use a bucket isolated from primary object storage.');
+                }
+            }
+
+            return new S3BackupObjectStorage($config);
+        }
+        if (self::localFallbackAllowed($settings)) {
+            return new UnavailableBackupObjectStorage();
+        }
+
+        throw new \RuntimeException('Dedicated BACKUP_S3_* object storage is required for production backups.');
+    }
+
+    private static function normalizedS3Endpoint(string $endpoint): string
+    {
+        return strtolower(rtrim(trim($endpoint), '/'));
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function mysqlBackupRunner(array $settings): MysqlBackupRunnerInterface
+    {
+        $database = $settings['database'] ?? [];
+        $database = is_array($database) ? $database : [];
+        $driver = strtolower(trim((string) ($database['driver'] ?? 'pdo_mysql')));
+        $configured = $driver === 'pdo_mysql'
+            && trim((string) ($database['host'] ?? '')) !== ''
+            && trim((string) ($database['database'] ?? '')) !== ''
+            && trim((string) ($database['username'] ?? '')) !== '';
+        if (!$configured) {
+            if (self::localFallbackAllowed($settings)) {
+                return new UnavailableMysqlBackupRunner();
+            }
+
+            throw new \RuntimeException('A configured MySQL database is required for production backups.');
+        }
+        $backup = $settings['backup'] ?? [];
+        $backup = is_array($backup) ? $backup : [];
+
+        return new ProcessMysqlBackupRunner(
+            database: $database,
+            dumpBinary: (string) ($backup['mysql_dump_binary'] ?? 'mysqldump'),
+            restoreBinary: (string) ($backup['mysql_restore_binary'] ?? 'mysql'),
+            timeoutSeconds: (int) ($backup['command_timeout_seconds'] ?? 900),
+        );
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function backupSummaryRepository(
+        array $settings,
+        BackupJobRepositoryInterface $repository,
+        Connection $connection,
+    ): ?BackupJobRepositoryInterface {
+        if (!self::localFallbackAllowed($settings)) {
+            return $repository;
+        }
+        return $connection->createSchemaManager()->tablesExist(['operation_backup_jobs']) ? $repository : null;
     }
 
     /** @param array<string, mixed> $settings */

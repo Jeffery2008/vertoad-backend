@@ -3513,6 +3513,8 @@ paths:
       summary: Return operations readiness and hardening summary.
       security:
         - BearerAuth: []
+      x-permissions:
+        - ops.dashboard.read.platform
       responses:
         "200":
           description: Operations summary.
@@ -3525,6 +3527,163 @@ paths:
                     properties:
                       data:
                         $ref: "#/components/schemas/OperationsSummary"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/operations/backups:
+    get:
+      tags:
+        - Operations
+      operationId: listOperationBackupJobs
+      summary: List durable MySQL and object-storage backup jobs.
+      description: Returns queued and completed backup or restore jobs. Object keys and failure details are restricted to platform operators with backup read access.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - ops.backup.read.platform
+      parameters:
+        - name: job_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - backup
+              - restore
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: Page of backup and restore jobs.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/BackupJobListData"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags:
+        - Operations
+      operationId: createOperationBackupJob
+      summary: Queue an encrypted platform backup.
+      description: Queues asynchronous MySQL, business configuration, creative asset, confirmed withdrawal proof, and archived Parquet backup work into dedicated `BACKUP_S3_*` storage. Outside local/testing the backup endpoint must use HTTPS and must not reuse the primary object-storage endpoint and bucket. The protected `backup-create` Cron job executes one queued job per run.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - ops.backup.create.platform
+      responses:
+        "202":
+          description: Backup job queued.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/BackupJob"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/operations/backups/{job_id}:
+    get:
+      tags:
+        - Operations
+      operationId: getOperationBackupJob
+      summary: Fetch one backup or restore job.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - ops.backup.read.platform
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[a-z][a-z0-9_]{7,63}$"
+      responses:
+        "200":
+          description: Backup or restore job metadata.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/BackupJob"
+        "404":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/operations/backups/{job_id}/restore:
+    post:
+      tags:
+        - Operations
+      operationId: restoreOperationBackupJob
+      summary: Queue a staging-only restore drill from a completed backup.
+      description: Requires exact backup ID confirmation and an operator reason. The API refuses environments outside `BACKUP_RESTORE_ALLOWED_ENVIRONMENTS`; the protected `backup-restore` Cron job repeats the environment guard, validates the manifest and MySQL SHA-256 checksum, restores MySQL and copied objects, then writes immutable restore evidence and audit records.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - ops.backup.restore.platform
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          description: Completed source backup job ID.
+          schema:
+            type: string
+            pattern: "^[a-z][a-z0-9_]{7,63}$"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BackupRestoreRequest"
+      responses:
+        "202":
+          description: Restore job queued.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/BackupJob"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
   /api/v1/operations/errors:
@@ -4434,6 +4593,8 @@ paths:
                         - expired-token-cleanup
                         - config-cache-refresh
                         - backup-check
+                        - backup-create
+                        - backup-restore
                         - partition-maintenance
                         - webhook-retry
                       lock_provider: redis
@@ -7578,6 +7739,163 @@ components:
             - "null"
           format: date-time
       additionalProperties: false
+    BackupJob:
+      type: object
+      required:
+        - job_id
+        - job_type
+        - source_backup_id
+        - status
+        - requested_by_user_id
+        - request_id
+        - environment
+        - reason
+        - manifest_object_key
+        - manifest_sha256
+        - mysql_object_key
+        - mysql_sha256
+        - config_object_key
+        - evidence_object_key
+        - object_count
+        - byte_count
+        - error_message
+        - created_at
+        - started_at
+        - completed_at
+      properties:
+        job_id:
+          type: string
+          pattern: "^[a-z][a-z0-9_]{7,63}$"
+        job_type:
+          type: string
+          enum:
+            - backup
+            - restore
+        source_backup_id:
+          type:
+            - string
+            - "null"
+        status:
+          type: string
+          enum:
+            - queued
+            - running
+            - completed
+            - failed
+        requested_by_user_id:
+          type: integer
+          minimum: 1
+        request_id:
+          type: string
+          minLength: 1
+        environment:
+          type: string
+          minLength: 1
+        reason:
+          type:
+            - string
+            - "null"
+          maxLength: 500
+        manifest_object_key:
+          type:
+            - string
+            - "null"
+        manifest_sha256:
+          type:
+            - string
+            - "null"
+          pattern: "^[a-f0-9]{64}$"
+        mysql_object_key:
+          type:
+            - string
+            - "null"
+        mysql_sha256:
+          type:
+            - string
+            - "null"
+          pattern: "^[a-f0-9]{64}$"
+        config_object_key:
+          type:
+            - string
+            - "null"
+        evidence_object_key:
+          type:
+            - string
+            - "null"
+        object_count:
+          type: integer
+          minimum: 0
+        byte_count:
+          type: integer
+          minimum: 0
+        error_message:
+          type:
+            - string
+            - "null"
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        completed_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+      additionalProperties: false
+    BackupJobListData:
+      type: object
+      required:
+        - items
+        - page
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackupJob"
+        page:
+          $ref: "#/components/schemas/BackupJobPage"
+      additionalProperties: false
+    BackupJobPage:
+      type: object
+      required:
+        - limit
+        - offset
+        - total
+        - has_more
+      properties:
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+        offset:
+          type: integer
+          minimum: 0
+        total:
+          type: integer
+          minimum: 0
+        has_more:
+          type: boolean
+      additionalProperties: false
+    BackupRestoreRequest:
+      type: object
+      required:
+        - confirmation
+        - reason
+      properties:
+        confirmation:
+          type: string
+          description: Must exactly match the source backup job ID from the path.
+          minLength: 1
+          maxLength: 64
+        reason:
+          type: string
+          minLength: 10
+          maxLength: 500
+      additionalProperties: false
     OperationsSummary:
       type: object
       required:
@@ -7606,8 +7924,9 @@ components:
                 - "null"
             verified_by:
               type:
-                - string
+                - integer
                 - "null"
+              minimum: 1
           additionalProperties: false
         redis_hardening_inventory:
           $ref: "#/components/schemas/RedisHardeningInventory"
@@ -7616,10 +7935,13 @@ components:
           required:
             - raw_context
             - config_rollback
+            - backup_restore
           properties:
             raw_context:
               type: boolean
             config_rollback:
+              type: boolean
+            backup_restore:
               type: boolean
           additionalProperties: false
         ip_geo_queue:
@@ -7696,12 +8018,14 @@ components:
           type: string
           enum:
             - healthy
-            - degraded
+            - unhealthy
+            - pending
             - unknown
         last_backup_at:
           type:
             - string
             - "null"
+          format: date-time
         last_successful_backup_id:
           type:
             - string

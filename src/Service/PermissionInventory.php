@@ -110,6 +110,7 @@ final class PermissionInventory
                 ['ops.cron.lock_clear.platform', 'Clear platform cron locks.', true],
                 ['ops.cache.flush.platform', 'Flush platform caches.', true],
                 ['ops.backup.read.platform', 'View platform backup status.', false],
+                ['ops.backup.create.platform', 'Create encrypted platform backups.', true],
                 ['ops.backup.restore.platform', 'Restore platform backups.', true],
                 ['security.event.read.platform', 'View platform security events.', false],
             ],
