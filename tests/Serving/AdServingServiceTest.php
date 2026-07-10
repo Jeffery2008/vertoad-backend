@@ -536,14 +536,18 @@ final class AdServingServiceTest extends TestCase
     {
         $decisions = new InMemoryAdDecisionRepository();
         $events = new InMemoryAdEventRepository();
+        $riskAssessor = new MutableServingRiskAssessor(AdTrafficRiskDecision::allow());
         $service = new AdServingService(
             new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
             new StaticAdCandidateRepository([$this->safeCandidate()]),
             $decisions,
             $events,
+            null,
+            new DefaultAdSelectionPolicy(riskAssessor: $riskAssessor),
         );
         $decision = $service->serve(10, 20, 'viewer-1', null, false, new DateTimeImmutable('2026-06-08 10:00:00'));
         $noFill = $service->serve(10, 21, 'viewer-1', null, false, new DateTimeImmutable('2026-06-08 10:00:00'));
+        $riskAssessor->setDecision(AdTrafficRiskDecision::reject('fraud_click_risk'));
 
         $missing = $service->recordClick('missing', 'viewer-1', 'clk-missing', new DateTimeImmutable('2026-06-08 10:00:05'));
         self::assertFalse($missing->accepted);
@@ -561,23 +565,29 @@ final class AdServingServiceTest extends TestCase
         $unsafe = $service->recordClick($decision->decisionId, 'viewer-1', 'clk-unsafe', new DateTimeImmutable('2026-06-08 10:00:08'));
         self::assertFalse($unsafe->accepted);
         self::assertSame('unsafe_landing_url', $unsafe->reason);
+        self::assertSame(1, $riskAssessor->assessmentCount());
     }
 
     public function testClickRequiresPriorValidImpression(): void
     {
         $events = new InMemoryAdEventRepository();
+        $riskAssessor = new MutableServingRiskAssessor(AdTrafficRiskDecision::allow());
         $service = new AdServingService(
             new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
             new StaticAdCandidateRepository([$this->safeCandidate()]),
             new InMemoryAdDecisionRepository(),
             $events,
+            null,
+            new DefaultAdSelectionPolicy(riskAssessor: $riskAssessor),
         );
         $decision = $service->serve(10, 20, 'viewer-1', null, false, new DateTimeImmutable('2026-06-08 10:00:00'));
+        $riskAssessor->setDecision(AdTrafficRiskDecision::reject('fraud_click_risk'));
 
         $click = $service->recordClick($decision->decisionId, 'viewer-1', 'clk-1', new DateTimeImmutable('2026-06-08 10:00:05'));
         self::assertFalse($click->accepted);
         self::assertSame('valid_impression_required', $click->reason);
         self::assertSame(0, $events->clickCount());
+        self::assertSame(1, $riskAssessor->assessmentCount());
     }
 
     public function testClickRecordsAfterValidImpressionAndDeduplicatesByEventId(): void
@@ -603,6 +613,128 @@ final class AdServingServiceTest extends TestCase
         self::assertTrue($duplicate->duplicate);
         self::assertSame('https://advertiser.example/landing', $duplicate->redirectUrl);
         self::assertSame(1, $events->clickCount());
+    }
+
+    public function testClickRechecksLatestTrafficRiskAndReplaysInvalidOutcomeWithoutFrequencyGrowth(): void
+    {
+        $riskAssessor = new MutableServingRiskAssessor(AdTrafficRiskDecision::allow());
+        $frequencyCaps = new InMemoryServingFrequencyCapStore();
+        $events = new InMemoryAdEventRepository();
+        $riskLogs = new InMemoryOperationRiskDecisionLogRepository();
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([$this->safeCandidate()]),
+            new InMemoryAdDecisionRepository(),
+            $events,
+            null,
+            new DefaultAdSelectionPolicy(
+                frequencyCaps: $frequencyCaps,
+                riskAssessor: $riskAssessor,
+            ),
+            null,
+            $riskLogs,
+        );
+        $now = new DateTimeImmutable('2026-06-08 10:00:00');
+        $decision = $service->serve(
+            10,
+            20,
+            'viewer-click-risk',
+            null,
+            false,
+            $now,
+            new ServingRequestContext(
+                ipAddress: '198.51.100.10',
+                userAgent: 'Serve Browser',
+                geoCode: 'CN-SH',
+                requestId: 'req-serve-click-risk',
+            ),
+        );
+        $impression = $service->trackImpression(
+            $decision->decisionId,
+            'viewer-click-risk',
+            0.75,
+            1500,
+            'imp-click-risk',
+            $now->modify('+2 seconds'),
+            'req-track-click-risk',
+        );
+        $riskAssessor->setDecision(AdTrafficRiskDecision::reject('fraud_click_velocity'));
+
+        $clickAt = $now->modify('+40 seconds');
+        $rejected = $service->recordClick(
+            $decision->decisionId,
+            'viewer-click-risk',
+            'clk-high-risk',
+            $clickAt,
+            context: new ServingRequestContext(
+                ipAddress: '203.0.113.73',
+                userAgent: 'Click Risk Browser',
+                geoCode: 'JP-13',
+                requestId: 'req-click-risk',
+                endpoint: '/api/v1/ads/click',
+                httpMethod: 'get',
+            ),
+        );
+
+        self::assertTrue($decision->filled);
+        self::assertTrue($impression->accepted);
+        self::assertFalse($rejected->accepted);
+        self::assertSame('fraud_click_velocity', $rejected->reason);
+        self::assertNull($rejected->redirectUrl);
+        self::assertSame([
+            ['site_id' => 10, 'slot_id' => 20, 'viewer_id' => 'viewer-click-risk'],
+            ['site_id' => 10, 'slot_id' => 20, 'viewer_id' => 'viewer-click-risk'],
+        ], $riskAssessor->assessments());
+
+        $invalidClick = $events->findEvent('click', 'clk-high-risk');
+        self::assertNotNull($invalidClick);
+        self::assertFalse($invalidClick->valid);
+        self::assertSame('fraud_click_velocity', $invalidClick->reason);
+        self::assertSame('req-click-risk', $invalidClick->requestId);
+        self::assertSame('203.0.113.73', $invalidClick->ipAddress);
+        self::assertSame('Click Risk Browser', $invalidClick->userAgent);
+        self::assertSame('JP-13', $invalidClick->geoCode);
+        self::assertSame(0, $events->clickCount());
+        self::assertSame(0, $frequencyCaps->clickCount(30, 20, 'viewer-click-risk', 'hour', $clickAt));
+
+        $logs = $riskLogs->search(['request_id' => 'req-click-risk', 'action' => 'ads.click.invalid']);
+        self::assertCount(1, $logs);
+        self::assertSame(['fraud_click_velocity'], $logs[0]->reason_codes);
+        self::assertSame('click', $logs[0]->subject_type);
+        self::assertSame('clk-high-risk', $logs[0]->subject_id);
+        self::assertSame('req-click-risk', $logs[0]->request_id);
+        self::assertSame('203.0.113.73', $logs[0]->ip_address);
+        self::assertSame('Click Risk Browser', $logs[0]->user_agent);
+        self::assertSame('/api/v1/ads/click', $logs[0]->endpoint);
+        self::assertSame('GET', $logs[0]->http_method);
+        self::assertSame(10, $logs[0]->site_id);
+        self::assertSame(20, $logs[0]->slot_id);
+        self::assertSame(30, $logs[0]->campaign_id);
+        self::assertSame('viewer-click-risk', $logs[0]->viewer_id);
+        self::assertSame($decision->decisionId, $logs[0]->ad_decision_id);
+
+        $riskAssessor->setDecision(AdTrafficRiskDecision::allow());
+        $replay = $service->recordClick(
+            $decision->decisionId,
+            'viewer-click-risk',
+            'clk-high-risk',
+            $clickAt->modify('+1 minute'),
+            'req-click-risk-replay',
+            new ServingRequestContext(
+                ipAddress: '192.0.2.44',
+                userAgent: 'Replay Browser',
+                geoCode: 'US-CA',
+                requestId: 'req-click-risk-replay',
+            ),
+        );
+
+        self::assertFalse($replay->accepted);
+        self::assertSame('fraud_click_velocity', $replay->reason);
+        self::assertNull($replay->redirectUrl);
+        self::assertCount(2, $riskAssessor->assessments());
+        self::assertCount(2, $events->events());
+        self::assertCount(1, $riskLogs->search(['action' => 'ads.click.invalid']));
+        self::assertSame(0, $frequencyCaps->clickCount(30, 20, 'viewer-click-risk', 'hour', $clickAt));
     }
 
     public function testShortWindowRepeatClickIsRejectedAndRecordedInvalid(): void
@@ -1325,6 +1457,43 @@ final readonly class FixedServingRiskAssessor implements ServingRiskAssessorInte
     public function assess(int $siteId, int $slotId, string $viewerId): AdTrafficRiskDecision
     {
         return $this->decision;
+    }
+}
+
+final class MutableServingRiskAssessor implements ServingRiskAssessorInterface
+{
+    /** @var list<array{site_id:int,slot_id:int,viewer_id:string}> */
+    private array $assessments = [];
+
+    public function __construct(private AdTrafficRiskDecision $decision)
+    {
+    }
+
+    public function setDecision(AdTrafficRiskDecision $decision): void
+    {
+        $this->decision = $decision;
+    }
+
+    public function assess(int $siteId, int $slotId, string $viewerId): AdTrafficRiskDecision
+    {
+        $this->assessments[] = [
+            'site_id' => $siteId,
+            'slot_id' => $slotId,
+            'viewer_id' => $viewerId,
+        ];
+
+        return $this->decision;
+    }
+
+    /** @return list<array{site_id:int,slot_id:int,viewer_id:string}> */
+    public function assessments(): array
+    {
+        return $this->assessments;
+    }
+
+    public function assessmentCount(): int
+    {
+        return count($this->assessments);
     }
 }
 

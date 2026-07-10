@@ -257,6 +257,25 @@ final readonly class AdServingService
             return AdEventResult::rejected('repeat_click_window');
         }
 
+        $trafficRisk = $this->selectionPolicy->trafficRisk($decision->siteId, $decision->slotId, $viewerId);
+        if (!$trafficRisk->allowed) {
+            $reason = $this->nullableString($trafficRisk->reason) ?? 'fraud_high_risk';
+            $this->events->recordInvalidClick($clickDecision, $eventId, $occurredAt, $reason, $requestId);
+            $this->appendRiskDecisionLog(
+                decision: $clickDecision,
+                action: 'ads.click.invalid',
+                reasonCodes: [$reason],
+                subjectType: 'click',
+                subjectId: $eventId,
+                occurredAt: $occurredAt,
+                requestId: $requestId,
+                endpoint: $context?->endpoint ?? '/api/v1/ads/click',
+                httpMethod: $context?->httpMethod ?? 'GET',
+            );
+
+            return AdEventResult::rejected($reason);
+        }
+
         $this->events->recordClick($clickDecision, $eventId, $occurredAt, $requestId);
         if ($decision->campaignId !== null) {
             $this->selectionPolicy->recordClick($decision->campaignId, $decision->slotId, $viewerId, $occurredAt);
