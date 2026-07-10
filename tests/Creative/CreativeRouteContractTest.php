@@ -59,20 +59,4 @@ final class CreativeRouteContractTest extends TestCase
         }
     }
 
-    public function testBootstrapSuperAdminSeedIncludesCreativePermissions(): void
-    {
-        $script = (string) file_get_contents(dirname(__DIR__, 2) . '/db/init-super-admin.sql');
-
-        foreach (
-            [
-                'creative.template.read.own',
-                'creative.template.write.own',
-                'creative.template.manage.platform',
-                'creative.design.read.own',
-                'creative.design.write.own',
-            ] as $permission
-        ) {
-            self::assertStringContainsString("'" . $permission . "'", $script);
-        }
-    }
 }

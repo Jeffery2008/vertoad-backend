@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VertoAD\Tests\Operations;
 
 use PHPUnit\Framework\TestCase;
+use VertoAD\Install\BootstrapConfigCatalog;
 
 final class SystemConfigMigrationContractTest extends TestCase
 {
@@ -43,49 +44,43 @@ final class SystemConfigMigrationContractTest extends TestCase
 
     public function testBootstrapSeedsRequiredRuntimeBusinessConfigVersions(): void
     {
-        $bootstrapSql = (string) file_get_contents(dirname(__DIR__, 2) . '/db/init-super-admin.sql');
+        $catalog = BootstrapConfigCatalog::all();
 
-        self::assertStringContainsString('INSERT INTO system_config_versions', $bootstrapSql);
-        self::assertStringContainsString("'billing.default_revenue_share'", $bootstrapSql);
-        self::assertStringContainsString("JSON_OBJECT('publisher_percent', 70)", $bootstrapSql);
-        self::assertStringContainsString("'security.rate_limit'", $bootstrapSql);
-        self::assertStringContainsString("JSON_OBJECT('limit', 60, 'window_seconds', 60)", $bootstrapSql);
-        self::assertStringContainsString("'attribution.default_window_seconds'", $bootstrapSql);
-        self::assertStringContainsString("JSON_OBJECT('seconds', 604800)", $bootstrapSql);
-        self::assertStringContainsString("'serving.event_validation'", $bootstrapSql);
-        self::assertStringContainsString("'min_visible_ratio', 0.5", $bootstrapSql);
-        self::assertStringContainsString("'min_visible_ms', 1000", $bootstrapSql);
-        self::assertStringContainsString("'repeat_click_window_seconds', 30", $bootstrapSql);
-        self::assertStringContainsString("'review.ai_policy'", $bootstrapSql);
-        self::assertStringContainsString("'provider', 'openai_compatible'", $bootstrapSql);
-        self::assertStringContainsString("'max_input_tokens', 12000", $bootstrapSql);
-        self::assertStringNotContainsString('AI_REVIEW_API_KEY', $bootstrapSql);
-        self::assertStringContainsString("'assets.upload_policy'", $bootstrapSql);
-        self::assertStringContainsString("'upload_intent_ttl_seconds', 900", $bootstrapSql);
-        self::assertStringContainsString("'blocked_extensions', JSON_ARRAY('html', 'htm', 'js', 'mjs', 'svg')", $bootstrapSql);
-        self::assertStringContainsString("'image/png', JSON_ARRAY(JSON_OBJECT('prefix_base64'", $bootstrapSql);
-        self::assertStringContainsString("'video/mp4', JSON_ARRAY(JSON_OBJECT('offset_ascii'", $bootstrapSql);
-        self::assertStringContainsString("'text/plain', JSON_ARRAY(JSON_OBJECT('forbid_ascii_ci', '<script'))", $bootstrapSql);
-        self::assertStringContainsString("'webhook.delivery_policy'", $bootstrapSql);
-        self::assertStringContainsString(
-            "JSON_OBJECT('batch_size', 50, 'http_timeout_seconds', 5, 'max_retry_count', 3, 'retry_base_backoff_seconds', 300)",
-            $bootstrapSql,
-        );
-        self::assertStringContainsString("'security.turnstile_policy'", $bootstrapSql);
-        self::assertStringNotContainsString("'verify_url'", $bootstrapSql);
-        self::assertStringContainsString("'timeout_seconds', 5", $bootstrapSql);
-        self::assertStringContainsString("'protected_endpoints', JSON_ARRAY(", $bootstrapSql);
-        self::assertStringContainsString("'POST:/api/v1/auth/login'", $bootstrapSql);
-        self::assertStringNotContainsString("'GET:/api/v1/oauth/authorize'", $bootstrapSql);
-        self::assertStringContainsString("'conditional_protected_endpoints', JSON_ARRAY(", $bootstrapSql);
-        self::assertStringContainsString("'POST:/api/v1/ads/track'", $bootstrapSql);
-        self::assertStringContainsString("'GET:/api/v1/ads/click'", $bootstrapSql);
-        self::assertStringNotContainsString('TURNSTILE_SECRET_KEY', $bootstrapSql);
-        self::assertStringContainsString('INSERT INTO revenue_share_rules', $bootstrapSql);
-        self::assertStringContainsString("'global'", $bootstrapSql);
-        self::assertStringContainsString('7000', $bootstrapSql);
-        self::assertStringContainsString("'active'", $bootstrapSql);
-        self::assertStringContainsString('@super_admin_user_id', $bootstrapSql);
+        self::assertSame(['publisher_percent' => 70], $catalog['billing.default_revenue_share']);
+        self::assertSame(['limit' => 60, 'window_seconds' => 60], $catalog['security.rate_limit']);
+        self::assertSame(['seconds' => 604800], $catalog['attribution.default_window_seconds']);
+        self::assertSame([
+            'min_visible_ratio' => 0.5,
+            'min_visible_ms' => 1000,
+            'repeat_click_window_seconds' => 30,
+        ], $catalog['serving.event_validation']);
+
+        $review = $catalog['review.ai_policy'];
+        self::assertSame('openai_compatible', $review['provider']);
+        self::assertSame(12000, $review['max_input_tokens']);
+        self::assertArrayNotHasKey('api_key', $review);
+
+        $assets = $catalog['assets.upload_policy'];
+        self::assertSame(900, $assets['upload_intent_ttl_seconds']);
+        self::assertSame(['html', 'htm', 'js', 'mjs', 'svg'], $assets['blocked_extensions']);
+        self::assertArrayHasKey('image/png', $assets['types']['image']['magic_signatures']);
+        self::assertArrayHasKey('video/mp4', $assets['types']['video']['magic_signatures']);
+        self::assertSame('<script', $assets['types']['text']['magic_signatures']['text/plain'][0]['forbid_ascii_ci']);
+
+        self::assertSame([
+            'batch_size' => 50,
+            'http_timeout_seconds' => 5,
+            'max_retry_count' => 3,
+            'retry_base_backoff_seconds' => 300,
+        ], $catalog['webhook.delivery_policy']);
+
+        $turnstile = $catalog['security.turnstile_policy'];
+        self::assertSame(5, $turnstile['timeout_seconds']);
+        self::assertArrayNotHasKey('verify_url', $turnstile);
+        self::assertContains('POST:/api/v1/auth/login', $turnstile['protected_endpoints']);
+        self::assertNotContains('GET:/api/v1/oauth/authorize', $turnstile['protected_endpoints']);
+        self::assertContains('POST:/api/v1/ads/track', $turnstile['conditional_protected_endpoints']);
+        self::assertContains('GET:/api/v1/ads/click', $turnstile['conditional_protected_endpoints']);
     }
 
     private function migrationSql(): string

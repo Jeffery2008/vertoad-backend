@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/12.2/phpunit.xsd"
-         bootstrap="vendor/autoload.php"
+         bootstrap="tests/Install/bootstrap.php"
          colors="true"
          cacheDirectory=".phpunit.cache"
          failOnRisky="true"
@@ -19,5 +19,7 @@
   <coverage includeUncoveredFiles="true" pathCoverage="false"/>
   <php>
     <env name="APP_ENV" value="testing"/>
+    <env name="APP_INSTALLED" value="true"/>
+    <env name="VERTOAD_INSTALL_TEST_BYPASS" value="true"/>
   </php>
 </phpunit>

@@ -7,6 +7,8 @@ namespace VertoAD;
 use DI\ContainerBuilder;
 use Doctrine\DBAL\Connection;
 use Dotenv\Dotenv;
+use Psr\Http\Message\ResponseInterface;
+use Psr\Http\Message\ServerRequestInterface;
 use Slim\App;
 use Slim\Factory\AppFactory as SlimAppFactory;
 use VertoAD\Domain\Security\TurnstilePolicy;
@@ -14,6 +16,8 @@ use VertoAD\Domain\IpGeo\IpGeoProviderPolicy;
 use VertoAD\Http\Action\Cron\CronStatusAction;
 use VertoAD\Http\Action\Cron\CronRunAction;
 use VertoAD\Http\Action\HealthAction;
+use VertoAD\Http\Action\Install\InstallAction;
+use VertoAD\Http\Action\Install\InstalledInstallAction;
 use VertoAD\Http\Action\Serving\ServeAction;
 use VertoAD\Http\Action\Serving\ServeFrameAction;
 use VertoAD\Http\Error\OperationErrorHandler;
@@ -27,6 +31,7 @@ use VertoAD\Http\Middleware\LazyContainerMiddleware;
 use VertoAD\Http\Middleware\RateLimitMiddleware;
 use VertoAD\Http\Middleware\RequestIdMiddleware;
 use VertoAD\Http\Middleware\TurnstileMiddleware;
+use VertoAD\Http\RequestIdContext;
 use VertoAD\Infrastructure\Database\ConnectionFactory;
 use VertoAD\Infrastructure\OAuth\LeagueOAuthRepository;
 use VertoAD\Infrastructure\OAuth\LeagueOAuthServerFactory;
@@ -47,6 +52,13 @@ use VertoAD\Infrastructure\Storage\ObjectStorageUploadSignerInterface;
 use VertoAD\Infrastructure\Storage\PublicUrlObjectStorageInspector;
 use VertoAD\Infrastructure\Storage\S3ArchiveObjectStorage;
 use VertoAD\Infrastructure\Storage\UnavailableObjectStorageInspector;
+use VertoAD\Install\BootstrapSeeder;
+use VertoAD\Install\InstallFilesystem;
+use VertoAD\Install\InstallerService;
+use VertoAD\Install\InstallSecretGenerator;
+use VertoAD\Install\InstallSecurity;
+use VertoAD\Install\InstallState;
+use VertoAD\Install\PhinxMigrationRunner;
 use VertoAD\Repository\AdSlotRepository;
 use VertoAD\Repository\AdSlotRepositoryInterface;
 use VertoAD\Repository\Archive\ArchiveRepositoryInterface;
@@ -233,6 +245,11 @@ final class AppFactory
         }
 
         $settings = require $rootPath . '/config/settings.php';
+        $installState = new InstallState($rootPath);
+        if (!$installState->isInstalled()) {
+            return self::createInstallerApp($rootPath, $settings, $installState);
+        }
+
         $container = (new ContainerBuilder())
             ->addDefinitions([
                 'settings' => $settings,
@@ -855,11 +872,61 @@ final class AppFactory
 
         $routes = require $rootPath . '/config/routes.php';
         $routes($app);
+        $app->any('/install', new InstalledInstallAction());
 
         $app->add(new ApiEnvelopeMiddleware($app->getResponseFactory()));
         $app->addRoutingMiddleware();
         $errorMiddleware = $app->addErrorMiddleware((bool) $settings['app']['debug'], true, true);
         $errorMiddleware->setDefaultErrorHandler($container->get(OperationErrorHandler::class));
+        $app->add(new RequestIdMiddleware());
+
+        return $app;
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function createInstallerApp(string $rootPath, array $settings, InstallState $state): App
+    {
+        $container = (new ContainerBuilder())->build();
+        SlimAppFactory::setContainer($container);
+        $app = SlimAppFactory::create();
+        $filesystem = new InstallFilesystem($rootPath);
+        $configuredEnvironment = getenv('APP_ENV');
+        $installer = new InstallerService(
+            $configuredEnvironment === false ? '' : $configuredEnvironment,
+            $state,
+            $filesystem,
+            new PhinxMigrationRunner($rootPath),
+            new BootstrapSeeder(),
+            new InstallSecretGenerator(),
+        );
+        $security = new InstallSecurity((string) ($settings['install']['token'] ?? ''));
+
+        $app->addBodyParsingMiddleware();
+        $app->map(['GET', 'POST'], '/install', new InstallAction(
+            $security,
+            $installer,
+            ClientIpResolver::fromSettings($settings['cloudflare'] ?? []),
+        ));
+        $app->any('/{path:.*}', function (ServerRequestInterface $request, ResponseInterface $response): ResponseInterface {
+            $requestId = RequestIdContext::ensure($request);
+            $response->getBody()->write(json_encode([
+                'data' => null,
+                'error' => [
+                    'code' => 'installation_required',
+                    'message' => 'VertoAD must be installed before the API can serve requests.',
+                ],
+                'meta' => ['api_version' => 'v1'],
+                'request_id' => $requestId,
+            ], JSON_THROW_ON_ERROR));
+
+            return $response
+                ->withStatus(503)
+                ->withHeader('Content-Type', 'application/json')
+                ->withHeader('Cache-Control', 'no-store, max-age=0')
+                ->withHeader('Retry-After', '60');
+        });
+        $app->addRoutingMiddleware();
+        $app->addErrorMiddleware(false, true, true);
         $app->add(new RequestIdMiddleware());
 
         return $app;

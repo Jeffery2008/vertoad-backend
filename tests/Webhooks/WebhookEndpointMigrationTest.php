@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VertoAD\Tests\Webhooks;
 
 use PHPUnit\Framework\TestCase;
+use VertoAD\Install\BootstrapConfigCatalog;
 
 final class WebhookEndpointMigrationTest extends TestCase
 {
@@ -99,18 +100,15 @@ final class WebhookEndpointMigrationTest extends TestCase
     public function testWebhookRetryPolicyIsVersionedBusinessConfigInsteadOfEnvironmentSetting(): void
     {
         $settings = require dirname(__DIR__, 2) . '/config/settings.php';
-        $bootstrapSql = (string) file_get_contents(dirname(__DIR__, 2) . '/db/init-super-admin.sql');
+        $policy = BootstrapConfigCatalog::all()['webhook.delivery_policy'] ?? null;
 
         self::assertSame(['signing_secret'], array_keys($settings['webhooks'] ?? []));
-        self::assertStringContainsString("'webhook.delivery_policy'", $bootstrapSql);
-        self::assertStringContainsString(
-            "JSON_OBJECT('batch_size', 50, 'http_timeout_seconds', 5, 'max_retry_count', 3, 'retry_base_backoff_seconds', 300)",
-            $bootstrapSql,
-        );
-        self::assertStringNotContainsString('WEBHOOK_RETRY_BATCH_SIZE', $bootstrapSql);
-        self::assertStringNotContainsString('WEBHOOK_HTTP_TIMEOUT_SECONDS', $bootstrapSql);
-        self::assertStringNotContainsString('WEBHOOK_MAX_RETRY_COUNT', $bootstrapSql);
-        self::assertStringNotContainsString('WEBHOOK_RETRY_BASE_BACKOFF_SECONDS', $bootstrapSql);
+        self::assertSame([
+            'batch_size' => 50,
+            'http_timeout_seconds' => 5,
+            'max_retry_count' => 3,
+            'retry_base_backoff_seconds' => 300,
+        ], $policy);
     }
 
     private function normalizedSql(string $path): string

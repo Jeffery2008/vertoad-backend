@@ -3,6 +3,18 @@
 declare(strict_types=1);
 
 $ipGeoRepository = getenv('IP_GEO_REPOSITORY');
+$projectRoot = dirname(__DIR__);
+$resolveProjectPath = static function (string $path) use ($projectRoot): string {
+    $path = trim($path);
+    $absolute = str_starts_with($path, '/')
+        || str_starts_with($path, '\\')
+        || preg_match('/^[a-zA-Z]:[\\\\\/]/', $path) === 1;
+    if ($absolute) {
+        return $path;
+    }
+
+    return $projectRoot . DIRECTORY_SEPARATOR . str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $path);
+};
 
 return [
     'app' => [
@@ -10,6 +22,9 @@ return [
         'env' => getenv('APP_ENV') ?: 'local',
         'debug' => filter_var(getenv('APP_DEBUG') ?: false, FILTER_VALIDATE_BOOL),
         'key' => getenv('APP_KEY') ?: '',
+    ],
+    'install' => [
+        'token' => getenv('INSTALL_TOKEN') ?: '',
     ],
     'database' => [
         'driver' => getenv('DB_DRIVER') ?: 'pdo_mysql',
@@ -71,8 +86,8 @@ return [
         'max_result_bytes' => (int) (getenv('ARCHIVE_MAX_RESULT_BYTES') ?: 10485760),
     ],
     'oauth' => [
-        'private_key_path' => getenv('OAUTH_PRIVATE_KEY_PATH') ?: 'storage/oauth/private.key',
-        'public_key_path' => getenv('OAUTH_PUBLIC_KEY_PATH') ?: 'storage/oauth/public.key',
+        'private_key_path' => $resolveProjectPath(getenv('OAUTH_PRIVATE_KEY_PATH') ?: 'storage/oauth/private.key'),
+        'public_key_path' => $resolveProjectPath(getenv('OAUTH_PUBLIC_KEY_PATH') ?: 'storage/oauth/public.key'),
         'encryption_key' => getenv('OAUTH_ENCRYPTION_KEY') ?: '',
         'authorization_url' => getenv('OAUTH_AUTHORIZATION_URL') ?: '',
         'token_url' => getenv('OAUTH_TOKEN_URL') ?: '',
