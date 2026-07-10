@@ -149,7 +149,12 @@ final class DatabaseIpGeoRepositoryTest extends TestCase
     {
         $connection = $this->createConnection();
         $queuedAt = new DateTimeImmutable('2026-06-18T00:00:00+00:00');
-        $repository = new DatabaseIpGeoRepository($connection, 604800, 60);
+        $repository = new DatabaseIpGeoRepository(
+            $connection,
+            604800,
+            60,
+            static fn (): DateTimeImmutable => new DateTimeImmutable('2026-06-18T00:03:00+00:00'),
+        );
         $repository->ensureQueued('203.0.113.87', 'Late browser', 'CN', 'serving', $queuedAt, 'req-late');
 
         $firstLease = $repository->leasePending(1, $queuedAt->modify('+1 minute'))[0];
@@ -228,7 +233,12 @@ final class DatabaseIpGeoRepositoryTest extends TestCase
     {
         $connection = $this->createConnection();
         $resolvedAt = new DateTimeImmutable('2026-06-18T00:00:00+00:00');
-        $repository = new DatabaseIpGeoRepository($connection);
+        $repository = new DatabaseIpGeoRepository(
+            $connection,
+            604800,
+            300,
+            static fn (): DateTimeImmutable => new DateTimeImmutable('2026-06-18T02:00:00+00:00'),
+        );
 
         $repository->markResolved($this->record('203.0.113.89', $resolvedAt, 'provider-old'));
         $repository->markResolved($this->record('203.0.113.89', $resolvedAt->modify('+1 hour'), 'provider-new'));

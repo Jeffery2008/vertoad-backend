@@ -66,6 +66,34 @@ final class AdSlotRepository implements AdSlotRepositoryInterface
         return array_map(fn (array $row): AdSlot => $this->mapRow($row), $rows);
     }
 
+    public function findForSiteInOrganization(int $siteId, int $slotId, int $organizationId): ?AdSlot
+    {
+        $row = $this->connection->createQueryBuilder()
+            ->select(
+                'slots.id AS id',
+                'slots.site_id AS site_id',
+                'slots.name AS name',
+                'slots.slot_key AS slot_key',
+                'slots.width AS width',
+                'slots.height AS height',
+                'slots.size_preset AS size_preset',
+                'slots.is_responsive AS is_responsive',
+                'slots.responsive_rules_json AS responsive_rules_json',
+                'slots.status AS status',
+            )
+            ->from('ad_slots', 'slots')
+            ->innerJoin('slots', 'sites', 'sites', 'sites.id = slots.site_id')
+            ->where('slots.id = :slot_id')
+            ->andWhere('slots.site_id = :site_id')
+            ->andWhere('sites.organization_id = :organization_id')
+            ->setParameter('slot_id', $slotId)
+            ->setParameter('site_id', $siteId)
+            ->setParameter('organization_id', $organizationId)
+            ->fetchAssociative();
+
+        return $row === false ? null : $this->mapRow($row);
+    }
+
     /**
      * @param array<string, mixed> $row
      */

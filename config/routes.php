@@ -63,6 +63,7 @@ use VertoAD\Http\Action\FeatureFlags\ListFeatureFlagsAction;
 use VertoAD\Http\Action\Permissions\PermissionInventoryAction;
 use VertoAD\Http\Action\Publisher\CreatePublisherAdSlotAction;
 use VertoAD\Http\Action\Publisher\CreatePublisherSiteAction;
+use VertoAD\Http\Action\Publisher\GetPublisherAdSlotIntegrationCodeAction;
 use VertoAD\Http\Action\Publisher\GetPublisherSiteVerificationChallengeAction;
 use VertoAD\Http\Action\Publisher\ListPublisherSiteVerificationAttemptsAction;
 use VertoAD\Http\Action\Publisher\ListPublisherAdSlotPresetsAction;
@@ -263,6 +264,9 @@ return static function (App $app): void {
         ->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/publisher/sites/{site_id}/slots', CreatePublisherAdSlotAction::class)
         ->add($permission('publisher.slot.write.own'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->get('/api/v1/publisher/sites/{site_id}/slots/{slot_id}/integration-code', GetPublisherAdSlotIntegrationCodeAction::class)
+        ->add($permission('sdk.integration.read.own'))
         ->add(AuthenticateRequestMiddleware::class);
     $app->get('/api/v1/reports/dashboard', ReportDashboardAction::class)
         ->add($permission('report.read.own'))

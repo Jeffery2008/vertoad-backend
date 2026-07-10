@@ -203,6 +203,7 @@ use VertoAD\Service\Serving\ServingRiskAssessorInterface;
 use VertoAD\Service\PasswordHasher;
 use VertoAD\Service\PermissionMatcher;
 use VertoAD\Service\PointsLedgerService;
+use VertoAD\Service\Publisher\PublisherIntegrationCodeService;
 use VertoAD\Service\PublisherSiteVerificationService;
 use VertoAD\Service\RechargeKeyPlaintextCipherInterface;
 use VertoAD\Service\RechargeKeyService;
@@ -306,6 +307,15 @@ final class AppFactory
                     PublisherSiteRepositoryInterface $sites,
                     AdSlotRepositoryInterface $slots,
                 ): AdSlotSetupService => new AdSlotSetupService($sites, $slots),
+                PublisherIntegrationCodeService::class => static fn (
+                    PublisherSiteRepositoryInterface $sites,
+                    AdSlotRepositoryInterface $slots,
+                ): PublisherIntegrationCodeService => new PublisherIntegrationCodeService(
+                    $sites,
+                    $slots,
+                    self::integrationPublicBaseUrl('SDK_PUBLIC_BASE_URL', $settings),
+                    self::integrationPublicBaseUrl('ADS_PUBLIC_BASE_URL', $settings),
+                ),
                 AssetRepositoryInterface::class => static fn (Connection $connection): AssetRepositoryInterface =>
                     new AssetRepository($connection),
                 ObjectStorageUploadSignerInterface::class => static fn (): ObjectStorageUploadSignerInterface =>
@@ -1163,6 +1173,55 @@ final class AppFactory
     private static function redisRequired(array $settings): bool
     {
         return !self::localFallbackAllowed($settings);
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function integrationPublicBaseUrl(string $environmentVariable, array $settings): string
+    {
+        $localDefault = match ($environmentVariable) {
+            'SDK_PUBLIC_BASE_URL' => 'http://localhost:5173',
+            'ADS_PUBLIC_BASE_URL' => 'http://localhost:8080',
+            default => throw new \InvalidArgumentException('Unsupported integration public base URL variable: ' . $environmentVariable),
+        };
+
+        $explicit = trim((string) (getenv($environmentVariable) ?: ''));
+        if ($explicit === '') {
+            if (!self::localFallbackAllowed($settings)) {
+                throw new \RuntimeException($environmentVariable . ' is required outside local/testing.');
+            }
+
+            return $localDefault;
+        }
+
+        $parts = parse_url($explicit);
+        $scheme = is_array($parts) ? strtolower((string) ($parts['scheme'] ?? '')) : '';
+        $host = is_array($parts) ? trim((string) ($parts['host'] ?? '')) : '';
+        if (
+            $parts === false
+            || !in_array($scheme, ['http', 'https'], true)
+            || $host === ''
+            || isset($parts['user'])
+            || isset($parts['pass'])
+            || isset($parts['query'])
+            || isset($parts['fragment'])
+        ) {
+            throw new \RuntimeException(
+                $environmentVariable . ' must be an HTTP(S) origin/base URL without credentials, query, or fragment.',
+            );
+        }
+
+        if (!self::localFallbackAllowed($settings) && $scheme !== 'https') {
+            throw new \RuntimeException($environmentVariable . ' must use HTTPS outside local/testing.');
+        }
+
+        if (
+            $environmentVariable === 'SDK_PUBLIC_BASE_URL'
+            && preg_match('/\.js\/?$/i', (string) ($parts['path'] ?? '')) === 1
+        ) {
+            throw new \RuntimeException('SDK_PUBLIC_BASE_URL must not include a script filename.');
+        }
+
+        return rtrim($explicit, '/');
     }
 
     /** @param array<string, mixed> $settings */

@@ -48,7 +48,10 @@ final class ApiEnvelopeMiddleware implements MiddlewareInterface
             ];
 
             $wrapped = $this->responseFactory->createResponse($response->getStatusCode());
-            $wrapped->getBody()->write(json_encode($envelope, JSON_THROW_ON_ERROR));
+            $wrapped->getBody()->write(json_encode(
+                $envelope,
+                JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT,
+            ));
 
             foreach ($response->getHeaders() as $name => $values) {
                 if (strtolower($name) === 'content-length') {

@@ -21,6 +21,7 @@ final class PublisherRouteContractTest extends TestCase
                 'VertoAD\\Http\\Action\\Publisher\\ListPublisherAdSlotPresetsAction',
                 'VertoAD\\Http\\Action\\Publisher\\CreatePublisherAdSlotAction',
                 'VertoAD\\Http\\Action\\Publisher\\ListPublisherAdSlotsAction',
+                'VertoAD\\Http\\Action\\Publisher\\GetPublisherAdSlotIntegrationCodeAction',
             ] as $actionClass
         ) {
             self::assertTrue(class_exists($actionClass), $actionClass . ' must exist.');
@@ -44,6 +45,7 @@ final class PublisherRouteContractTest extends TestCase
                 'GET /api/v1/publisher/ad-slot-presets',
                 'POST /api/v1/publisher/sites/{site_id}/slots',
                 'GET /api/v1/publisher/sites/{site_id}/slots',
+                'GET /api/v1/publisher/sites/{site_id}/slots/{slot_id}/integration-code',
             ] as $route
         ) {
             self::assertContains($route, $registered, $route . ' must be registered.');
@@ -62,6 +64,7 @@ final class PublisherRouteContractTest extends TestCase
                 'publisher.site.verify.own',
                 'publisher.slot.read.own',
                 'publisher.slot.write.own',
+                'sdk.integration.read.own',
             ] as $permission
         ) {
             self::assertTrue(str_contains($routes, $permission), $permission . ' must be enforced by routes.php.');

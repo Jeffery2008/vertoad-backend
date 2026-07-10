@@ -14,4 +14,6 @@ interface AdSlotRepositoryInterface
      * @return list<AdSlot>
      */
     public function listForSite(int $siteId): array;
+
+    public function findForSiteInOrganization(int $siteId, int $slotId, int $organizationId): ?AdSlot;
 }

@@ -74,11 +74,12 @@ final class PublisherJson
     }
 
     /** @return array<string, mixed> */
-    public static function slot(AdSlot $slot): array
+    public static function slot(AdSlot $slot, int $organizationId): array
     {
         return [
             'id' => $slot->id,
             'site_id' => $slot->siteId,
+            'organization_id' => $organizationId,
             'name' => $slot->name,
             'slot_key' => $slot->slotKey,
             'width' => $slot->size->width,
@@ -94,9 +95,9 @@ final class PublisherJson
      * @param list<AdSlot> $slots
      * @return list<array<string, mixed>>
      */
-    public static function slots(array $slots): array
+    public static function slots(array $slots, int $organizationId): array
     {
-        return array_map(static fn (AdSlot $slot): array => self::slot($slot), $slots);
+        return array_map(static fn (AdSlot $slot): array => self::slot($slot, $organizationId), $slots);
     }
 
     /**
@@ -117,7 +118,10 @@ final class PublisherJson
     public static function write(ResponseInterface $response, array $payload, int $statusCode): ResponseInterface
     {
         $response = $response->withStatus($statusCode)->withHeader('Content-Type', 'application/json');
-        $response->getBody()->write(json_encode($payload, JSON_THROW_ON_ERROR));
+        $response->getBody()->write(json_encode(
+            $payload,
+            JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT,
+        ));
 
         return $response;
     }

@@ -415,4 +415,83 @@ final class PublisherRepositoryTest extends TestCase
         self::assertFalse($staticSlots[0]->responsive);
         self::assertSame([], $staticSlots[0]->responsiveRules);
     }
+
+    public function testAdSlotRepositoryFindsSlotForSiteInOrganization(): void
+    {
+        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        $connection->executeStatement(
+            'CREATE TABLE sites (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                domain TEXT NOT NULL,
+                status TEXT NOT NULL,
+                verification_token TEXT NULL,
+                verified_at TEXT NULL
+            )'
+        );
+        $connection->executeStatement(
+            'CREATE TABLE ad_slots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                site_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                slot_key TEXT NOT NULL,
+                width INTEGER NOT NULL,
+                height INTEGER NOT NULL,
+                size_preset TEXT NULL,
+                is_responsive INTEGER NOT NULL DEFAULT 0,
+                responsive_rules_json TEXT NULL,
+                status TEXT NOT NULL
+            )'
+        );
+        $connection->insert('sites', [
+            'organization_id' => 99,
+            'name' => 'Publisher',
+            'domain' => 'publisher.example',
+            'status' => 'verified',
+            'verification_token' => 'secret',
+            'verified_at' => '2026-06-18 08:00:00',
+        ]);
+        $connection->insert('sites', [
+            'organization_id' => 100,
+            'name' => 'Other',
+            'domain' => 'other.example',
+            'status' => 'verified',
+            'verification_token' => 'other-secret',
+            'verified_at' => '2026-06-18 08:00:00',
+        ]);
+        $connection->insert('ad_slots', [
+            'site_id' => 1,
+            'name' => 'Article Inline',
+            'slot_key' => 'article-inline',
+            'width' => 728,
+            'height' => 90,
+            'size_preset' => 'leaderboard',
+            'is_responsive' => 0,
+            'responsive_rules_json' => null,
+            'status' => 'active',
+        ]);
+        $connection->insert('ad_slots', [
+            'site_id' => 2,
+            'name' => 'Other',
+            'slot_key' => 'other',
+            'width' => 300,
+            'height' => 250,
+            'size_preset' => 'medium_rectangle',
+            'is_responsive' => 0,
+            'responsive_rules_json' => null,
+            'status' => 'active',
+        ]);
+
+        $repository = new AdSlotRepository($connection);
+        $slot = $repository->findForSiteInOrganization(siteId: 1, slotId: 1, organizationId: 99);
+
+        self::assertNotNull($slot);
+        self::assertSame(1, $slot->id);
+        self::assertSame(1, $slot->siteId);
+        self::assertSame('article-inline', $slot->slotKey);
+        self::assertNull($repository->findForSiteInOrganization(siteId: 1, slotId: 1, organizationId: 100));
+        self::assertNull($repository->findForSiteInOrganization(siteId: 1, slotId: 2, organizationId: 99));
+        self::assertNull($repository->findForSiteInOrganization(siteId: 404, slotId: 1, organizationId: 99));
+    }
 }

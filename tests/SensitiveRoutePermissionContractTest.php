@@ -75,6 +75,7 @@ final class SensitiveRoutePermissionContractTest extends TestCase
             ['GET', '/api/v1/oauth/clients', 'sdk.oauth_client.read.own', 'permission'],
             ['POST', '/api/v1/oauth/clients', 'sdk.oauth_client.write.own', 'permission'],
             ['POST', '/api/v1/oauth/clients/{client_id}/rotate-secret', 'sdk.oauth_client.rotate_secret.own', 'permission'],
+            ['GET', '/api/v1/publisher/sites/{site_id}/slots/{slot_id}/integration-code', 'sdk.integration.read.own', 'permission'],
             ['GET', '/api/v1/webhooks/endpoints', 'webhook.read.own', 'permission'],
             ['POST', '/api/v1/webhooks/endpoints', 'webhook.write.own', 'permission'],
             ['PATCH', '/api/v1/webhooks/endpoints/{endpoint_id}', 'webhook.write.own', 'permission'],

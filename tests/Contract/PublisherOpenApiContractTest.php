@@ -20,6 +20,7 @@ final class PublisherOpenApiContractTest extends TestCase
                 '/api/v1/publisher/sites/{site_id}/verification-attempts:',
                 '/api/v1/publisher/ad-slot-presets:',
                 '/api/v1/publisher/sites/{site_id}/slots:',
+                '/api/v1/publisher/sites/{site_id}/slots/{slot_id}/integration-code:',
             ] as $path
         ) {
             self::assertTrue(str_contains($openApi, $path), $path . ' must be documented.');
@@ -31,6 +32,7 @@ final class PublisherOpenApiContractTest extends TestCase
                 'PublisherSiteVerificationChallenge:',
                 'PublisherSiteVerificationAttempt:',
                 'PublisherAdSlot:',
+                'PublisherAdSlotIntegrationCode:',
                 'PublisherAdSlotPresetMap:',
                 'organization_id',
                 'verification_token',
@@ -40,6 +42,13 @@ final class PublisherOpenApiContractTest extends TestCase
                 'failed',
                 'responsive_rules',
                 'size_preset',
+                'iframe_url_template',
+                'hosted_script_snippet',
+                'npm_install_command',
+                'npm_usage_snippet',
+                'viewer_id_strategy',
+                'sdk_public_base_url',
+                'ads_public_base_url',
             ] as $contractString
         ) {
             self::assertTrue(str_contains($openApi, $contractString), $contractString . ' must be documented.');
@@ -53,5 +62,12 @@ final class PublisherOpenApiContractTest extends TestCase
         );
         self::assertStringNotContainsString("\n        - expected_value\n", $attemptSchema, 'Attempt history must not expose reusable verification evidence.');
         self::assertStringNotContainsString("\n        expected_value:\n", $attemptSchema, 'Attempt history must not expose reusable verification evidence.');
+
+        $integrationSchema = substr(
+            $openApi,
+            strpos($openApi, '    PublisherAdSlotIntegrationCode:') ?: 0,
+            (strpos($openApi, '    PublisherAdSlotPreset:') ?: strlen($openApi)) - (strpos($openApi, '    PublisherAdSlotIntegrationCode:') ?: 0),
+        );
+        self::assertStringNotContainsString('verification_token', $integrationSchema, 'SDK integration code must not document site verification secrets.');
     }
 }

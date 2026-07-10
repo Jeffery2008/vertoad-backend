@@ -414,4 +414,15 @@ final class FakeAdSlotRepository implements AdSlotRepositoryInterface
             static fn (AdSlot $slot): bool => $slot->siteId === $siteId,
         ));
     }
+
+    public function findForSiteInOrganization(int $siteId, int $slotId, int $organizationId): ?AdSlot
+    {
+        foreach ($this->slots as $slot) {
+            if ($slot->siteId === $siteId && $slot->id === $slotId) {
+                return $slot;
+            }
+        }
+
+        return null;
+    }
 }

@@ -60,7 +60,7 @@ final readonly class CreatePublisherAdSlotAction
             return $this->runtimeError($response, $exception);
         }
 
-        return PublisherJson::write($response, PublisherJson::slot($slot), 201);
+        return PublisherJson::write($response, PublisherJson::slot($slot, $site->organizationId), 201);
     }
 
     private function runtimeError(ResponseInterface $response, RuntimeException $exception): ResponseInterface

@@ -16,6 +16,7 @@ use VertoAD\Domain\Auth\AuthenticatedUser;
 use VertoAD\Domain\Auth\OrganizationMembership;
 use VertoAD\Http\Action\Publisher\CreatePublisherAdSlotAction;
 use VertoAD\Http\Action\Publisher\CreatePublisherSiteAction;
+use VertoAD\Http\Action\Publisher\GetPublisherAdSlotIntegrationCodeAction;
 use VertoAD\Http\Action\Publisher\GetPublisherSiteVerificationChallengeAction;
 use VertoAD\Http\Action\Publisher\ListPublisherAdSlotPresetsAction;
 use VertoAD\Http\Action\Publisher\ListPublisherAdSlotsAction;
@@ -38,6 +39,7 @@ use VertoAD\Repository\PublisherSiteVerificationAttemptRepositoryInterface;
 use VertoAD\Repository\PublisherSiteRepositoryInterface;
 use VertoAD\Service\AdSlotSetupService;
 use VertoAD\Service\PermissionMatcher;
+use VertoAD\Service\Publisher\PublisherIntegrationCodeService;
 use VertoAD\Service\PublisherSiteVerificationService;
 use VertoAD\Service\TenantAccessService;
 
@@ -60,6 +62,7 @@ final class PublisherRouteIntegrationTest extends TestCase
                 ['GET', '/api/v1/publisher/ad-slot-presets?organization_id=99'],
                 ['GET', '/api/v1/publisher/sites/1/slots?organization_id=99'],
                 ['POST', '/api/v1/publisher/sites/1/slots?organization_id=99'],
+                ['GET', '/api/v1/publisher/sites/1/slots/1/integration-code?organization_id=99'],
             ] as [$method, $uri]
         ) {
             self::assertSame(
@@ -96,6 +99,7 @@ final class PublisherRouteIntegrationTest extends TestCase
                 ['GET', '/api/v1/publisher/ad-slot-presets?organization_id=99', null, 'publisher.slot.read.own'],
                 ['GET', '/api/v1/publisher/sites/1/slots?organization_id=99', null, 'publisher.slot.read.own'],
                 ['POST', '/api/v1/publisher/sites/1/slots?organization_id=99', ['name' => 'Denied', 'slot_key' => 'denied', 'size_preset' => 'leaderboard'], 'publisher.slot.write.own'],
+                ['GET', '/api/v1/publisher/sites/1/slots/1/integration-code?organization_id=99', null, 'sdk.integration.read.own'],
             ] as [$method, $uri, $payload, $requiredPermission]
         ) {
             $denied = $this->handleJson($app, $method, $uri, $payload, 'valid-token');
@@ -112,6 +116,7 @@ final class PublisherRouteIntegrationTest extends TestCase
         $slotRepository = new AdSlotRepository($connection);
         $verification = new PublisherSiteVerificationService($siteRepository);
         $slotSetup = new AdSlotSetupService($siteRepository, $slotRepository);
+        $integration = new PublisherIntegrationCodeService($siteRepository, $slotRepository, 'https://sdk.example.test', 'https://ads.example.test');
         $request = (new ServerRequestFactory())->createServerRequest('GET', '/direct');
         $responseFactory = new ResponseFactory();
 
@@ -125,6 +130,7 @@ final class PublisherRouteIntegrationTest extends TestCase
                 static fn () => (new ListPublisherAdSlotPresetsAction($slotSetup))->__invoke($request, $responseFactory->createResponse()),
                 static fn () => (new ListPublisherAdSlotsAction($siteRepository, $slotRepository))->__invoke($request, $responseFactory->createResponse(), ['site_id' => '1']),
                 static fn () => (new CreatePublisherAdSlotAction($siteRepository, $slotSetup))->__invoke($request, $responseFactory->createResponse(), ['site_id' => '1']),
+                static fn () => (new GetPublisherAdSlotIntegrationCodeAction($integration))->__invoke($request, $responseFactory->createResponse(), ['site_id' => '1', 'slot_id' => '1']),
             ] as $guardedResponseFactory
         ) {
             $guardedResponse = $guardedResponseFactory();
@@ -211,6 +217,7 @@ final class PublisherRouteIntegrationTest extends TestCase
             ],
         ], 'valid-token');
         self::assertSame('leaderboard', $slot['data']['size_preset']);
+        self::assertSame(99, $slot['data']['organization_id']);
         self::assertTrue($slot['data']['responsive']);
 
         $slots = $this->handleJson(
@@ -222,6 +229,43 @@ final class PublisherRouteIntegrationTest extends TestCase
         );
         self::assertCount(1, $slots['data']);
         self::assertSame('article-inline', $slots['data'][0]['slot_key']);
+        self::assertSame(99, $slots['data'][0]['organization_id']);
+
+        $integration = $this->handleJson(
+            $app,
+            'GET',
+            '/api/v1/publisher/sites/' . $created['data']['id'] . '/slots/' . $slot['data']['id'] . '/integration-code?organization_id=99',
+            null,
+            'valid-token',
+        );
+        self::assertSame(200, $integration['meta']['status']);
+        self::assertSame($created['data']['id'], $integration['data']['site_id']);
+        self::assertSame($slot['data']['id'], $integration['data']['slot_id']);
+        self::assertSame(99, $integration['data']['organization_id']);
+        self::assertSame('article-inline', $integration['data']['slot_key']);
+        self::assertSame('example.com', $integration['data']['site_domain']);
+        self::assertSame(['width' => 728, 'height' => 90], $integration['data']['slot_size']);
+        self::assertTrue($integration['data']['responsive']);
+        self::assertSame('https://sdk.test', $integration['data']['sdk_public_base_url']);
+        self::assertSame('https://ads.test', $integration['data']['ads_public_base_url']);
+        self::assertStringContainsString('viewer_id={viewer_id}', $integration['data']['iframe_url_template']);
+        self::assertStringContainsString('/vertoad-sdk.js', $integration['data']['hosted_script_snippet']);
+        self::assertStringContainsString('window.VertoAD.push({', $integration['data']['hosted_script_snippet']);
+        self::assertStringContainsString('"siteId": 1', $integration['data']['hosted_script_snippet']);
+        self::assertStringContainsString("from '@vertoad/sdk'", $integration['data']['npm_usage_snippet']);
+        self::assertStringContainsString('createVertoAdSlot({', $integration['data']['npm_usage_snippet']);
+        self::assertStringNotContainsString('verification_token', json_encode($integration['data'], JSON_THROW_ON_ERROR));
+        self::assertStringNotContainsString('secret', json_encode($integration['data'], JSON_THROW_ON_ERROR));
+
+        $rawIntegration = $this->handleRaw(
+            $app,
+            'GET',
+            '/api/v1/publisher/sites/' . $created['data']['id'] . '/slots/' . $slot['data']['id'] . '/integration-code?organization_id=99',
+            null,
+            'valid-token',
+        );
+        self::assertStringContainsString('hosted_script_snippet', $rawIntegration);
+        self::assertStringNotContainsString('<script', $rawIntegration);
 
         $custom = $this->handleJson($app, 'POST', '/api/v1/publisher/sites/' . $created['data']['id'] . '/slots?organization_id=99', [
             'name' => 'Custom Footer',
@@ -385,6 +429,22 @@ final class PublisherRouteIntegrationTest extends TestCase
             'publisher_site_not_found',
             $this->handleJson($app, 'GET', '/api/v1/publisher/sites/999/slots?organization_id=99', null, 'valid-token')['error']['code'],
         );
+        self::assertSame(
+            'invalid_request',
+            $this->handleJson($app, 'GET', '/api/v1/publisher/sites/0/slots/1/integration-code?organization_id=99', null, 'valid-token')['error']['code'],
+        );
+        self::assertSame(
+            'invalid_request',
+            $this->handleJson($app, 'GET', '/api/v1/publisher/sites/1/slots/0/integration-code?organization_id=99', null, 'valid-token')['error']['code'],
+        );
+        self::assertSame(
+            'publisher_ad_slot_not_found',
+            $this->handleJson($app, 'GET', '/api/v1/publisher/sites/' . $site['data']['id'] . '/slots/999/integration-code?organization_id=99', null, 'valid-token')['error']['code'],
+        );
+        self::assertSame(
+            'publisher_ad_slot_not_found',
+            $this->handleJson($app, 'GET', '/api/v1/publisher/sites/999/slots/1/integration-code?organization_id=99', null, 'valid-token')['error']['code'],
+        );
 
         self::assertSame(5, \VertoAD\Http\Action\Publisher\PublisherRequestGuards::positiveInteger(5));
     }
@@ -415,6 +475,28 @@ final class PublisherRouteIntegrationTest extends TestCase
         $decoded['meta']['status'] = $response->getStatusCode();
 
         return $decoded;
+    }
+
+    /**
+     * @param array<string, mixed>|null $payload
+     */
+    private function handleRaw(
+        \Slim\App $app,
+        string $method,
+        string $uri,
+        ?array $payload = null,
+        ?string $bearerToken = null,
+    ): string {
+        $request = (new ServerRequestFactory())->createServerRequest($method, $uri);
+        if ($payload !== null) {
+            $request = $request->withParsedBody($payload);
+        }
+
+        if ($bearerToken !== null) {
+            $request = $request->withHeader('Authorization', 'Bearer ' . $bearerToken);
+        }
+
+        return (string) $app->handle($request)->getBody();
     }
 
     private function handleParsedBody(
@@ -448,6 +530,7 @@ final class PublisherRouteIntegrationTest extends TestCase
         'publisher.site.verify.own',
         'publisher.slot.read.own',
         'publisher.slot.write.own',
+        'sdk.integration.read.own',
     ], ?callable $httpFetcher = null, ?callable $dnsTxtResolver = null, ?callable $httpHostResolver = null): \Slim\App
     {
         $httpFetcher ??= static fn (string $url): ?string => null;
@@ -503,6 +586,10 @@ final class PublisherRouteIntegrationTest extends TestCase
                 PublisherSiteRepositoryInterface $sites,
                 AdSlotRepositoryInterface $slots,
             ): AdSlotSetupService => new AdSlotSetupService($sites, $slots),
+            PublisherIntegrationCodeService::class => static fn (
+                PublisherSiteRepositoryInterface $sites,
+                AdSlotRepositoryInterface $slots,
+            ): PublisherIntegrationCodeService => new PublisherIntegrationCodeService($sites, $slots, 'https://sdk.test', 'https://ads.test'),
         ])->build();
 
         SlimAppFactory::setContainer($container);
@@ -538,6 +625,9 @@ final class PublisherRouteIntegrationTest extends TestCase
             ->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/publisher/sites/{site_id}/slots', CreatePublisherAdSlotAction::class)
             ->add($require('publisher.slot.write.own'))
+            ->add(AuthenticateRequestMiddleware::class);
+        $app->get('/api/v1/publisher/sites/{site_id}/slots/{slot_id}/integration-code', GetPublisherAdSlotIntegrationCodeAction::class)
+            ->add($require('sdk.integration.read.own'))
             ->add(AuthenticateRequestMiddleware::class);
         $app->add(new ApiEnvelopeMiddleware($app->getResponseFactory()));
         $app->addRoutingMiddleware();

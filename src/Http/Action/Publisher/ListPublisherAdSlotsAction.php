@@ -34,6 +34,6 @@ final readonly class ListPublisherAdSlotsAction
             return PublisherJson::write($response, ['code' => $exception->getMessage(), 'message' => $exception->getMessage()], 404);
         }
 
-        return PublisherJson::write($response, PublisherJson::slots($this->slots->listForSite($site->id)), 200);
+        return PublisherJson::write($response, PublisherJson::slots($this->slots->listForSite($site->id), $site->organizationId), 200);
     }
 }

@@ -2391,6 +2391,49 @@ paths:
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/publisher/sites/{site_id}/slots/{slot_id}/integration-code:
+    get:
+      tags:
+        - Publisher
+      operationId: getPublisherAdSlotIntegrationCode
+      summary: Return SDK integration code for an owned publisher ad slot.
+      description: Returns read-only SDK and iframe integration snippets for an owned publisher site slot. The response never includes site verification tokens or other reusable ownership evidence.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - name: site_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: slot_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: SDK integration code returned.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PublisherAdSlotIntegrationCode"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/ads/track:
     post:
       tags:
@@ -4936,6 +4979,79 @@ components:
             $ref: "#/components/schemas/PublisherAdSlotResponsiveRule"
         status:
           type: string
+      additionalProperties: false
+    PublisherAdSlotIntegrationCode:
+      type: object
+      required:
+        - site_id
+        - slot_id
+        - organization_id
+        - slot_key
+        - site_domain
+        - viewer_id_strategy
+        - iframe_url_template
+        - hosted_script_snippet
+        - npm_install_command
+        - npm_usage_snippet
+        - slot_size
+        - responsive
+        - responsive_rules
+        - sdk_public_base_url
+        - ads_public_base_url
+      properties:
+        site_id:
+          type: integer
+          minimum: 1
+        slot_id:
+          type: integer
+          minimum: 1
+        organization_id:
+          type: integer
+          minimum: 1
+        slot_key:
+          type: string
+        site_domain:
+          type: string
+        viewer_id_strategy:
+          type: string
+          enum:
+            - first_party_stable_id
+        iframe_url_template:
+          type: string
+          format: uri-template
+        hosted_script_snippet:
+          type: string
+        npm_install_command:
+          type: string
+        npm_usage_snippet:
+          type: string
+        slot_size:
+          type: object
+          required:
+            - width
+            - height
+          properties:
+            width:
+              type: integer
+              minimum: 1
+              maximum: 4096
+            height:
+              type: integer
+              minimum: 1
+              maximum: 4096
+          additionalProperties: false
+        responsive:
+          type: boolean
+        responsive_rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/PublisherAdSlotResponsiveRule"
+        sdk_public_base_url:
+          type: string
+          format: uri
+        ads_public_base_url:
+          type: string
+          format: uri
       additionalProperties: false
     PublisherAdSlotPreset:
       type: object
