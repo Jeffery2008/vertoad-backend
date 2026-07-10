@@ -82,6 +82,7 @@ use VertoAD\Service\Cron\DuckDbColdQueryJob;
 use VertoAD\Service\Cron\EventConsumptionJob;
 use VertoAD\Service\Cron\ExpiredTokenCleanupJob;
 use VertoAD\Service\Cron\FraudFeatureComputeJob;
+use VertoAD\Service\Cron\IpGeoLookupJob;
 use VertoAD\Service\Cron\NoOpCronJob;
 use VertoAD\Service\Cron\PartitionMaintenanceJob;
 use VertoAD\Service\PasswordHasher;
@@ -254,6 +255,7 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(DuckDbColdQueryJob::class, $container->get(CronJobRegistry::class)->get('duckdb-cold-query'));
             self::assertInstanceOf(BackupCheckJob::class, $container->get(CronJobRegistry::class)->get('backup-check'));
             self::assertInstanceOf(PartitionMaintenanceJob::class, $container->get(CronJobRegistry::class)->get('partition-maintenance'));
+            self::assertInstanceOf(IpGeoLookupJob::class, $container->get(CronJobRegistry::class)->get('ip-geo-resolve'));
             self::assertInstanceOf(CronRunner::class, $container->get(CronRunner::class));
         } finally {
             if ($previousAppKey === false) {
@@ -1022,6 +1024,7 @@ PHP);
 
             self::assertSame(200, $response->getStatusCode());
             self::assertSame($settings['cron']['jobs'], $payload['data']['jobs'] ?? null);
+            self::assertContains('ip-geo-resolve', $payload['data']['jobs'] ?? []);
             self::assertContains('partition-maintenance', $payload['data']['jobs'] ?? []);
         } finally {
             if ($previousAppKey === false) {

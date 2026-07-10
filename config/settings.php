@@ -110,6 +110,7 @@ return [
         'expired_token_retention_seconds' => (int) (getenv('CRON_EXPIRED_TOKEN_RETENTION_SECONDS') ?: 86400),
         'jobs' => [
             'redis-events-consume',
+            'ip-geo-resolve',
             'aggregate-statistics',
             'archive-parquet',
             'duckdb-cold-query',
