@@ -195,13 +195,11 @@ final readonly class CampaignService
             throw new CampaignValidationException('campaign_targeting_invalid', 'targeting must be an object.');
         }
 
-        return new CampaignTargeting(
-            devices: $this->stringList($value['devices'] ?? [], 'campaign_targeting_invalid'),
-            geos: $this->stringList($value['geos'] ?? [], 'campaign_targeting_invalid'),
-            siteIds: $this->intList($value['site_ids'] ?? [], 'campaign_targeting_invalid'),
-            slotIds: $this->intList($value['slot_ids'] ?? [], 'campaign_targeting_invalid'),
-            timeWindows: $this->timeWindows($value['time_windows'] ?? []),
-        );
+        try {
+            return CampaignTargeting::fromArray($value);
+        } catch (InvalidArgumentException $exception) {
+            throw new CampaignValidationException('campaign_targeting_invalid', $exception->getMessage());
+        }
     }
 
     private function budget(?int $campaignId, int $organizationId, mixed $value): CampaignBudgetCaps
@@ -311,76 +309,4 @@ final readonly class CampaignService
         }
     }
 
-    /** @return list<string> */
-    private function stringList(mixed $value, string $code): array
-    {
-        if (!is_array($value)) {
-            throw new CampaignValidationException($code, 'Targeting list fields must be arrays.');
-        }
-
-        $items = [];
-        foreach ($value as $item) {
-            if (!is_string($item) || trim($item) === '') {
-                throw new CampaignValidationException($code, 'Targeting list fields must contain strings.');
-            }
-
-            $items[] = trim($item);
-        }
-
-        return array_values(array_unique($items));
-    }
-
-    /** @return list<int> */
-    private function intList(mixed $value, string $code): array
-    {
-        if (!is_array($value)) {
-            throw new CampaignValidationException($code, 'Targeting ID fields must be arrays.');
-        }
-
-        $items = [];
-        foreach ($value as $item) {
-            if (!is_int($item) || $item <= 0) {
-                throw new CampaignValidationException($code, 'Targeting ID fields must contain positive integers.');
-            }
-
-            $items[] = $item;
-        }
-
-        return array_values(array_unique($items));
-    }
-
-    /** @return list<array{day_of_week: int, start: string, end: string}> */
-    private function timeWindows(mixed $value): array
-    {
-        if (!is_array($value)) {
-            throw new CampaignValidationException('campaign_targeting_invalid', 'time_windows must be an array.');
-        }
-
-        $windows = [];
-        foreach ($value as $item) {
-            if (!is_array($item)) {
-                throw new CampaignValidationException('campaign_targeting_invalid', 'time_windows entries must be objects.');
-            }
-
-            $dayOfWeek = $item['day_of_week'] ?? null;
-            $start = $item['start'] ?? null;
-            $end = $item['end'] ?? null;
-            if (!is_int($dayOfWeek) || $dayOfWeek < 0 || $dayOfWeek > 6 || !is_string($start) || !is_string($end)) {
-                throw new CampaignValidationException('campaign_targeting_invalid', 'time_windows entries are invalid.');
-            }
-
-            if (!$this->validClock($start) || !$this->validClock($end) || $end <= $start) {
-                throw new CampaignValidationException('campaign_targeting_invalid', 'time_windows clock range is invalid.');
-            }
-
-            $windows[] = ['day_of_week' => $dayOfWeek, 'start' => $start, 'end' => $end];
-        }
-
-        return $windows;
-    }
-
-    private function validClock(string $value): bool
-    {
-        return preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', $value) === 1;
-    }
 }

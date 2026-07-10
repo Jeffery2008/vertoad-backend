@@ -145,6 +145,50 @@ final class ServingRouteIntegrationTest extends TestCase
         self::assertSame([['198.51.100.10', 'Geo test browser']], $resolver->calls);
     }
 
+    public function testServeUsesHttpUserAgentForDeviceTargeting(): void
+    {
+        $app = $this->createApp([
+            new AdCandidate(
+                adId: 'ad-mobile',
+                campaignId: 30,
+                advertiserOrganizationId: 40,
+                creativeHtml: '<strong>VertoAD mobile creative</strong>',
+                landingUrl: 'https://advertiser.example/mobile',
+                width: 300,
+                height: 250,
+                impressionCostPoints: 10,
+                clickCostPoints: 20,
+                devices: ['mobile'],
+            ),
+        ]);
+        $payload = [
+            'site_id' => 10,
+            'slot_id' => 20,
+            'viewer_id' => 'viewer-device',
+            'size' => ['width' => 300, 'height' => 250],
+        ];
+
+        $mobile = $this->handleJson(
+            $app,
+            'POST',
+            '/api/v1/ads/serve',
+            $payload,
+            ['User-Agent' => 'Mozilla/5.0 (Linux; Android 14; Pixel 8) Mobile'],
+        );
+        $desktop = $this->handleJson(
+            $app,
+            'POST',
+            '/api/v1/ads/serve',
+            [...$payload, 'viewer_id' => 'viewer-desktop'],
+            ['User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'],
+        );
+
+        self::assertTrue($mobile['data']['filled']);
+        self::assertSame('ad-mobile', $mobile['data']['ad']['id']);
+        self::assertFalse($desktop['data']['filled']);
+        self::assertSame('device_target_mismatch', $desktop['data']['reason']);
+    }
+
     public function testServeAllowsUnknownAsyncGeoAndQueuesIpForLaterResolution(): void
     {
         $repository = new \VertoAD\Repository\IpGeo\InMemoryIpGeoRepository();

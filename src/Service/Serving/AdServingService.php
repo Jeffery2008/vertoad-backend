@@ -41,17 +41,20 @@ final readonly class AdServingService
         ?AdSelectionPolicyInterface $selectionPolicy = null,
         ?ServingEventPolicy $eventPolicy = null,
         ?OperationRiskDecisionLogRepositoryInterface $riskDecisions = null,
+        ?UserAgentDeviceClassifier $deviceClassifier = null,
     ) {
         $this->spendEligibility = $spendEligibility ?? new AllowAllCampaignSpendEligibility();
         $this->selectionPolicy = $selectionPolicy ?? new DefaultAdSelectionPolicy();
         $this->eventPolicy = $eventPolicy ?? new ServingEventPolicy(0.5, 1000, 30);
         $this->riskDecisions = $riskDecisions;
+        $this->deviceClassifier = $deviceClassifier ?? new UserAgentDeviceClassifier();
     }
 
     private CampaignSpendEligibilityInterface $spendEligibility;
     private AdSelectionPolicyInterface $selectionPolicy;
     private ServingEventPolicy $eventPolicy;
     private ?OperationRiskDecisionLogRepositoryInterface $riskDecisions;
+    private UserAgentDeviceClassifier $deviceClassifier;
 
     /**
      * @param array{width:int,height:int}|null $size
@@ -73,7 +76,7 @@ final readonly class AdServingService
             return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'unverified_inventory', $now, $context));
         }
 
-        $candidates = $this->candidates->eligibleCandidatesForSlot($siteId, $slotId, $size);
+        $candidates = $this->candidates->eligibleCandidatesForSlot($siteId, $slotId, $size, $now);
         if ($candidates === []) {
             return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'no_eligible_ad', $now, $context));
         }
@@ -81,6 +84,16 @@ final readonly class AdServingService
         $candidates = $this->filterGeoTargetedCandidates($candidates, $context->geoCode);
         if ($candidates === []) {
             return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'geo_target_mismatch', $now, $context));
+        }
+
+        $candidates = $this->filterDeviceTargetedCandidates($candidates, $context->userAgent);
+        if ($candidates === []) {
+            return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'device_target_mismatch', $now, $context));
+        }
+
+        $candidates = $this->filterTimeTargetedCandidates($candidates, $now);
+        if ($candidates === []) {
+            return $this->save($this->noFill($siteId, $slotId, $viewerId, $width, $height, 'time_target_mismatch', $now, $context));
         }
 
         $trafficRisk = $this->selectionPolicy->trafficRisk($siteId, $slotId, $viewerId);
@@ -477,6 +490,46 @@ final readonly class AdServingService
                 foreach ($candidate->geos as $targetGeo) {
                     $normalizedTarget = $this->normalizeGeo($targetGeo);
                     if ($normalizedTarget !== null && ($geoCode === $normalizedTarget || str_starts_with($geoCode, $normalizedTarget . '-'))) {
+                        return true;
+                    }
+                }
+
+                return false;
+            },
+        ));
+    }
+
+    /**
+     * @param list<AdCandidate> $candidates
+     * @return list<AdCandidate>
+     */
+    private function filterDeviceTargetedCandidates(array $candidates, ?string $userAgent): array
+    {
+        $device = $this->deviceClassifier->classify($userAgent);
+
+        return array_values(array_filter(
+            $candidates,
+            static fn (AdCandidate $candidate): bool =>
+                $candidate->devices === []
+                || ($device !== null && in_array($device, $candidate->devices, true)),
+        ));
+    }
+
+    /**
+     * @param list<AdCandidate> $candidates
+     * @return list<AdCandidate>
+     */
+    private function filterTimeTargetedCandidates(array $candidates, DateTimeImmutable $now): array
+    {
+        return array_values(array_filter(
+            $candidates,
+            static function (AdCandidate $candidate) use ($now): bool {
+                if ($candidate->timeWindows === []) {
+                    return true;
+                }
+
+                foreach ($candidate->timeWindows as $window) {
+                    if ($window->matches($now)) {
                         return true;
                     }
                 }

@@ -76,6 +76,23 @@ final class ServingOpenApiContractTest extends TestCase
         self::assertNotContains('impression', $videoBranch['properties']['event_type']['enum']);
     }
 
+    public function testServingContractDocumentsDeviceTimeTargetingAndNoFillReasons(): void
+    {
+        $openApi = Yaml::parseFile(dirname(__DIR__, 2) . '/docs/openapi.yaml');
+        self::assertIsArray($openApi);
+
+        $reasonEnum = $openApi['components']['schemas']['AdDecisionData']['properties']['reason']['enum'] ?? null;
+        self::assertIsArray($reasonEnum);
+        self::assertContains('device_target_mismatch', $reasonEnum);
+        self::assertContains('time_target_mismatch', $reasonEnum);
+
+        $getDescription = $openApi['paths']['/api/v1/ads/serve']['get']['description'] ?? '';
+        $postDescription = $openApi['paths']['/api/v1/ads/serve']['post']['description'] ?? '';
+        self::assertStringContainsString('HTTP User-Agent', (string) $getDescription);
+        self::assertStringContainsString('unknown devices only match unrestricted campaigns', (string) $postDescription);
+        self::assertStringContainsString('IANA timezone', (string) $getDescription);
+    }
+
     /**
      * @param list<string> $expectedRequired
      * @param array<string, mixed> $schema

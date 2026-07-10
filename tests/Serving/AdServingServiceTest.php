@@ -7,6 +7,7 @@ namespace VertoAD\Tests\Serving;
 use DateTimeImmutable;
 use PHPUnit\Framework\TestCase;
 use VertoAD\Domain\Budget\SpendFailureReason;
+use VertoAD\Domain\Campaign\CampaignTimeWindow;
 use VertoAD\Domain\Serving\AdCandidate;
 use VertoAD\Domain\Serving\ServingRequestContext;
 use VertoAD\Repository\Operations\InMemoryOperationRiskDecisionLogRepository;
@@ -182,6 +183,190 @@ final class AdServingServiceTest extends TestCase
         self::assertTrue($decision->filled);
         self::assertSame('ad-untargeted', $decision->adId);
         self::assertNull($decision->geoCode);
+    }
+
+    public function testServeAppliesDeviceTargetingAndKeepsUntargetedFallbackForUnknownDevices(): void
+    {
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([
+                $this->candidate(
+                    adId: 'ad-mobile',
+                    campaignId: 30,
+                    advertiserOrganizationId: 40,
+                    landingUrl: 'https://advertiser.example/mobile',
+                    impressionCostPoints: 100,
+                    clickCostPoints: 0,
+                    devices: ['mobile'],
+                ),
+                $this->candidate(
+                    adId: 'ad-unrestricted',
+                    campaignId: 31,
+                    advertiserOrganizationId: 41,
+                    landingUrl: 'https://advertiser.example/all-devices',
+                    impressionCostPoints: 10,
+                    clickCostPoints: 0,
+                ),
+            ]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+        );
+        $now = new DateTimeImmutable('2026-06-08T10:00:00Z');
+
+        $mobile = $service->serve(
+            10,
+            20,
+            'viewer-mobile',
+            null,
+            false,
+            $now,
+            new ServingRequestContext(userAgent: 'Mozilla/5.0 (Linux; Android 14) Mobile'),
+        );
+        $desktop = $service->serve(
+            10,
+            20,
+            'viewer-desktop',
+            null,
+            false,
+            $now,
+            new ServingRequestContext(userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'),
+        );
+        $unknown = $service->serve(
+            10,
+            20,
+            'viewer-unknown-device',
+            null,
+            false,
+            $now,
+            new ServingRequestContext(userAgent: 'curl/8.0'),
+        );
+
+        self::assertSame('ad-mobile', $mobile->adId);
+        self::assertSame('ad-unrestricted', $desktop->adId);
+        self::assertSame('ad-unrestricted', $unknown->adId);
+    }
+
+    public function testServeNoFillsWhenDeviceIsUnknownAndEveryCandidateIsDeviceTargeted(): void
+    {
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([
+                $this->candidate(
+                    adId: 'ad-tablet',
+                    campaignId: 30,
+                    advertiserOrganizationId: 40,
+                    landingUrl: 'https://advertiser.example/tablet',
+                    impressionCostPoints: 10,
+                    clickCostPoints: 0,
+                    devices: ['tablet'],
+                ),
+            ]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+        );
+
+        $decision = $service->serve(
+            10,
+            20,
+            'viewer-unknown-device',
+            null,
+            false,
+            new DateTimeImmutable('2026-06-08T10:00:00Z'),
+            new ServingRequestContext(),
+        );
+
+        self::assertFalse($decision->filled);
+        self::assertSame('device_target_mismatch', $decision->reason);
+    }
+
+    public function testServeSelectsCandidatesInsideConfiguredLocalTimeWindows(): void
+    {
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([
+                $this->candidate(
+                    adId: 'ad-closed',
+                    campaignId: 30,
+                    advertiserOrganizationId: 40,
+                    landingUrl: 'https://advertiser.example/closed',
+                    impressionCostPoints: 100,
+                    clickCostPoints: 0,
+                    timeWindows: [new CampaignTimeWindow(2, '09:00', '18:00', 'UTC')],
+                ),
+                $this->candidate(
+                    adId: 'ad-open',
+                    campaignId: 31,
+                    advertiserOrganizationId: 41,
+                    landingUrl: 'https://advertiser.example/open',
+                    impressionCostPoints: 10,
+                    clickCostPoints: 0,
+                    timeWindows: [new CampaignTimeWindow(1, '09:00', '18:00', 'UTC')],
+                ),
+            ]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+        );
+
+        $decision = $service->serve(
+            10,
+            20,
+            'viewer-business-hours',
+            null,
+            false,
+            new DateTimeImmutable('2026-06-08T10:00:00Z'),
+        );
+
+        self::assertTrue($decision->filled);
+        self::assertSame('ad-open', $decision->adId);
+    }
+
+    public function testServeHandlesCrossMidnightAndTimezoneBoundariesAndRejectsClosedWindows(): void
+    {
+        $candidate = $this->candidate(
+            adId: 'ad-overnight',
+            campaignId: 30,
+            advertiserOrganizationId: 40,
+            landingUrl: 'https://advertiser.example/overnight',
+            impressionCostPoints: 10,
+            clickCostPoints: 0,
+            timeWindows: [new CampaignTimeWindow(1, '22:00', '02:00', 'Asia/Shanghai')],
+        );
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([$candidate]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+        );
+
+        $mondayLocal = $service->serve(
+            10,
+            20,
+            'viewer-overnight-start',
+            null,
+            false,
+            new DateTimeImmutable('2026-06-08T14:30:00Z'),
+        );
+        $tuesdayLocal = $service->serve(
+            10,
+            20,
+            'viewer-overnight-carry',
+            null,
+            false,
+            new DateTimeImmutable('2026-06-08T17:30:00Z'),
+        );
+        $closed = $service->serve(
+            10,
+            20,
+            'viewer-overnight-closed',
+            null,
+            false,
+            new DateTimeImmutable('2026-06-08T18:00:00Z'),
+        );
+
+        self::assertTrue($mondayLocal->filled);
+        self::assertTrue($tuesdayLocal->filled);
+        self::assertFalse($closed->filled);
+        self::assertSame('time_target_mismatch', $closed->reason);
     }
 
     public function testTrackRequiresValidViewabilityThresholdAndDeduplicatesEvents(): void
@@ -1091,6 +1276,8 @@ final class AdServingServiceTest extends TestCase
         ?int $hourlyFrequencyCap = null,
         ?int $dailyFrequencyCap = null,
         array $geos = [],
+        array $devices = [],
+        array $timeWindows = [],
     ): AdCandidate
     {
         return new AdCandidate(
@@ -1108,6 +1295,8 @@ final class AdServingServiceTest extends TestCase
             hourlyFrequencyCap: $hourlyFrequencyCap,
             dailyFrequencyCap: $dailyFrequencyCap,
             geos: $geos,
+            devices: $devices,
+            timeWindows: $timeWindows,
         );
     }
 }

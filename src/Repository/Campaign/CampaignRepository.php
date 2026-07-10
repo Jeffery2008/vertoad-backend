@@ -127,7 +127,7 @@ final class CampaignRepository implements CampaignRepositoryInterface
     {
         $id = (int) $row['id'];
         $organizationId = (int) $row['organization_id'];
-        $targeting = json_decode((string) $row['targeting_json'], true);
+        $targeting = CampaignTargeting::fromJson((string) $row['targeting_json']);
 
         return new Campaign(
             id: $id,
@@ -140,7 +140,7 @@ final class CampaignRepository implements CampaignRepositoryInterface
             creativeAssetId: (int) $row['creative_asset_id'],
             startsAt: $row['starts_at'] === null ? null : new DateTimeImmutable((string) $row['starts_at']),
             endsAt: $row['ends_at'] === null ? null : new DateTimeImmutable((string) $row['ends_at']),
-            targeting: is_array($targeting) ? CampaignTargeting::fromArray($targeting) : new CampaignTargeting(),
+            targeting: $targeting,
             budget: $this->hydrateBudget($id, $organizationId, $row),
             pauseReason: $row['pause_reason'] === null ? null : (string) $row['pause_reason'],
         );

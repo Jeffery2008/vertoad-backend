@@ -1975,7 +1975,7 @@ paths:
         - Serving
       operationId: serveAdFrame
       summary: Return sandboxed ad iframe HTML for SDK delivery.
-      description: Browser-facing endpoint used as the SDK iframe src. It accepts the same publisher slot identity as the JSON decision API and returns platform-controlled HTML for sandboxed rendering on the ads origin. Filled responses include nonce-scoped runtime JavaScript that listens for SDK viewability messages, posts accepted impressions to `/api/v1/ads/track`, and rewrites creative clicks through `/api/v1/ads/click` redirect URLs without exposing raw landing URLs in the frame document. The serving path reads canonical geo when available, queues unresolved IPs for `ip-geo-resolve`, and does not synchronously call an IP geo provider; unknown geo is a valid serving state.
+      description: Browser-facing endpoint used as the SDK iframe src. It accepts the same publisher slot identity as the JSON decision API and returns platform-controlled HTML for sandboxed rendering on the ads origin. Filled responses include nonce-scoped runtime JavaScript that listens for SDK viewability messages, posts accepted impressions to `/api/v1/ads/track`, and rewrites creative clicks through `/api/v1/ads/click` redirect URLs without exposing raw landing URLs in the frame document. The serving path reads canonical geo when available, queues unresolved IPs for `ip-geo-resolve`, and does not synchronously call an IP geo provider; unknown geo is a valid serving state. Device targeting is derived from the HTTP User-Agent as `desktop`, `mobile`, or `tablet`; an absent or unrecognized User-Agent is unknown and only matches campaigns without device restrictions. Recurring time windows are evaluated against the request instant in each rule's IANA timezone.
       security: []
       parameters:
         - name: site_id
@@ -2057,7 +2057,7 @@ paths:
         - Serving
       operationId: serveAdDecision
       summary: Return an ad decision for a verified publisher slot.
-      description: Returns a sandboxed iframe payload when an eligible safe candidate exists; otherwise returns deterministic no-fill. The decision path reads `canonical_geo_code` from the backend IP geo store when present, queues unresolved IPs asynchronously, and never waits for a provider registry lookup; candidates that require explicit geo can no-fill with `geo_target_mismatch`, while unknown geo does not create an API error.
+      description: Returns a sandboxed iframe payload when an eligible safe candidate exists; otherwise returns deterministic no-fill. The decision path reads `canonical_geo_code` from the backend IP geo store when present, queues unresolved IPs asynchronously, and never waits for a provider registry lookup; candidates that require explicit geo can no-fill with `geo_target_mismatch`, while unknown geo does not create an API error. Device targeting is derived from the HTTP User-Agent; unknown devices only match unrestricted campaigns. Campaign time windows use their configured IANA timezone and may cross midnight.
       security: []
       requestBody:
         required: true
@@ -5072,11 +5072,17 @@ components:
         $ref: "#/components/schemas/PublisherAdSlotPreset"
     CampaignTargeting:
       type: object
+      description: Campaign delivery restrictions. Empty arrays mean unrestricted for that dimension. Device values and time windows are normalized before persistence.
       properties:
         devices:
           type: array
+          description: Allowed server-classified device types. An unknown request device cannot match a non-empty list.
           items:
             type: string
+            enum:
+              - desktop
+              - mobile
+              - tablet
         geos:
           type: array
           items:
@@ -5093,23 +5099,33 @@ components:
             minimum: 1
         time_windows:
           type: array
+          description: Recurring local-time windows. A request matches when any window contains the serving instant. Intervals include `start` and exclude `end`; `start > end` crosses into the following local day, while equal clocks are invalid.
           items:
             type: object
             required:
               - day_of_week
               - start
               - end
+              - timezone
             properties:
               day_of_week:
                 type: integer
                 minimum: 0
                 maximum: 6
+                description: Local start day, where 0 is Sunday and 6 is Saturday.
               start:
                 type: string
-                pattern: "^[0-2][0-9]:[0-5][0-9]$"
+                pattern: "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"
+                description: Inclusive local start clock in 24-hour HH:MM format.
               end:
                 type: string
-                pattern: "^[0-2][0-9]:[0-5][0-9]$"
+                pattern: "^(?:(?:[01][0-9]|2[0-3]):[0-5][0-9]|24:00)$"
+                description: Exclusive local end clock; `24:00` is allowed only as the end of the start day.
+              timezone:
+                type: string
+                minLength: 1
+                example: Asia/Shanghai
+                description: IANA timezone identifier used to evaluate this window, including daylight-saving transitions where applicable.
             additionalProperties: false
       additionalProperties: false
     CampaignBudget:
@@ -6847,6 +6863,8 @@ components:
             - fraud_high_risk_viewer
             - fraud_high_risk_slot
             - geo_target_mismatch
+            - device_target_mismatch
+            - time_target_mismatch
             - null
         iframe:
           type: object

@@ -63,6 +63,19 @@ final class CampaignRouteIntegrationTest extends TestCase
         self::assertSame('cpm', $created['data']['pricing_model']);
         self::assertSame(120, $created['data']['bid_points']);
         self::assertSame(['desktop', 'mobile'], $created['data']['targeting']['devices']);
+        self::assertSame([
+            'day_of_week' => 1,
+            'start' => '09:00',
+            'end' => '18:00',
+            'timezone' => 'Asia/Shanghai',
+        ], $created['data']['targeting']['time_windows'][0]);
+        self::assertSame(
+            $created['data']['targeting'],
+            json_decode((string) $connection->fetchOne(
+                'SELECT targeting_json FROM campaigns WHERE id = ?',
+                [$created['data']['id']],
+            ), true, flags: JSON_THROW_ON_ERROR),
+        );
         self::assertSame(10_000, $created['data']['budget']['total_cap_points']);
         self::assertSame(10_000, (int) $connection->fetchOne('SELECT total_cap_points FROM campaign_budget_caps WHERE campaign_id = ?', [$created['data']['id']]));
 
@@ -348,11 +361,16 @@ final class CampaignRouteIntegrationTest extends TestCase
                 'ends_at' => '2026-07-08T00:00:00+00:00',
             ],
             'targeting' => [
-                'devices' => ['desktop', 'mobile'],
+                'devices' => ['mobile', 'desktop', 'mobile'],
                 'geos' => ['CN-SH'],
                 'site_ids' => [10],
                 'slot_ids' => [20],
-                'time_windows' => [['day_of_week' => 1, 'start' => '09:00', 'end' => '18:00']],
+                'time_windows' => [[
+                    'day_of_week' => 1,
+                    'start' => '09:00',
+                    'end' => '18:00',
+                    'timezone' => 'asia/shanghai',
+                ]],
             ],
             'budget' => [
                 'total_cap_points' => 10_000,

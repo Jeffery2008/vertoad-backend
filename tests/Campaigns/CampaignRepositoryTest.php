@@ -6,6 +6,8 @@ namespace VertoAD\Tests\Campaigns;
 
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\DriverManager;
+use InvalidArgumentException;
+use JsonException;
 use PHPUnit\Framework\TestCase;
 use VertoAD\Domain\Campaign\CampaignStatus;
 use VertoAD\Repository\Campaign\CampaignRepository;
@@ -95,6 +97,51 @@ final class CampaignRepositoryTest extends TestCase
         );
     }
 
+    public function testCampaignReadsFailClosedForMalformedOrNonObjectTargetingJson(): void
+    {
+        $connection = $this->connection();
+        $this->insertCampaign(
+            $connection,
+            id: 15,
+            organizationId: 99,
+            status: CampaignStatus::Active->value,
+            targetingJson: '{bad-json',
+        );
+        $this->insertCampaign(
+            $connection,
+            id: 16,
+            organizationId: 99,
+            status: CampaignStatus::Active->value,
+            targetingJson: 'null',
+        );
+        $this->insertCampaign(
+            $connection,
+            id: 17,
+            organizationId: 99,
+            status: CampaignStatus::Active->value,
+            targetingJson: '[]',
+        );
+        $repository = new CampaignRepository($connection);
+
+        try {
+            $repository->find(99, 15);
+            self::fail('Malformed targeting JSON must not become unrestricted targeting.');
+        } catch (JsonException) {
+            self::assertTrue(true);
+        }
+
+        try {
+            $repository->find(99, 16);
+            self::fail('Null targeting JSON must not become unrestricted targeting.');
+        } catch (InvalidArgumentException) {
+            self::assertTrue(true);
+        }
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Stored campaign targeting must be a JSON object.');
+        $repository->find(99, 17);
+    }
+
     private function connection(): Connection
     {
         $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
@@ -109,6 +156,7 @@ final class CampaignRepositoryTest extends TestCase
         int $organizationId,
         string $status,
         ?string $pauseReason = null,
+        string $targetingJson = '{}',
     ): void {
         $connection->insert('campaigns', [
             'id' => $id,
@@ -122,7 +170,7 @@ final class CampaignRepositoryTest extends TestCase
             'creative_asset_id' => 1,
             'starts_at' => null,
             'ends_at' => null,
-            'targeting_json' => '{}',
+            'targeting_json' => $targetingJson,
         ]);
     }
 

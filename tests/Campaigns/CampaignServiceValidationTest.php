@@ -153,13 +153,27 @@ final class CampaignServiceValidationTest extends TestCase
         foreach ([
             ['targeting' => ['devices' => 'desktop']],
             ['targeting' => ['devices' => ['']]],
+            ['targeting' => ['devices' => ['television']]],
+            ['targeting' => ['devices' => ['MOBILE']]],
             ['targeting' => ['time_windows' => 'weekday']],
             ['targeting' => ['time_windows' => ['bad']]],
-            ['targeting' => ['time_windows' => [['day_of_week' => 9, 'start' => '09:00', 'end' => '18:00']]]],
-            ['targeting' => ['time_windows' => [['day_of_week' => 1, 'start' => '18:00', 'end' => '09:00']]]],
+            ['targeting' => ['time_windows' => [['day_of_week' => 9, 'start' => '09:00', 'end' => '18:00', 'timezone' => 'UTC']]]],
+            ['targeting' => ['time_windows' => [['day_of_week' => 1, 'start' => '09:00', 'end' => '09:00', 'timezone' => 'UTC']]]],
+            ['targeting' => ['time_windows' => [['day_of_week' => 1, 'start' => '09:00', 'end' => '18:00']]]],
+            ['targeting' => ['time_windows' => [['day_of_week' => 1, 'start' => '09:00', 'end' => '18:00', 'timezone' => 'Invalid/Zone']]]],
         ] as $extra) {
             $this->assertCampaignError('campaign_targeting_invalid', fn () => $service->create(99, array_replace_recursive($base, $extra)));
         }
+
+        $overnight = $service->create(99, $base + ['targeting' => [
+            'time_windows' => [[
+                'day_of_week' => 1,
+                'start' => '18:00',
+                'end' => '09:00',
+                'timezone' => 'Asia/Shanghai',
+            ]],
+        ]]);
+        self::assertSame('Asia/Shanghai', $overnight->targeting->timeWindows[0]->timezone);
 
         $this->assertCampaignError('campaign_schedule_invalid', fn () => $service->create(99, $base + ['schedule' => ['starts_at' => 10]]));
         $this->assertCampaignError('campaign_schedule_invalid', fn () => $service->create(99, $base + ['schedule' => ['starts_at' => 'not-a-date']]));
@@ -207,26 +221,24 @@ final class CampaignServiceValidationTest extends TestCase
         self::assertSame(['desktop'], $archived->targeting->devices);
     }
 
-    public function testCampaignTargetingHydratesOnlyValidStoredValues(): void
+    public function testCampaignTargetingHydratesCanonicalStoredValues(): void
     {
         $targeting = CampaignTargeting::fromArray([
-            'devices' => ['desktop', 12],
-            'geos' => ['CN-SH', null],
-            'site_ids' => [10, 0, '20'],
-            'slot_ids' => [30, -1, '40'],
+            'devices' => ['mobile', 'desktop', 'mobile'],
+            'geos' => ['cn-sh', 'CN-BJ'],
+            'site_ids' => [20, 10],
+            'slot_ids' => [40, 30],
             'time_windows' => [
-                ['day_of_week' => 1, 'start' => '09:00', 'end' => '18:00'],
-                ['day_of_week' => 8, 'start' => '09:00', 'end' => '18:00'],
-                'bad',
+                ['day_of_week' => 1, 'start' => '09:00', 'end' => '18:00', 'timezone' => 'asia/shanghai'],
             ],
         ]);
 
-        self::assertSame(['desktop'], $targeting->devices);
-        self::assertSame(['CN-SH'], $targeting->geos);
+        self::assertSame(['desktop', 'mobile'], $targeting->devices);
+        self::assertSame(['CN-BJ', 'CN-SH'], $targeting->geos);
         self::assertSame([10, 20], $targeting->siteIds);
         self::assertSame([30, 40], $targeting->slotIds);
         self::assertCount(1, $targeting->timeWindows);
-        self::assertSame([], CampaignTargeting::fromArray(['time_windows' => 'always'])->timeWindows);
+        self::assertSame('Asia/Shanghai', $targeting->timeWindows[0]->timezone);
     }
 
     private function connection(): Connection

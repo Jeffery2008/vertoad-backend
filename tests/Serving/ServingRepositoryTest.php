@@ -102,21 +102,35 @@ final class ServingRepositoryTest extends TestCase
         self::assertSame(7, $candidates[0]->dailyClickCap);
     }
 
-    public function testDatabaseCandidateRepositoryHydratesGeoTargetingRules(): void
+    public function testDatabaseCandidateRepositoryHydratesNormalizedTargetingRules(): void
     {
         $connection = $this->createCampaignConnection();
         $this->insertCandidateFixture(
             $connection,
             campaignId: 100,
             assetId: 200,
-            targeting: ['site_ids' => [10], 'slot_ids' => [20], 'geos' => ['CN-SH', 'CN-BJ']],
+            targeting: [
+                'site_ids' => [10],
+                'slot_ids' => [20],
+                'geos' => ['CN-SH', 'CN-BJ'],
+                'devices' => ['tablet', 'desktop'],
+                'time_windows' => [[
+                    'day_of_week' => 1,
+                    'start' => '22:00',
+                    'end' => '02:00',
+                    'timezone' => 'asia/shanghai',
+                ]],
+            ],
         );
 
         $candidates = (new DatabaseAdCandidateRepository($connection))
             ->eligibleCandidatesForSlot(10, 20, ['width' => 300, 'height' => 250]);
 
         self::assertCount(1, $candidates);
-        self::assertSame(['CN-SH', 'CN-BJ'], $candidates[0]->geos);
+        self::assertSame(['CN-BJ', 'CN-SH'], $candidates[0]->geos);
+        self::assertSame(['desktop', 'tablet'], $candidates[0]->devices);
+        self::assertCount(1, $candidates[0]->timeWindows);
+        self::assertSame('Asia/Shanghai', $candidates[0]->timeWindows[0]->timezone);
     }
 
     public function testDatabaseCandidateRepositoryDefaultsMissingQualityCtrAndCaps(): void
@@ -156,17 +170,58 @@ final class ServingRepositoryTest extends TestCase
         self::assertSame(100, $candidates[0]->campaignId);
     }
 
-    public function testDatabaseCandidateRepositoryHandlesUntargetedAndInvalidTargetingPayloads(): void
+    public function testDatabaseCandidateRepositoryAllowsUntargetedAndFailsClosedForInvalidTargetingPayloads(): void
     {
         $connection = $this->createCampaignConnection();
         $this->insertCandidateFixture($connection, campaignId: 100, assetId: 200, targeting: ['site_ids' => [], 'slot_ids' => []]);
         $this->insertCandidateFixture($connection, campaignId: 101, assetId: 201, targetingJson: '{bad-json');
+        $this->insertCandidateFixture($connection, campaignId: 102, assetId: 202, targeting: ['devices' => ['watch']]);
+        $this->insertCandidateFixture($connection, campaignId: 103, assetId: 203, targetingJson: 'null');
+        $this->insertCandidateFixture($connection, campaignId: 104, assetId: 204, targetingJson: '[]');
 
         $candidates = (new DatabaseAdCandidateRepository($connection))
             ->eligibleCandidatesForSlot(10, 20, null);
 
-        self::assertCount(2, $candidates);
-        self::assertSame([100, 101], array_map(static fn ($candidate): int => $candidate->campaignId, $candidates));
+        self::assertCount(1, $candidates);
+        self::assertSame([100], array_map(static fn ($candidate): int => $candidate->campaignId, $candidates));
+    }
+
+    public function testDatabaseCandidateRepositoryUsesInjectedServingInstantForScheduleBoundaries(): void
+    {
+        $connection = $this->createCampaignConnection();
+        $this->insertCandidateFixture(
+            $connection,
+            campaignId: 100,
+            assetId: 200,
+            startsAt: '2026-06-08 10:00:00',
+            endsAt: '2026-06-08 12:00:00',
+        );
+        $repository = new DatabaseAdCandidateRepository($connection);
+
+        self::assertSame([], $repository->eligibleCandidatesForSlot(
+            10,
+            20,
+            null,
+            new DateTimeImmutable('2026-06-08 09:59:59'),
+        ));
+        self::assertCount(1, $repository->eligibleCandidatesForSlot(
+            10,
+            20,
+            null,
+            new DateTimeImmutable('2026-06-08 10:00:00'),
+        ));
+        self::assertCount(1, $repository->eligibleCandidatesForSlot(
+            10,
+            20,
+            null,
+            new DateTimeImmutable('2026-06-08 12:00:00'),
+        ));
+        self::assertSame([], $repository->eligibleCandidatesForSlot(
+            10,
+            20,
+            null,
+            new DateTimeImmutable('2026-06-08 12:00:01'),
+        ));
     }
 
     public function testEmptyCandidateRepositoryRemainsExplicitNoFillTestDouble(): void

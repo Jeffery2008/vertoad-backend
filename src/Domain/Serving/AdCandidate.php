@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace VertoAD\Domain\Serving;
 
+use VertoAD\Domain\Campaign\CampaignTimeWindow;
+
 final readonly class AdCandidate
 {
     public function __construct(
@@ -27,6 +29,10 @@ final readonly class AdCandidate
         public ?int $dailyClickCap = null,
         /** @var list<string> */
         public array $geos = [],
+        /** @var list<string> */
+        public array $devices = [],
+        /** @var list<CampaignTimeWindow> */
+        public array $timeWindows = [],
     ) {
     }
 }

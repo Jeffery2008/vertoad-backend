@@ -6,6 +6,8 @@ namespace VertoAD\Repository\Serving;
 
 use DateTimeImmutable;
 use Doctrine\DBAL\Connection;
+use InvalidArgumentException;
+use JsonException;
 use VertoAD\Domain\Campaign\CampaignTargeting;
 use VertoAD\Domain\Serving\AdCandidate;
 
@@ -19,9 +21,13 @@ final readonly class DatabaseAdCandidateRepository implements AdCandidateReposit
      * @param array{width:int,height:int}|null $size
      * @return list<AdCandidate>
      */
-    public function eligibleCandidatesForSlot(int $siteId, int $slotId, ?array $size): array
-    {
-        $now = new DateTimeImmutable();
+    public function eligibleCandidatesForSlot(
+        int $siteId,
+        int $slotId,
+        ?array $size,
+        ?DateTimeImmutable $now = null,
+    ): array {
+        $now ??= new DateTimeImmutable();
         $rows = $this->connection->createQueryBuilder()
             ->select(
                 'c.id AS campaign_id',
@@ -93,7 +99,7 @@ final readonly class DatabaseAdCandidateRepository implements AdCandidateReposit
             }
 
             $targeting = $this->targeting($row['targeting_json'] === null ? '' : (string) $row['targeting_json']);
-            if (!$this->targetsSlot($targeting, $siteId, $slotId)) {
+            if ($targeting === null || !$this->targetsSlot($targeting, $siteId, $slotId)) {
                 continue;
             }
 
@@ -119,17 +125,21 @@ final readonly class DatabaseAdCandidateRepository implements AdCandidateReposit
                 hourlyClickCap: $row['hourly_click_cap'] === null ? null : (int) $row['hourly_click_cap'],
                 dailyClickCap: $row['daily_click_cap'] === null ? null : (int) $row['daily_click_cap'],
                 geos: $targeting->geos,
+                devices: $targeting->devices,
+                timeWindows: $targeting->timeWindows,
             );
         }
 
         return $candidates;
     }
 
-    private function targeting(string $json): CampaignTargeting
+    private function targeting(string $json): ?CampaignTargeting
     {
-        $decoded = json_decode($json, true);
-
-        return is_array($decoded) ? CampaignTargeting::fromArray($decoded) : new CampaignTargeting();
+        try {
+            return CampaignTargeting::fromJson($json);
+        } catch (JsonException | InvalidArgumentException) {
+            return null;
+        }
     }
 
     private function targetsSlot(CampaignTargeting $targeting, int $siteId, int $slotId): bool

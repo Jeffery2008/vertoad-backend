@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace VertoAD\Repository\Serving;
 
+use DateTimeImmutable;
 use VertoAD\Domain\Serving\AdCandidate;
 
 final readonly class StaticAdCandidateRepository implements AdCandidateRepositoryInterface
@@ -15,8 +16,12 @@ final readonly class StaticAdCandidateRepository implements AdCandidateRepositor
     {
     }
 
-    public function eligibleCandidatesForSlot(int $siteId, int $slotId, ?array $size): array
-    {
+    public function eligibleCandidatesForSlot(
+        int $siteId,
+        int $slotId,
+        ?array $size,
+        ?DateTimeImmutable $now = null,
+    ): array {
         if ($size === null) {
             return $this->candidates;
         }
