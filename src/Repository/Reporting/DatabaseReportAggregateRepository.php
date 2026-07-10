@@ -10,6 +10,9 @@ use VertoAD\Domain\Reporting\ReportAggregateRow;
 
 final readonly class DatabaseReportAggregateRepository implements ReportAggregateRepositoryInterface
 {
+    private const string REPORTABLE_EVENT_BILLING_SQL = '(billing_status = :billed_status'
+        . ' OR (billing_status = :skipped_status AND billing_reason = :zero_cost_reason))';
+
     public function __construct(private Connection $connection)
     {
     }
@@ -116,16 +119,19 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
                 'campaign_id',
                 'advertiser_organization_id',
                 'publisher_organization_id',
+                'billing_status',
                 'billed_points',
                 'publisher_earning_points',
                 'occurred_at',
             )
             ->from('ad_serving_events')
             ->where('valid = :valid')
-            ->andWhere('billing_status = :billing_status')
+            ->andWhere(self::REPORTABLE_EVENT_BILLING_SQL)
             ->andWhere('event_type IN (:impression, :click)')
             ->setParameter('valid', 1)
-            ->setParameter('billing_status', 'billed')
+            ->setParameter('billed_status', 'billed')
+            ->setParameter('skipped_status', 'skipped')
+            ->setParameter('zero_cost_reason', 'zero_cost')
             ->setParameter('impression', 'impression')
             ->setParameter('click', 'click');
 
@@ -205,18 +211,21 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
                 'campaign_id',
                 'advertiser_organization_id',
                 'publisher_organization_id',
+                'billing_status',
                 'billed_points',
                 'publisher_earning_points',
                 'occurred_at',
             )
             ->from('ad_serving_events')
             ->where('valid = :valid')
-            ->andWhere('billing_status = :billing_status')
+            ->andWhere(self::REPORTABLE_EVENT_BILLING_SQL)
             ->andWhere('event_type IN (:impression, :click)')
             ->andWhere('occurred_at >= :from_time')
             ->andWhere('occurred_at < :to_time')
             ->setParameter('valid', 1)
-            ->setParameter('billing_status', 'billed')
+            ->setParameter('billed_status', 'billed')
+            ->setParameter('skipped_status', 'skipped')
+            ->setParameter('zero_cost_reason', 'zero_cost')
             ->setParameter('impression', 'impression')
             ->setParameter('click', 'click')
             ->setParameter('from_time', $this->formatDate($bucketFrom))
@@ -504,8 +513,9 @@ final readonly class DatabaseReportAggregateRepository implements ReportAggregat
      */
     private function eventFacts(array $event): array
     {
-        $billedPoints = max(0, (int) ($event['billed_points'] ?? 0));
-        $publisherPoints = max(0, (int) ($event['publisher_earning_points'] ?? 0));
+        $wasBilled = ($event['billing_status'] ?? null) === 'billed';
+        $billedPoints = $wasBilled ? max(0, (int) ($event['billed_points'] ?? 0)) : 0;
+        $publisherPoints = $wasBilled ? max(0, (int) ($event['publisher_earning_points'] ?? 0)) : 0;
         $facts = [[
             'organization_role' => 'platform',
             'organization_id' => null,
