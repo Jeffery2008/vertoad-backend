@@ -43,21 +43,26 @@ final readonly class BackupInventory
         ];
     }
 
-    /** @return list<string> */
-    public function criticalObjectKeys(): array
+    /** @return list<BackupSourceDescriptor> */
+    public function criticalObjects(): array
     {
-        $keys = [];
-        foreach ([['creative_assets', null], ['withdrawal_proofs', "status = 'confirmed'"]] as [$table, $where]) {
+        $objects = [];
+        foreach ([
+            ['creative_assets', BackupSourceRegistry::ASSETS, null],
+            ['withdrawal_proofs', BackupSourceRegistry::WITHDRAWAL_PROOFS, "status = 'verified'"],
+        ] as [$table, $sourceStorage, $where]) {
             if (!$this->tableExists($table)) {
                 continue;
             }
-            $query = $this->connection->createQueryBuilder()->select('object_key')->from($table);
+            $query = $this->connection->createQueryBuilder()->select('object_key', 'content_type')->from($table);
             if ($where !== null) {
                 $query->where($where);
             }
-            foreach ($query->fetchFirstColumn() as $key) {
-                if (is_scalar($key) && trim((string) $key) !== '') {
-                    $keys[] = trim((string) $key);
+            foreach ($query->fetchAllAssociative() as $row) {
+                $key = $row['object_key'] ?? null;
+                $contentType = $row['content_type'] ?? null;
+                if (is_scalar($key) && is_scalar($contentType) && trim((string) $key) !== '') {
+                    $objects[] = new BackupSourceDescriptor($sourceStorage, (string) $key, (string) $contentType);
                 }
             }
         }
@@ -75,16 +80,28 @@ final readonly class BackupInventory
                 foreach ($partitions as $partition) {
                     $key = is_array($partition) ? ($partition['object_key'] ?? null) : null;
                     if (is_scalar($key) && trim((string) $key) !== '') {
-                        $keys[] = trim((string) $key);
+                        $objects[] = new BackupSourceDescriptor(
+                            BackupSourceRegistry::ARCHIVE,
+                            (string) $key,
+                            'application/vnd.apache.parquet',
+                        );
                     }
                 }
             }
         }
 
-        $keys = array_values(array_unique($keys));
-        sort($keys, SORT_STRING);
+        $unique = [];
+        foreach ($objects as $object) {
+            $unique[$object->sourceStorage . "\0" . $object->sourceKey] = $object;
+        }
+        $objects = array_values($unique);
+        usort(
+            $objects,
+            static fn (BackupSourceDescriptor $left, BackupSourceDescriptor $right): int =>
+                [$left->sourceStorage, $left->sourceKey] <=> [$right->sourceStorage, $right->sourceKey],
+        );
 
-        return $keys;
+        return $objects;
     }
 
     private function tableExists(string $table): bool

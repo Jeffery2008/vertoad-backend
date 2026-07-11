@@ -22,6 +22,7 @@ final readonly class BackupExecutor
         private BackupJobRepositoryInterface $jobs,
         private MysqlBackupRunnerInterface $mysql,
         private BackupObjectStorageInterface $storage,
+        private BackupSourceRegistry $sourceRegistry,
         private BackupInventory $inventory,
         private AuditLogService $audit,
         private string $baseObjectKey,
@@ -70,38 +71,52 @@ final readonly class BackupExecutor
             if (!hash_equals($configHash, $this->storage->sha256($configObjectKey))) {
                 throw new RuntimeException('Configuration backup upload checksum verification failed.');
             }
-            $sourceKeys = $this->inventory->criticalObjectKeys();
-            $sourceObjects = [];
-            foreach ($sourceKeys as $sourceKey) {
-                if (!$this->storage->exists($sourceKey)) {
-                    throw new RuntimeException('Critical object is missing from primary storage: ' . $sourceKey);
-                }
-                $sourceObjects[$sourceKey] = [
-                    'byte_count' => $this->storage->size($sourceKey),
-                    'sha256' => $this->storage->sha256($sourceKey),
-                ];
-            }
-
             $objects = [];
-            foreach ($sourceKeys as $sourceKey) {
-                $backupObjectKey = $this->backupObjectKey($base, $sourceKey);
-                $this->storage->copy($sourceKey, $backupObjectKey);
-                if ($this->storage->size($backupObjectKey) !== $sourceObjects[$sourceKey]['byte_count']) {
-                    throw new RuntimeException('Critical object backup size verification failed: ' . $sourceKey);
+            foreach ($this->inventory->criticalObjects() as $index => $source) {
+                $sourceStorage = $this->sourceStorage($source->sourceStorage);
+                if (!$sourceStorage->exists($source->sourceKey)) {
+                    throw new RuntimeException(
+                        'Critical object is missing from source storage '
+                        . $source->sourceStorage
+                        . ': '
+                        . $source->sourceKey,
+                    );
                 }
-                if (!hash_equals($sourceObjects[$sourceKey]['sha256'], $this->storage->sha256($backupObjectKey))) {
-                    throw new RuntimeException('Critical object backup checksum verification failed: ' . $sourceKey);
-                }
+                [$sourceBytes, $sourceHash] = $this->measureStorageObject(
+                    $sourceStorage,
+                    $source->sourceKey,
+                    'Critical source object',
+                );
+                $localPath = $this->objectTemporaryPath($directory, 'backup', $index);
+                $sourceStorage->getFile($source->sourceKey, $localPath);
+                $this->verifyLocalFile(
+                    $localPath,
+                    $sourceBytes,
+                    $sourceHash,
+                    'Critical source object download',
+                );
+
+                $targetKey = $this->backupObjectKey($base, $source);
+                $this->storage->putFile($targetKey, $localPath, $source->contentType);
+                $this->verifyStorageObject(
+                    $this->storage,
+                    $targetKey,
+                    $sourceBytes,
+                    $sourceHash,
+                    'Critical object backup',
+                );
                 $objects[] = [
-                    'source_object_key' => $sourceKey,
-                    'backup_object_key' => $backupObjectKey,
-                    'sha256' => $sourceObjects[$sourceKey]['sha256'],
-                    'byte_count' => $sourceObjects[$sourceKey]['byte_count'],
+                    'source_storage' => $source->sourceStorage,
+                    'source_key' => $source->sourceKey,
+                    'target_key' => $targetKey,
+                    'sha256' => $sourceHash,
+                    'bytes' => $sourceBytes,
+                    'content_type' => $source->contentType,
                 ];
             }
-            $payloadBytes = $dumpSize + $configSize + array_sum(array_column($sourceObjects, 'byte_count'));
+            $payloadBytes = $dumpSize + $configSize + array_sum(array_column($objects, 'bytes'));
             $manifest = [
-                'schema' => 'vertoad-backup-manifest-v1',
+                'schema' => 'vertoad-backup-manifest-v2',
                 'backup_id' => $job->jobId,
                 'created_at' => $this->now()->format(DATE_ATOM),
                 'environment' => $job->environment,
@@ -198,21 +213,27 @@ final readonly class BackupExecutor
                 if (!$this->storage->exists($requiredObjectKey)) {
                     throw new RuntimeException('Restore preflight could not find backup object: ' . $requiredObjectKey);
                 }
-                if ($this->storage->size($requiredObjectKey) !== $requiredObject['byte_count']) {
-                    throw new RuntimeException('Restore preflight backup object size verification failed: ' . $requiredObjectKey);
-                }
+                $this->verifyStorageObject(
+                    $this->storage,
+                    $requiredObjectKey,
+                    $requiredObject['byte_count'],
+                    $requiredObject['sha256'],
+                    'Restore preflight backup object',
+                );
             }
             foreach ($objects as $object) {
-                $backupObjectKey = $object['backup_object_key'];
-                if (!$this->storage->exists($backupObjectKey)) {
-                    throw new RuntimeException('Restore preflight could not find copied object: ' . $backupObjectKey);
+                $this->sourceStorage($object['source_storage']);
+                $targetKey = $object['target_key'];
+                if (!$this->storage->exists($targetKey)) {
+                    throw new RuntimeException('Restore preflight could not find backup object: ' . $targetKey);
                 }
-                if ($this->storage->size($backupObjectKey) !== $object['byte_count']) {
-                    throw new RuntimeException('Restore preflight copied object size verification failed: ' . $backupObjectKey);
-                }
-                if (!hash_equals($object['sha256'], $this->storage->sha256($backupObjectKey))) {
-                    throw new RuntimeException('Restore preflight copied object checksum verification failed: ' . $backupObjectKey);
-                }
+                $this->verifyStorageObject(
+                    $this->storage,
+                    $targetKey,
+                    $object['bytes'],
+                    $object['sha256'],
+                    'Restore preflight backed-up object',
+                );
             }
 
             $configJson = $this->storage->readString($configuration['object_key']);
@@ -226,25 +247,34 @@ final readonly class BackupExecutor
 
             $dumpPath = $directory . DIRECTORY_SEPARATOR . 'mysql.sql';
             $this->storage->getFile((string) $mysql['object_key'], $dumpPath);
-            $actualHash = hash_file('sha256', $dumpPath);
-            if (!is_string($actualHash) || !hash_equals((string) $mysql['sha256'], $actualHash)) {
-                throw new RuntimeException('MySQL backup checksum verification failed.');
-            }
+            $actualHash = $this->verifyLocalFile(
+                $dumpPath,
+                $mysql['byte_count'],
+                $mysql['sha256'],
+                'MySQL backup download',
+            );
             $this->mysql->restore($dumpPath);
             // The dump captured the source job while it was running and predates this restore job.
             $this->jobs->save($source);
             $this->jobs->save($job);
-            foreach ($objects as $object) {
-                $this->storage->copy(
-                    $object['backup_object_key'],
-                    $object['source_object_key'],
+            foreach ($objects as $index => $object) {
+                $localPath = $this->objectTemporaryPath($directory, 'restore', $index);
+                $this->storage->getFile($object['target_key'], $localPath);
+                $this->verifyLocalFile(
+                    $localPath,
+                    $object['bytes'],
+                    $object['sha256'],
+                    'Backed-up object download',
                 );
-                if ($this->storage->size($object['source_object_key']) !== $object['byte_count']) {
-                    throw new RuntimeException('Restored object size verification failed: ' . $object['source_object_key']);
-                }
-                if (!hash_equals($object['sha256'], $this->storage->sha256($object['source_object_key']))) {
-                    throw new RuntimeException('Restored object checksum verification failed: ' . $object['source_object_key']);
-                }
+                $sourceStorage = $this->sourceStorage($object['source_storage']);
+                $sourceStorage->putFile($object['source_key'], $localPath, $object['content_type']);
+                $this->verifyStorageObject(
+                    $sourceStorage,
+                    $object['source_key'],
+                    $object['bytes'],
+                    $object['sha256'],
+                    'Restored object',
+                );
             }
 
             $evidenceObjectKey = rtrim($this->baseObjectKey, '/') . '/restore-evidence/' . $job->jobId . '.json';
@@ -300,7 +330,7 @@ final readonly class BackupExecutor
         }
     }
 
-    /** @return array{mysql:array{object_key:string,sha256:string,byte_count:int},configuration:array{object_key:string,sha256:string,byte_count:int},objects:list<array{source_object_key:string,backup_object_key:string,sha256:string,byte_count:int}>} */
+    /** @return array{mysql:array{object_key:string,sha256:string,byte_count:int},configuration:array{object_key:string,sha256:string,byte_count:int},objects:list<array{source_storage:string,source_key:string,target_key:string,sha256:string,bytes:int,content_type:string}>} */
     private function manifest(BackupJob $source): array
     {
         if (!is_string($source->manifestSha256) || !preg_match('/^[a-f0-9]{64}$/', $source->manifestSha256)) {
@@ -311,7 +341,7 @@ final readonly class BackupExecutor
             throw new RuntimeException('Backup manifest checksum verification failed.');
         }
         $decoded = json_decode($manifestJson, true, flags: JSON_THROW_ON_ERROR);
-        if (!is_array($decoded) || ($decoded['schema'] ?? null) !== 'vertoad-backup-manifest-v1') {
+        if (!is_array($decoded) || ($decoded['schema'] ?? null) !== 'vertoad-backup-manifest-v2') {
             throw new RuntimeException('Backup manifest schema is invalid.');
         }
         if (($decoded['backup_id'] ?? null) !== $source->jobId) {
@@ -343,32 +373,64 @@ final readonly class BackupExecutor
             throw new RuntimeException('Backup manifest configuration payload is invalid.');
         }
         $normalizedObjects = [];
+        $seenSources = [];
+        $seenTargets = [];
+        $expectedBase = $this->jobBase($source->jobId);
         foreach ($objects as $object) {
             if (
                 !is_array($object)
-                || !is_string($object['source_object_key'] ?? null)
-                || trim((string) $object['source_object_key']) === ''
-                || !is_string($object['backup_object_key'] ?? null)
-                || trim((string) $object['backup_object_key']) === ''
+                || !is_string($object['source_storage'] ?? null)
+                || !preg_match('/^[a-z][a-z0-9_]{0,63}$/', (string) $object['source_storage'])
+                || !is_string($object['source_key'] ?? null)
+                || trim((string) $object['source_key']) === ''
+                || !is_string($object['target_key'] ?? null)
+                || trim((string) $object['target_key']) === ''
                 || !preg_match('/^[a-f0-9]{64}$/', (string) ($object['sha256'] ?? ''))
-                || !is_int($object['byte_count'] ?? null)
-                || $object['byte_count'] < 0
+                || !is_int($object['bytes'] ?? null)
+                || $object['bytes'] < 0
+                || !is_string($object['content_type'] ?? null)
             ) {
                 throw new RuntimeException('Backup manifest object inventory is invalid.');
             }
+            $descriptor = new BackupSourceDescriptor(
+                (string) $object['source_storage'],
+                (string) $object['source_key'],
+                (string) $object['content_type'],
+            );
+            $this->sourceStorage($descriptor->sourceStorage);
+            $targetKey = trim((string) $object['target_key']);
+            if ($targetKey !== $this->backupObjectKey($expectedBase, $descriptor)) {
+                throw new RuntimeException('Backup manifest object target key is invalid.');
+            }
+            $sourceIdentity = $descriptor->sourceStorage . "\0" . $descriptor->sourceKey;
+            if (isset($seenSources[$sourceIdentity]) || isset($seenTargets[$targetKey])) {
+                throw new RuntimeException('Backup manifest object inventory contains duplicates.');
+            }
+            $seenSources[$sourceIdentity] = true;
+            $seenTargets[$targetKey] = true;
             $normalizedObjects[] = [
-                'source_object_key' => (string) $object['source_object_key'],
-                'backup_object_key' => (string) $object['backup_object_key'],
+                'source_storage' => $descriptor->sourceStorage,
+                'source_key' => $descriptor->sourceKey,
+                'target_key' => $targetKey,
                 'sha256' => (string) $object['sha256'],
-                'byte_count' => $object['byte_count'],
+                'bytes' => $object['bytes'],
+                'content_type' => $descriptor->contentType,
             ];
         }
+        $calculatedPayloadBytes = $mysql['byte_count'] + $configuration['byte_count'];
+        foreach ($normalizedObjects as $object) {
+            $calculatedPayloadBytes += $object['bytes'];
+        }
         if (
-            $source->mysqlObjectKey !== $mysql['object_key']
+            $source->manifestObjectKey !== $expectedBase . '/manifest.json'
+            || $mysql['object_key'] !== $expectedBase . '/mysql.sql'
+            || $configuration['object_key'] !== $expectedBase . '/configuration.json'
+            || $source->mysqlObjectKey !== $mysql['object_key']
             || $source->mysqlSha256 !== $mysql['sha256']
             || $source->configObjectKey !== $configuration['object_key']
             || $source->objectCount !== count($normalizedObjects)
             || $source->byteCount !== $payloadByteCount
+            || $payloadByteCount !== $calculatedPayloadBytes
             || $source->environment !== ($decoded['environment'] ?? null)
         ) {
             throw new RuntimeException('Backup manifest does not match trusted job metadata.');
@@ -485,13 +547,80 @@ final readonly class BackupExecutor
         return $base . '/' . $jobId;
     }
 
-    private function backupObjectKey(string $base, string $sourceObjectKey): string
+    private function backupObjectKey(string $base, BackupSourceDescriptor $source): string
     {
-        $path = parse_url($sourceObjectKey, PHP_URL_PATH);
-        $name = basename(is_string($path) ? $path : $sourceObjectKey);
+        $path = parse_url($source->sourceKey, PHP_URL_PATH);
+        $name = basename(is_string($path) ? $path : $source->sourceKey);
         $name = preg_replace('/[^A-Za-z0-9._-]/', '_', $name) ?: 'object';
 
-        return $base . '/objects/' . hash('sha256', $sourceObjectKey) . '/' . $name;
+        return $base
+            . '/objects/'
+            . $source->sourceStorage
+            . '/'
+            . hash('sha256', $source->sourceKey)
+            . '/'
+            . $name;
+    }
+
+    private function sourceStorage(string $sourceStorage): BackupObjectStorageInterface
+    {
+        return $this->sourceRegistry->storageFor($sourceStorage, $this->storage);
+    }
+
+    /** @return array{0:int,1:string} */
+    private function measureStorageObject(
+        BackupObjectStorageInterface $storage,
+        string $objectKey,
+        string $label,
+    ): array {
+        $bytes = $storage->size($objectKey);
+        $sha256 = $storage->sha256($objectKey);
+        if ($bytes < 0) {
+            throw new RuntimeException($label . ' size is invalid: ' . $objectKey);
+        }
+        if (!preg_match('/^[a-f0-9]{64}$/', $sha256)) {
+            throw new RuntimeException($label . ' checksum is invalid: ' . $objectKey);
+        }
+
+        return [$bytes, $sha256];
+    }
+
+    private function verifyStorageObject(
+        BackupObjectStorageInterface $storage,
+        string $objectKey,
+        int $expectedBytes,
+        string $expectedSha256,
+        string $label,
+    ): void {
+        if ($storage->size($objectKey) !== $expectedBytes) {
+            throw new RuntimeException($label . ' size verification failed: ' . $objectKey);
+        }
+        if (!hash_equals($expectedSha256, $storage->sha256($objectKey))) {
+            throw new RuntimeException($label . ' checksum verification failed: ' . $objectKey);
+        }
+    }
+
+    private function verifyLocalFile(
+        string $path,
+        int $expectedBytes,
+        string $expectedSha256,
+        string $label,
+    ): string {
+        $bytes = @filesize($path);
+        if (!is_int($bytes) || $bytes !== $expectedBytes) {
+            throw new RuntimeException($label . ' size verification failed.');
+        }
+        $sha256 = @hash_file('sha256', $path);
+        if (!is_string($sha256) || !hash_equals($expectedSha256, $sha256)) {
+            throw new RuntimeException($label . ' checksum verification failed.');
+        }
+
+        return $sha256;
+    }
+
+    private function objectTemporaryPath(string $directory, string $operation, int $index): string
+    {
+        return $directory . DIRECTORY_SEPARATOR . sprintf('%s-object-%06d.tmp', $operation, $index);
     }
 
     private function jobDirectory(string $jobId): string

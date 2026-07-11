@@ -177,11 +177,17 @@ return static function (App $app): void {
     $app->get('/api/v1/billing/withdrawals', [WithdrawalAction::class, 'list'])
         ->add($platformPermission('billing.withdrawal.read.platform'))
         ->add(AuthenticateRequestMiddleware::class);
+    $app->get('/api/v1/billing/withdrawals/own', [WithdrawalAction::class, 'listOwn'])
+        ->add($permission('billing.withdrawal.read.own'))
+        ->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/billing/withdrawals', [WithdrawalAction::class, 'request'])
         ->add($permission('billing.withdrawal.request.own'))
         ->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/paid', [WithdrawalAction::class, 'markPaid'])
         ->add($platformPermission('billing.withdrawal.mark_paid.platform'))
+        ->add(AuthenticateRequestMiddleware::class);
+    $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/approve', [WithdrawalAction::class, 'approve'])
+        ->add($platformPermission('billing.withdrawal.review.platform'))
         ->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/reject', [WithdrawalAction::class, 'reject'])
         ->add($platformPermission('billing.withdrawal.review.platform'))
@@ -192,11 +198,14 @@ return static function (App $app): void {
     $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/resubmit', [WithdrawalAction::class, 'resubmit'])
         ->add($permission('billing.withdrawal.resubmit.own'))
         ->add(AuthenticateRequestMiddleware::class);
+    $app->get('/api/v1/billing/withdrawals/{withdrawal_id}/proofs', [WithdrawalAction::class, 'listProofs'])
+        ->add($platformPermission('billing.withdrawal.payment_proof.platform'))
+        ->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/proofs', [WithdrawalAction::class, 'createProofIntent'])
-        ->add($permission('billing.withdrawal.proof.write.own'))
+        ->add($platformPermission('billing.withdrawal.payment_proof.platform'))
         ->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/proofs/confirm', [WithdrawalAction::class, 'confirmProof'])
-        ->add($permission('billing.withdrawal.proof.write.own'))
+        ->add($platformPermission('billing.withdrawal.payment_proof.platform'))
         ->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/assets/upload-intents', CreateAssetUploadIntentAction::class)->add(AuthenticateRequestMiddleware::class);
     $app->post('/api/v1/assets/confirm', ConfirmAssetUploadAction::class)->add(AuthenticateRequestMiddleware::class);

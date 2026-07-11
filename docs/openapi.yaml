@@ -909,7 +909,7 @@ paths:
         - Billing
       operationId: listWithdrawalQueue
       summary: List withdrawal requests for administrator or finance review.
-      description: Lists publisher withdrawal requests for the administrator/finance queue. Amount snapshots use the platform conversion rate where 100 points equals 1 CNY.
+      description: Lists publisher withdrawal requests for the administrator/finance queue. Review and payment state are filtered independently. Amount snapshots use the platform conversion rate where 100 points equals 1 CNY.
       security:
         - BearerAuth: []
       x-permissions:
@@ -923,16 +923,28 @@ paths:
           schema:
             type: integer
             minimum: 1
-        - name: status
+        - name: review_status
           in: query
           required: false
+          description: Filter by the review decision. Use `all` or omit the parameter for every review state.
           schema:
             type: string
             enum:
-              - requested
-              - paid
+              - pending
+              - approved
               - rejected
               - revoked
+              - all
+        - name: payment_status
+          in: query
+          required: false
+          description: Filter by payment progress. Use `all` or omit the parameter for every payment state.
+          schema:
+            type: string
+            enum:
+              - not_started
+              - pending
+              - paid
               - all
         - name: limit
           in: query
@@ -972,13 +984,10 @@ paths:
       description: Places a ledger hold by debiting the `publisher_earnings` account and creates an auditable withdrawal request.
       security:
         - BearerAuth: []
+      x-permissions:
+        - billing.withdrawal.request.own
       parameters:
-        - name: organization_id
-          in: query
-          required: true
-          schema:
-            type: integer
-            minimum: 1
+        - $ref: "#/components/parameters/OrganizationId"
       requestBody:
         required: true
         content:
@@ -1001,6 +1010,120 @@ paths:
           $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/billing/withdrawals/own:
+    get:
+      tags:
+        - Billing
+      operationId: listOwnPublisherWithdrawals
+      summary: List the current publisher organization's withdrawal history.
+      description: Returns only withdrawal requests owned by the authenticated organization. Review and payment state are exposed independently.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - billing.withdrawal.read.own
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - name: review_status
+          in: query
+          required: false
+          description: Filter by the review decision. Use `all` or omit the parameter for every review state.
+          schema:
+            type: string
+            enum:
+              - pending
+              - approved
+              - rejected
+              - revoked
+              - all
+        - name: payment_status
+          in: query
+          required: false
+          description: Filter by payment progress. Use `all` or omit the parameter for every payment state.
+          schema:
+            type: string
+            enum:
+              - not_started
+              - pending
+              - paid
+              - all
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: Publisher withdrawal history.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/WithdrawalQueueData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/billing/withdrawals/{withdrawal_id}/approve:
+    post:
+      tags:
+        - Billing
+      operationId: approvePublisherWithdrawal
+      summary: Approve a publisher withdrawal for manual payment.
+      description: Records the finance review decision and moves payment from `not_started` to `pending`. This operation does not mark funds as paid.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - billing.withdrawal.review.platform
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/WithdrawalId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WithdrawalTransitionRequest"
+      responses:
+        "200":
+          description: Withdrawal approved for payment.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/WithdrawalRequestData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
         "409":
           $ref: "#/components/responses/Error"
         "422":
@@ -1013,17 +1136,20 @@ paths:
         - Billing
       operationId: markPublisherWithdrawalPaid
       summary: Mark a withdrawal as manually paid.
+      description: Completes an approved withdrawal using a server-verified payment proof. Both `proof_id` and a non-empty payment note are required.
       security:
         - BearerAuth: []
+      x-permissions:
+        - billing.withdrawal.mark_paid.platform
       parameters:
         - $ref: "#/components/parameters/OrganizationId"
         - $ref: "#/components/parameters/WithdrawalId"
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/WithdrawalTransitionRequest"
+              $ref: "#/components/schemas/WithdrawalPaidRequest"
       responses:
         "200":
           description: Withdrawal marked paid.
@@ -1036,9 +1162,17 @@ paths:
                     properties:
                       data:
                         $ref: "#/components/schemas/WithdrawalRequestData"
+        "400":
+          $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
         "409":
+          $ref: "#/components/responses/Error"
+        "422":
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
@@ -1050,15 +1184,17 @@ paths:
       summary: Reject a withdrawal and restore held publisher earnings.
       security:
         - BearerAuth: []
+      x-permissions:
+        - billing.withdrawal.review.platform
       parameters:
         - $ref: "#/components/parameters/OrganizationId"
         - $ref: "#/components/parameters/WithdrawalId"
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/WithdrawalTransitionRequest"
+              $ref: "#/components/schemas/WithdrawalReviewRequest"
       responses:
         "200":
           description: Withdrawal rejected.
@@ -1071,9 +1207,17 @@ paths:
                     properties:
                       data:
                         $ref: "#/components/schemas/WithdrawalRequestData"
+        "400":
+          $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
         "409":
+          $ref: "#/components/responses/Error"
+        "422":
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
@@ -1085,6 +1229,8 @@ paths:
       summary: Revoke a requested withdrawal and restore held publisher earnings.
       security:
         - BearerAuth: []
+      x-permissions:
+        - billing.withdrawal.revoke.own
       parameters:
         - $ref: "#/components/parameters/OrganizationId"
         - $ref: "#/components/parameters/WithdrawalId"
@@ -1106,9 +1252,17 @@ paths:
                     properties:
                       data:
                         $ref: "#/components/schemas/WithdrawalRequestData"
+        "400":
+          $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
         "409":
+          $ref: "#/components/responses/Error"
+        "422":
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
@@ -1117,8 +1271,8 @@ paths:
       tags:
         - Billing
       operationId: resubmitPublisherWithdrawal
-      summary: Resubmit a revoked withdrawal with updated payout details.
-      description: Places a fresh publisher earnings hold and moves a revoked withdrawal back to requested state.
+      summary: Resubmit a rejected or revoked withdrawal with updated payout details.
+      description: Places a fresh publisher earnings hold and moves a rejected or revoked withdrawal back to `review_status=pending` and `payment_status=not_started`.
       security:
         - BearerAuth: []
       x-permissions:
@@ -1144,9 +1298,13 @@ paths:
                     properties:
                       data:
                         $ref: "#/components/schemas/WithdrawalRequestData"
+        "400":
+          $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
         "403":
+          $ref: "#/components/responses/Error"
+        "404":
           $ref: "#/components/responses/Error"
         "409":
           $ref: "#/components/responses/Error"
@@ -1155,13 +1313,61 @@ paths:
         default:
           $ref: "#/components/responses/Error"
   /api/v1/billing/withdrawals/{withdrawal_id}/proofs:
+    get:
+      tags:
+        - Billing
+      operationId: listWithdrawalPaymentProofs
+      summary: List finance payment proofs for a withdrawal.
+      description: Recovers pending, verified, and rejected private proof records so an interrupted finance workflow can resume without creating duplicate uploads.
+      security:
+        - BearerAuth: []
+      x-permissions:
+        - billing.withdrawal.payment_proof.platform
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/WithdrawalId"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: Payment-proof history ordered newest first.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/WithdrawalProofListData"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
     post:
       tags:
         - Billing
       operationId: createWithdrawalProofUploadIntent
-      summary: Create proof upload metadata and a presigned upload URL.
+      summary: Create a finance payment-proof upload intent.
+      description: Creates a platform-finance upload intent only for an approved withdrawal whose payment is pending. The generated object key is scoped to the withdrawal's publisher organization and the upload targets the dedicated non-public `WITHDRAWAL_PROOF_S3_*` bucket with server-side encryption.
       security:
         - BearerAuth: []
+      x-permissions:
+        - billing.withdrawal.payment_proof.platform
       parameters:
         - $ref: "#/components/parameters/OrganizationId"
         - $ref: "#/components/parameters/WithdrawalId"
@@ -1183,7 +1389,15 @@ paths:
                     properties:
                       data:
                         $ref: "#/components/schemas/WithdrawalProofIntentData"
+        "400":
+          $ref: "#/components/responses/Error"
         "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
           $ref: "#/components/responses/Error"
         "422":
           $ref: "#/components/responses/Error"
@@ -1194,9 +1408,12 @@ paths:
       tags:
         - Billing
       operationId: confirmWithdrawalProofUpload
-      summary: Confirm a withdrawal proof object after upload.
+      summary: Verify a finance payment-proof object after upload.
+      description: The client submits only the proof identifier. The server reads the upload intent and dedicated private S3-compatible storage through authenticated API calls, verifies the object key, content type, byte size, magic bytes, and required server-side encryption metadata, and computes the authoritative SHA-256 checksum. Client-supplied object metadata or checksums are rejected and not accepted as trusted input.
       security:
         - BearerAuth: []
+      x-permissions:
+        - billing.withdrawal.payment_proof.platform
       parameters:
         - $ref: "#/components/parameters/OrganizationId"
         - $ref: "#/components/parameters/WithdrawalId"
@@ -1208,7 +1425,7 @@ paths:
               $ref: "#/components/schemas/WithdrawalProofConfirmRequest"
       responses:
         "200":
-          description: Proof upload confirmed.
+          description: Payment proof verified by the server.
           content:
             application/json:
               schema:
@@ -1218,9 +1435,19 @@ paths:
                     properties:
                       data:
                         $ref: "#/components/schemas/WithdrawalProofData"
+        "400":
+          $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
         "422":
+          $ref: "#/components/responses/Error"
+        "503":
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
@@ -3585,7 +3812,7 @@ paths:
         - Operations
       operationId: createOperationBackupJob
       summary: Queue an encrypted platform backup.
-      description: Queues asynchronous MySQL, business configuration, creative asset, confirmed withdrawal proof, and archived Parquet backup work into dedicated `BACKUP_S3_*` storage. Outside local/testing the backup endpoint must use HTTPS and must not reuse the primary object-storage endpoint and bucket. The protected `backup-create` Cron job executes one queued job per run.
+      description: Queues asynchronous MySQL, business configuration, creative asset, verified withdrawal proof, and completed archived Parquet backup work into dedicated `BACKUP_S3_*` storage. Source objects are streamed through local temporary files from the `assets`, `withdrawal_proofs`, and `archive` stores so backup works across S3-compatible endpoints without `CopyObject`. The `vertoad-backup-manifest-v2` manifest binds each source store/key to its deterministic target key, MIME type, byte count, and SHA-256 checksum. Outside local/testing the backup endpoint must use HTTPS and must not reuse a source endpoint and bucket. The protected `backup-create` Cron job executes one queued job per run.
       security:
         - BearerAuth: []
       x-permissions:
@@ -3645,7 +3872,7 @@ paths:
         - Operations
       operationId: restoreOperationBackupJob
       summary: Queue a staging-only restore drill from a completed backup.
-      description: Requires exact backup ID confirmation and an operator reason. The API refuses environments outside `BACKUP_RESTORE_ALLOWED_ENVIRONMENTS`; the protected `backup-restore` Cron job repeats the environment guard, validates the manifest and MySQL SHA-256 checksum, restores MySQL and copied objects, then writes immutable restore evidence and audit records.
+      description: Requires exact backup ID confirmation and an operator reason. The API refuses environments outside `BACKUP_RESTORE_ALLOWED_ENVIRONMENTS`; the protected `backup-restore` Cron job repeats the environment guard, verifies the trusted `vertoad-backup-manifest-v2` hash and all MySQL/configuration/object sizes and SHA-256 checksums, restores each object to its declared source store with the original MIME type, then writes immutable restore evidence and audit records.
       security:
         - BearerAuth: []
       x-permissions:
@@ -6037,6 +6264,8 @@ components:
       required:
         - withdrawals
         - limit
+        - review_status
+        - payment_status
       properties:
         withdrawals:
           type: array
@@ -6046,15 +6275,24 @@ components:
           type: integer
           minimum: 1
           maximum: 200
-        status:
+        review_status:
           type:
             - string
             - "null"
           enum:
-            - requested
-            - paid
+            - pending
+            - approved
             - rejected
             - revoked
+            - null
+        payment_status:
+          type:
+            - string
+            - "null"
+          enum:
+            - not_started
+            - pending
+            - paid
             - null
         publisher_organization_id:
           type:
@@ -6080,13 +6318,18 @@ components:
         payout_method:
           type: string
           minLength: 1
+          maxLength: 64
+          pattern: "^[a-z][a-z0-9_.-]{0,63}$"
         payout_account:
           type: object
+          minProperties: 1
+          description: Non-empty provider-specific payout details. The serialized JSON object must not exceed 8192 bytes.
           additionalProperties: true
         notes:
           type:
             - string
             - "null"
+          maxLength: 2000
       additionalProperties: false
     WithdrawalTransitionRequest:
       type: object
@@ -6095,6 +6338,36 @@ components:
           type:
             - string
             - "null"
+          maxLength: 2000
+      additionalProperties: false
+    WithdrawalReviewRequest:
+      type: object
+      required:
+        - notes
+      properties:
+        notes:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          pattern: "\\S"
+          description: Non-empty finance review reason after trimming.
+      additionalProperties: false
+    WithdrawalPaidRequest:
+      type: object
+      required:
+        - proof_id
+        - notes
+      properties:
+        proof_id:
+          type: integer
+          minimum: 1
+          description: Server-verified payment proof belonging to this withdrawal.
+        notes:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          pattern: "\\S"
+          description: Non-empty payment completion note after trimming.
       additionalProperties: false
     WithdrawalResubmitRequest:
       type: object
@@ -6103,11 +6376,14 @@ components:
       properties:
         payout_account:
           type: object
+          minProperties: 1
+          description: Non-empty provider-specific payout details. The serialized JSON object must not exceed 8192 bytes.
           additionalProperties: true
         notes:
           type:
             - string
             - "null"
+          maxLength: 2000
       additionalProperties: false
     WithdrawalRequestData:
       type: object
@@ -6120,15 +6396,20 @@ components:
         - points_per_cny
         - currency
         - idempotency_key
-        - status
+        - review_status
+        - payment_status
         - payout_method
         - payout_account
         - applicant_notes
         - reviewer_user_id
         - reviewer_notes
+        - payment_proof_id
+        - payment_completed_by_user_id
+        - payment_notes
         - ledger_entry_id
         - requested_at
         - reviewed_at
+        - approved_at
         - paid_at
         - rejected_at
         - revoked_at
@@ -6165,22 +6446,35 @@ components:
           type: string
           minLength: 1
           maxLength: 160
-        status:
+        review_status:
           type: string
           enum:
-            - requested
-            - paid
+            - pending
+            - approved
             - rejected
             - revoked
+          description: Finance review state, independent from payment progress.
+        payment_status:
+          type: string
+          enum:
+            - not_started
+            - pending
+            - paid
+          description: Manual payment progress. Valid combinations are pending/not_started, approved/pending, approved/paid, rejected/not_started, and revoked/not_started.
         payout_method:
           type: string
+          minLength: 1
+          maxLength: 64
+          pattern: "^[a-z][a-z0-9_.-]{0,63}$"
         payout_account:
           type: object
+          minProperties: 1
           additionalProperties: true
         applicant_notes:
           type:
             - string
             - "null"
+          maxLength: 2000
         reviewer_user_id:
           type:
             - integer
@@ -6189,6 +6483,22 @@ components:
           type:
             - string
             - "null"
+          maxLength: 2000
+        payment_proof_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        payment_completed_by_user_id:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        payment_notes:
+          type:
+            - string
+            - "null"
+          maxLength: 2000
         ledger_entry_id:
           type: integer
           minimum: 1
@@ -6199,7 +6509,12 @@ components:
           type:
             - string
             - "null"
-          description: UTC SQL timestamp when a reviewer accepted or rejected the withdrawal.
+          description: UTC SQL timestamp when a reviewer approved or rejected the withdrawal.
+        approved_at:
+          type:
+            - string
+            - "null"
+          description: UTC SQL timestamp when finance approved the withdrawal for payment.
         paid_at:
           type:
             - string
@@ -6231,37 +6546,27 @@ components:
         filename:
           type: string
           minLength: 1
+          description: PDF, PNG, or JPEG filename. The extension must match `content_type`.
         content_type:
           type: string
-          minLength: 1
+          enum:
+            - application/pdf
+            - image/jpeg
+            - image/png
         byte_size:
           type: integer
           minimum: 1
+          maximum: 10485760
       additionalProperties: false
     WithdrawalProofConfirmRequest:
       type: object
+      description: Identifies the upload intent only. Object metadata, content bytes, and the SHA-256 checksum are read or computed by the server.
       required:
         - proof_id
-        - object_key
-        - content_type
-        - byte_size
-        - checksum
       properties:
         proof_id:
           type: integer
           minimum: 1
-        object_key:
-          type: string
-          minLength: 1
-        content_type:
-          type: string
-          minLength: 1
-        byte_size:
-          type: integer
-          minimum: 1
-        checksum:
-          type: string
-          minLength: 1
       additionalProperties: false
     WithdrawalProofData:
       type: object
@@ -6275,6 +6580,10 @@ components:
         - byte_size
         - checksum
         - status
+        - verification_error_code
+        - created_at
+        - verification_attempted_at
+        - verified_at
       properties:
         id:
           type:
@@ -6292,8 +6601,13 @@ components:
           minimum: 1
         object_key:
           type: string
+          minLength: 1
         content_type:
           type: string
+          enum:
+            - application/pdf
+            - image/jpeg
+            - image/png
         byte_size:
           type: integer
           minimum: 1
@@ -6301,11 +6615,80 @@ components:
           type:
             - string
             - "null"
+          pattern: "^sha256:[a-f0-9]{64}$"
+          description: Authoritative server-computed SHA-256 checksum; null until verification succeeds.
         status:
           type: string
           enum:
             - pending_upload
-            - confirmed
+            - verified
+            - rejected
+        verification_error_code:
+          type:
+            - string
+            - "null"
+          minLength: 1
+        created_at:
+          type: string
+          description: UTC SQL timestamp when the private upload intent was created.
+        verification_attempted_at:
+          type:
+            - string
+            - "null"
+          description: UTC SQL timestamp of the latest server-side object verification attempt.
+        verified_at:
+          type:
+            - string
+            - "null"
+          description: UTC SQL timestamp when server-side verification succeeded.
+      additionalProperties: false
+    WithdrawalProofListData:
+      type: object
+      required:
+        - withdrawal_request_id
+        - proofs
+        - limit
+      properties:
+        withdrawal_request_id:
+          type: integer
+          minimum: 1
+        proofs:
+          type: array
+          items:
+            $ref: "#/components/schemas/WithdrawalProofData"
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+      additionalProperties: false
+    WithdrawalProofUploadData:
+      type: object
+      required:
+        - url
+        - method
+        - object_key
+        - status_code
+        - headers
+      properties:
+        url:
+          type: string
+          format: uri
+        method:
+          type: string
+          const: PUT
+        object_key:
+          type: string
+          minLength: 1
+          description: Server-generated object key bound to the proof upload intent.
+        status_code:
+          type: integer
+          enum:
+            - 200
+            - 201
+        headers:
+          type: object
+          additionalProperties:
+            type: string
       additionalProperties: false
     WithdrawalProofIntentData:
       type: object
@@ -6316,7 +6699,7 @@ components:
         proof:
           $ref: "#/components/schemas/WithdrawalProofData"
         upload:
-          $ref: "#/components/schemas/PresignedUploadData"
+          $ref: "#/components/schemas/WithdrawalProofUploadData"
       additionalProperties: false
     AssetType:
       type: string

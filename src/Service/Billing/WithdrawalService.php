@@ -7,8 +7,10 @@ namespace VertoAD\Service\Billing;
 use DateTimeImmutable;
 use InvalidArgumentException;
 use RuntimeException;
+use VertoAD\Domain\Billing\WithdrawalPaymentStatus;
+use VertoAD\Domain\Billing\WithdrawalProofStatus;
 use VertoAD\Domain\Billing\WithdrawalRequest;
-use VertoAD\Domain\Billing\WithdrawalStatus;
+use VertoAD\Domain\Billing\WithdrawalReviewStatus;
 use VertoAD\Domain\Ledger\LedgerDirection;
 use VertoAD\Domain\Ledger\PointsLedgerEntry;
 use VertoAD\Repository\Billing\WithdrawalRepository;
@@ -18,6 +20,8 @@ use VertoAD\Service\PointsLedgerService;
 final class WithdrawalService
 {
     private const int IDEMPOTENCY_KEY_MAX_LENGTH = 160;
+    private const int NOTES_MAX_LENGTH = 2_000;
+    private const int PAYOUT_ACCOUNT_MAX_BYTES = 8_192;
     private const int POINTS_PER_CNY = 100;
 
     public function __construct(
@@ -27,9 +31,7 @@ final class WithdrawalService
     ) {
     }
 
-    /**
-     * @param array<string, mixed> $payoutAccount
-     */
+    /** @param array<string, mixed> $payoutAccount */
     public function requestWithdrawal(
         int $organizationId,
         int $requestedByUserId,
@@ -40,10 +42,11 @@ final class WithdrawalService
         string $idempotencyKey,
         DateTimeImmutable $now,
     ): WithdrawalRequest {
-        $payoutMethod = trim($payoutMethod);
-        $notes = $this->normalizeText($notes);
+        $payoutMethod = $this->normalizePayoutMethod($payoutMethod);
+        $payoutAccount = $this->normalizePayoutAccount($payoutAccount);
+        $notes = $this->normalizeNotes($notes, 'applicant_notes');
         $idempotencyKey = $this->normalizeIdempotencyKey($idempotencyKey);
-        $this->validateRequest($organizationId, $requestedByUserId, $pointsAmount, $payoutMethod);
+        $this->validateRequest($organizationId, $requestedByUserId, $pointsAmount);
 
         return $this->repository->transactional(function () use (
             $organizationId,
@@ -90,52 +93,185 @@ final class WithdrawalService
                 payoutMethod: $payoutMethod,
                 payoutAccount: $payoutAccount,
                 notes: $notes,
-                ledgerEntryId: $ledgerEntry->id,
+                ledgerEntryId: (int) $ledgerEntry->id,
                 now: $now,
             );
-            $this->audit($request, $requestedByUserId, 'requested', null, WithdrawalStatus::Requested, $notes, null, $now);
+            $this->audit(
+                request: $request,
+                actorUserId: $requestedByUserId,
+                action: 'requested',
+                fromReviewStatus: null,
+                toReviewStatus: WithdrawalReviewStatus::Pending,
+                fromPaymentStatus: null,
+                toPaymentStatus: WithdrawalPaymentStatus::NotStarted,
+                proofId: null,
+                notes: $notes,
+                metadata: null,
+                now: $now,
+            );
 
             return $request;
         });
     }
 
-    public function markPaid(int $withdrawalRequestId, int $actorUserId, ?string $notes, DateTimeImmutable $now): WithdrawalRequest
-    {
-        return $this->transitionFromRequested(
-            withdrawalRequestId: $withdrawalRequestId,
-            actorUserId: $actorUserId,
-            notes: $notes,
-            now: $now,
-            targetStatus: WithdrawalStatus::Paid,
-            action: 'paid',
-            reviewerUserId: $actorUserId,
-            restoreHeldPoints: false,
-        );
+    public function approve(
+        int $withdrawalRequestId,
+        int $actorUserId,
+        ?string $notes,
+        DateTimeImmutable $now,
+    ): WithdrawalRequest {
+        $this->validateTransitionIdentity($withdrawalRequestId, $actorUserId);
+        $notes = $this->normalizeNotes($notes, 'reviewer_notes');
+
+        return $this->repository->transactional(function () use ($withdrawalRequestId, $actorUserId, $notes, $now): WithdrawalRequest {
+            $request = $this->repository->findRequestForUpdate($withdrawalRequestId);
+            if ($request === null) {
+                throw new RuntimeException('withdrawal_not_found');
+            }
+
+            if ($request->reviewStatus === WithdrawalReviewStatus::Approved) {
+                return $request;
+            }
+
+            if (
+                $request->reviewStatus !== WithdrawalReviewStatus::Pending
+                || $request->paymentStatus !== WithdrawalPaymentStatus::NotStarted
+            ) {
+                throw new RuntimeException('withdrawal_transition_not_allowed');
+            }
+
+            $updated = $this->repository->approveIfPending($withdrawalRequestId, $actorUserId, $notes, $now);
+            if ($updated === null) {
+                $current = $this->repository->findRequest($withdrawalRequestId);
+                if ($current?->reviewStatus === WithdrawalReviewStatus::Approved) {
+                    return $current;
+                }
+
+                throw new RuntimeException('withdrawal_transition_not_allowed');
+            }
+
+            $this->audit(
+                request: $updated,
+                actorUserId: $actorUserId,
+                action: 'approved',
+                fromReviewStatus: WithdrawalReviewStatus::Pending,
+                toReviewStatus: WithdrawalReviewStatus::Approved,
+                fromPaymentStatus: WithdrawalPaymentStatus::NotStarted,
+                toPaymentStatus: WithdrawalPaymentStatus::Pending,
+                proofId: null,
+                notes: $notes,
+                metadata: null,
+                now: $now,
+            );
+
+            return $updated;
+        });
     }
 
-    /**
-     * @return list<WithdrawalRequest>
-     */
-    public function listQueue(?WithdrawalStatus $status, ?int $publisherOrganizationId, int $limit): array
-    {
+    public function markPaid(
+        int $withdrawalRequestId,
+        int $actorUserId,
+        int $proofId,
+        ?string $notes,
+        DateTimeImmutable $now,
+    ): WithdrawalRequest {
+        $this->validateTransitionIdentity($withdrawalRequestId, $actorUserId);
+        if ($proofId <= 0) {
+            throw new InvalidArgumentException('proof_id must be a positive integer.');
+        }
+        $notes = $this->normalizeNotes($notes, 'payment_notes', required: true);
+
+        return $this->repository->transactional(function () use (
+            $withdrawalRequestId,
+            $actorUserId,
+            $proofId,
+            $notes,
+            $now,
+        ): WithdrawalRequest {
+            $request = $this->repository->findRequestForUpdate($withdrawalRequestId);
+            if ($request === null) {
+                throw new RuntimeException('withdrawal_not_found');
+            }
+
+            if ($request->paymentStatus === WithdrawalPaymentStatus::Paid) {
+                if ($request->paymentProofId === $proofId) {
+                    return $request;
+                }
+
+                throw new RuntimeException('withdrawal_payment_proof_conflict');
+            }
+
+            if ($request->reviewStatus !== WithdrawalReviewStatus::Approved) {
+                throw new RuntimeException('withdrawal_not_approved');
+            }
+            if ($request->paymentStatus !== WithdrawalPaymentStatus::Pending) {
+                throw new RuntimeException('withdrawal_transition_not_allowed');
+            }
+
+            $proof = $this->repository->findProofForUpdate($proofId, $withdrawalRequestId);
+            if (
+                $proof === null
+                || $proof->withdrawalRequestId !== $withdrawalRequestId
+                || $proof->organizationId !== $request->organizationId
+                || $proof->status !== WithdrawalProofStatus::Verified
+                || $proof->checksum === null
+                || $proof->verifiedAt === null
+            ) {
+                throw new RuntimeException('withdrawal_verified_proof_required');
+            }
+
+            $updated = $this->repository->markPaidIfReady($withdrawalRequestId, $proofId, $actorUserId, $notes, $now);
+            if ($updated === null) {
+                $current = $this->repository->findRequest($withdrawalRequestId);
+                if ($current?->paymentStatus === WithdrawalPaymentStatus::Paid && $current->paymentProofId === $proofId) {
+                    return $current;
+                }
+
+                throw new RuntimeException('withdrawal_transition_not_allowed');
+            }
+
+            $this->audit(
+                request: $updated,
+                actorUserId: $actorUserId,
+                action: 'paid',
+                fromReviewStatus: WithdrawalReviewStatus::Approved,
+                toReviewStatus: WithdrawalReviewStatus::Approved,
+                fromPaymentStatus: WithdrawalPaymentStatus::Pending,
+                toPaymentStatus: WithdrawalPaymentStatus::Paid,
+                proofId: $proofId,
+                notes: $notes,
+                metadata: ['proof_checksum' => $proof->checksum],
+                now: $now,
+            );
+
+            return $updated;
+        });
+    }
+
+    /** @return list<WithdrawalRequest> */
+    public function listQueue(
+        ?WithdrawalReviewStatus $reviewStatus,
+        ?WithdrawalPaymentStatus $paymentStatus,
+        ?int $publisherOrganizationId,
+        int $limit,
+    ): array {
         if ($publisherOrganizationId !== null && $publisherOrganizationId <= 0) {
             throw new InvalidArgumentException('publisher_organization_id must be a positive integer when provided.');
         }
 
-        return $this->repository->listRequests($status, $publisherOrganizationId, $limit);
+        return $this->repository->listRequests($reviewStatus, $paymentStatus, $publisherOrganizationId, $limit);
     }
 
     public function reject(int $withdrawalRequestId, int $actorUserId, ?string $notes, DateTimeImmutable $now): WithdrawalRequest
     {
-        return $this->transitionFromRequested(
+        return $this->terminalTransition(
             withdrawalRequestId: $withdrawalRequestId,
             actorUserId: $actorUserId,
             notes: $notes,
             now: $now,
-            targetStatus: WithdrawalStatus::Rejected,
+            targetStatus: WithdrawalReviewStatus::Rejected,
             action: 'rejected',
-            reviewerUserId: $actorUserId,
-            restoreHeldPoints: true,
+            expectedOrganizationId: null,
         );
     }
 
@@ -146,22 +282,18 @@ final class WithdrawalService
         DateTimeImmutable $now,
         ?int $organizationId = null,
     ): WithdrawalRequest {
-        return $this->transitionFromRequested(
+        return $this->terminalTransition(
             withdrawalRequestId: $withdrawalRequestId,
             actorUserId: $actorUserId,
             notes: $notes,
             now: $now,
-            targetStatus: WithdrawalStatus::Revoked,
+            targetStatus: WithdrawalReviewStatus::Revoked,
             action: 'revoked',
-            reviewerUserId: null,
-            restoreHeldPoints: true,
             expectedOrganizationId: $organizationId,
         );
     }
 
-    /**
-     * @param array<string, mixed> $payoutAccount
-     */
+    /** @param array<string, mixed> $payoutAccount */
     public function resubmit(
         int $withdrawalRequestId,
         int $actorUserId,
@@ -170,6 +302,10 @@ final class WithdrawalService
         DateTimeImmutable $now,
         ?int $organizationId = null,
     ): WithdrawalRequest {
+        $this->validateTransitionIdentity($withdrawalRequestId, $actorUserId);
+        $payoutAccount = $this->normalizePayoutAccount($payoutAccount);
+        $notes = $this->normalizeNotes($notes, 'applicant_notes');
+
         return $this->repository->transactional(function () use (
             $withdrawalRequestId,
             $actorUserId,
@@ -178,17 +314,25 @@ final class WithdrawalService
             $now,
             $organizationId,
         ): WithdrawalRequest {
-            $request = $organizationId === null
-                ? $this->repository->findRequest($withdrawalRequestId)
-                : $this->requireRequestForOrganization($withdrawalRequestId, $organizationId);
-            if ($request === null) {
-                throw new RuntimeException('withdrawal_transition_not_allowed');
+            $request = $this->lockRequestWithOrganization($withdrawalRequestId, $organizationId);
+
+            if (
+                $request->reviewStatus === WithdrawalReviewStatus::Pending
+                && $request->paymentStatus === WithdrawalPaymentStatus::NotStarted
+                && $request->payoutAccount == $payoutAccount
+                && $request->applicantNotes === $notes
+                && $request->resubmittedAt !== null
+            ) {
+                return $request;
             }
-            if ($request->status !== WithdrawalStatus::Revoked) {
+
+            if (
+                !in_array($request->reviewStatus, [WithdrawalReviewStatus::Rejected, WithdrawalReviewStatus::Revoked], true)
+                || $request->paymentStatus !== WithdrawalPaymentStatus::NotStarted
+            ) {
                 throw new RuntimeException('withdrawal_transition_not_allowed');
             }
 
-            $this->repository->lockOrganizationForUpdate($request->organizationId);
             $ledgerEntry = $this->holdPublisherEarnings(
                 organizationId: $request->organizationId,
                 pointsAmount: $request->pointsAmount,
@@ -196,48 +340,74 @@ final class WithdrawalService
                     'withdrawal-resubmit',
                     $request->organizationId,
                     (string) $withdrawalRequestId,
-                    $request->revokedAt?->format('U.u') ?? 'revoked',
+                    (string) $request->ledgerEntryId,
+                    $request->reviewStatus->value,
                 ),
                 referenceType: 'withdrawal_request',
                 referenceId: $withdrawalRequestId,
                 memo: 'Publisher withdrawal resubmitted hold',
-                metadata: ['actor_user_id' => $actorUserId],
+                metadata: ['actor_user_id' => $actorUserId, 'from_review_status' => $request->reviewStatus->value],
             );
 
-            $updated = $this->repository->updateRequestStateIfCurrent(
+            $updated = $this->repository->resubmitIfTerminal(
                 id: $withdrawalRequestId,
-                expectedStatus: WithdrawalStatus::Revoked,
-                status: WithdrawalStatus::Requested,
-                reviewerUserId: null,
-                reviewerNotes: $this->normalizeText($notes),
+                expectedReviewStatus: $request->reviewStatus,
                 payoutAccount: $payoutAccount,
+                applicantNotes: $notes,
                 ledgerEntryId: (int) $ledgerEntry->id,
                 now: $now,
             );
             if ($updated === null) {
+                $current = $this->repository->findRequest($withdrawalRequestId);
+                if (
+                    $current?->reviewStatus === WithdrawalReviewStatus::Pending
+                    && $current->paymentStatus === WithdrawalPaymentStatus::NotStarted
+                    && $current->payoutAccount == $payoutAccount
+                    && $current->applicantNotes === $notes
+                ) {
+                    return $current;
+                }
+
                 throw new RuntimeException('withdrawal_transition_not_allowed');
             }
 
-            $this->audit($updated, $actorUserId, 'resubmitted', $request->status, WithdrawalStatus::Requested, $notes, [
-                'previous_ledger_entry_id' => $request->ledgerEntryId,
-                'ledger_entry_id' => $ledgerEntry->id,
-            ], $now);
+            $this->audit(
+                request: $updated,
+                actorUserId: $actorUserId,
+                action: 'resubmitted',
+                fromReviewStatus: $request->reviewStatus,
+                toReviewStatus: WithdrawalReviewStatus::Pending,
+                fromPaymentStatus: WithdrawalPaymentStatus::NotStarted,
+                toPaymentStatus: WithdrawalPaymentStatus::NotStarted,
+                proofId: null,
+                notes: $notes,
+                metadata: [
+                    'previous_ledger_entry_id' => $request->ledgerEntryId,
+                    'ledger_entry_id' => $ledgerEntry->id,
+                ],
+                now: $now,
+            );
 
             return $updated;
         });
     }
 
-    private function transitionFromRequested(
+    private function terminalTransition(
         int $withdrawalRequestId,
         int $actorUserId,
         ?string $notes,
         DateTimeImmutable $now,
-        WithdrawalStatus $targetStatus,
+        WithdrawalReviewStatus $targetStatus,
         string $action,
-        ?int $reviewerUserId,
-        bool $restoreHeldPoints,
-        ?int $expectedOrganizationId = null,
+        ?int $expectedOrganizationId,
     ): WithdrawalRequest {
+        $this->validateTransitionIdentity($withdrawalRequestId, $actorUserId);
+        $notes = $this->normalizeNotes(
+            $notes,
+            $targetStatus === WithdrawalReviewStatus::Rejected ? 'reviewer_notes' : 'applicant_notes',
+            required: $targetStatus === WithdrawalReviewStatus::Rejected,
+        );
+
         return $this->repository->transactional(function () use (
             $withdrawalRequestId,
             $actorUserId,
@@ -245,71 +415,73 @@ final class WithdrawalService
             $now,
             $targetStatus,
             $action,
-            $reviewerUserId,
-            $restoreHeldPoints,
             $expectedOrganizationId,
         ): WithdrawalRequest {
-            $request = $expectedOrganizationId === null
-                ? $this->repository->findRequest($withdrawalRequestId)
-                : $this->requireRequestForOrganization($withdrawalRequestId, $expectedOrganizationId);
-            if ($request === null) {
+            $request = $this->lockRequestWithOrganization($withdrawalRequestId, $expectedOrganizationId);
+
+            if ($request->reviewStatus === $targetStatus) {
+                return $request;
+            }
+
+            if (
+                $request->reviewStatus !== WithdrawalReviewStatus::Pending
+                || $request->paymentStatus !== WithdrawalPaymentStatus::NotStarted
+            ) {
                 throw new RuntimeException('withdrawal_transition_not_allowed');
             }
 
-            if ($request->status !== WithdrawalStatus::Requested) {
-                if ($request->status === $targetStatus) {
-                    return $request;
-                }
-
-                throw new RuntimeException('withdrawal_transition_not_allowed');
-            }
-
-            $updated = $this->repository->updateRequestStateIfCurrent(
-                id: $withdrawalRequestId,
-                expectedStatus: WithdrawalStatus::Requested,
-                status: $targetStatus,
-                reviewerUserId: $reviewerUserId,
-                reviewerNotes: $this->normalizeText($notes),
-                payoutAccount: null,
-                ledgerEntryId: null,
-                now: $now,
-            );
-
+            $updated = $targetStatus === WithdrawalReviewStatus::Rejected
+                ? $this->repository->rejectIfPending($withdrawalRequestId, $actorUserId, $notes, $now)
+                : $this->repository->revokeIfPending($withdrawalRequestId, $now);
             if ($updated === null) {
                 $current = $this->repository->findRequest($withdrawalRequestId);
-                if ($current !== null && $current->status === $targetStatus) {
+                if ($current?->reviewStatus === $targetStatus) {
                     return $current;
                 }
 
                 throw new RuntimeException('withdrawal_transition_not_allowed');
             }
 
-            if ($restoreHeldPoints) {
-                $this->restoreHeldPoints($updated, $actorUserId, $action);
-            }
-            $this->audit($updated, $actorUserId, $action, WithdrawalStatus::Requested, $targetStatus, $notes, null, $now);
+            $this->restoreHeldPoints($updated, $actorUserId, $action);
+            $this->audit(
+                request: $updated,
+                actorUserId: $actorUserId,
+                action: $action,
+                fromReviewStatus: WithdrawalReviewStatus::Pending,
+                toReviewStatus: $targetStatus,
+                fromPaymentStatus: WithdrawalPaymentStatus::NotStarted,
+                toPaymentStatus: WithdrawalPaymentStatus::NotStarted,
+                proofId: null,
+                notes: $notes,
+                metadata: null,
+                now: $now,
+            );
 
             return $updated;
         });
     }
 
-    private function requireRequestForOrganization(int $withdrawalRequestId, ?int $organizationId): WithdrawalRequest
+    private function lockRequestWithOrganization(int $withdrawalRequestId, ?int $expectedOrganizationId): WithdrawalRequest
     {
-        $request = $this->repository->findRequest($withdrawalRequestId);
-        if ($request === null) {
+        $snapshot = $this->repository->findRequest($withdrawalRequestId);
+        if ($snapshot === null || ($expectedOrganizationId !== null && $snapshot->organizationId !== $expectedOrganizationId)) {
             throw new RuntimeException('withdrawal_not_found');
         }
 
-        if ($organizationId !== null && $request->organizationId !== $organizationId) {
+        $this->repository->lockOrganizationForUpdate($snapshot->organizationId);
+        $request = $this->repository->findRequestForUpdate($withdrawalRequestId);
+        if (
+            $request === null
+            || $request->organizationId !== $snapshot->organizationId
+            || ($expectedOrganizationId !== null && $request->organizationId !== $expectedOrganizationId)
+        ) {
             throw new RuntimeException('withdrawal_not_found');
         }
 
         return $request;
     }
 
-    /**
-     * @param array<string, mixed> $metadata
-     */
+    /** @param array<string, mixed> $metadata */
     private function holdPublisherEarnings(
         int $organizationId,
         int $pointsAmount,
@@ -341,24 +513,76 @@ final class WithdrawalService
         return $entry;
     }
 
-    private function validateRequest(int $organizationId, int $requestedByUserId, int $pointsAmount, string $payoutMethod): void
+    private function validateRequest(int $organizationId, int $requestedByUserId, int $pointsAmount): void
     {
-        if ($organizationId <= 0 || $requestedByUserId <= 0 || $pointsAmount <= 0 || trim($payoutMethod) === '') {
+        if ($organizationId <= 0 || $requestedByUserId <= 0 || $pointsAmount <= 0) {
             throw new InvalidArgumentException('Withdrawal request is invalid.');
         }
     }
 
-    private function amountCny(int $pointsAmount): string
+    private function validateTransitionIdentity(int $withdrawalRequestId, int $actorUserId): void
     {
-        $yuan = intdiv($pointsAmount, self::POINTS_PER_CNY);
-        $fen = $pointsAmount % self::POINTS_PER_CNY;
+        if ($withdrawalRequestId <= 0 || $actorUserId <= 0) {
+            throw new InvalidArgumentException('Withdrawal transition identity is invalid.');
+        }
+    }
 
-        return sprintf('%d.%02d', $yuan, $fen);
+    private function normalizePayoutMethod(string $payoutMethod): string
+    {
+        $payoutMethod = strtolower(trim($payoutMethod));
+        if (preg_match('/\A[a-z][a-z0-9_.-]{0,63}\z/', $payoutMethod) !== 1) {
+            throw new InvalidArgumentException('payout_method must be a stable lowercase provider code of at most 64 characters.');
+        }
+
+        return $payoutMethod;
     }
 
     /**
      * @param array<string, mixed> $payoutAccount
+     * @return array<string, mixed>
      */
+    private function normalizePayoutAccount(array $payoutAccount): array
+    {
+        if ($payoutAccount === [] || array_is_list($payoutAccount)) {
+            throw new InvalidArgumentException('payout_account must be a non-empty object.');
+        }
+        foreach (array_keys($payoutAccount) as $key) {
+            if (!is_string($key) || trim($key) === '') {
+                throw new InvalidArgumentException('payout_account keys must be non-empty strings.');
+            }
+        }
+
+        try {
+            $json = json_encode($payoutAccount, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        } catch (\JsonException $exception) {
+            throw new InvalidArgumentException('payout_account must contain valid JSON values.', previous: $exception);
+        }
+        if (strlen($json) > self::PAYOUT_ACCOUNT_MAX_BYTES) {
+            throw new InvalidArgumentException('payout_account must serialize to at most 8192 bytes.');
+        }
+
+        return $payoutAccount;
+    }
+
+    private function normalizeNotes(?string $notes, string $field, bool $required = false): ?string
+    {
+        $notes = $this->normalizeText($notes);
+        if ($required && $notes === null) {
+            throw new InvalidArgumentException($field . ' is required.');
+        }
+        if ($notes !== null && strlen($notes) > self::NOTES_MAX_LENGTH) {
+            throw new InvalidArgumentException($field . ' must be at most 2000 characters.');
+        }
+
+        return $notes;
+    }
+
+    private function amountCny(int $pointsAmount): string
+    {
+        return sprintf('%d.%02d', intdiv($pointsAmount, self::POINTS_PER_CNY), $pointsAmount % self::POINTS_PER_CNY);
+    }
+
+    /** @param array<string, mixed> $payoutAccount */
     private function assertSameIdempotentRequest(
         WithdrawalRequest $existing,
         int $requestedByUserId,
@@ -384,7 +608,6 @@ final class WithdrawalService
         if ($idempotencyKey === '') {
             throw new InvalidArgumentException('Withdrawal idempotency key is required.');
         }
-
         if (strlen($idempotencyKey) > self::IDEMPOTENCY_KEY_MAX_LENGTH) {
             throw new InvalidArgumentException('Withdrawal idempotency key must be at most 160 characters.');
         }
@@ -404,7 +627,7 @@ final class WithdrawalService
             accountType: 'publisher_earnings',
             accountId: null,
             pointsAmount: $request->pointsAmount,
-            idempotencyKey: 'withdrawal-restore:' . $request->id . ':' . $reason,
+            idempotencyKey: 'withdrawal-restore:' . $request->id . ':' . $request->ledgerEntryId . ':' . $reason,
             referenceType: 'withdrawal_request',
             referenceId: $request->id,
             memo: 'Publisher withdrawal hold restored: ' . $reason,
@@ -412,15 +635,16 @@ final class WithdrawalService
         );
     }
 
-    /**
-     * @param array<string, mixed>|null $metadata
-     */
+    /** @param array<string, mixed>|null $metadata */
     private function audit(
         WithdrawalRequest $request,
         ?int $actorUserId,
         string $action,
-        ?WithdrawalStatus $fromStatus,
-        WithdrawalStatus $toStatus,
+        ?WithdrawalReviewStatus $fromReviewStatus,
+        ?WithdrawalReviewStatus $toReviewStatus,
+        ?WithdrawalPaymentStatus $fromPaymentStatus,
+        ?WithdrawalPaymentStatus $toPaymentStatus,
+        ?int $proofId,
         ?string $notes,
         ?array $metadata,
         DateTimeImmutable $now,
@@ -430,8 +654,11 @@ final class WithdrawalService
             organizationId: $request->organizationId,
             actorUserId: $actorUserId,
             action: $action,
-            fromStatus: $fromStatus,
-            toStatus: $toStatus,
+            fromReviewStatus: $fromReviewStatus,
+            toReviewStatus: $toReviewStatus,
+            fromPaymentStatus: $fromPaymentStatus,
+            toPaymentStatus: $toPaymentStatus,
+            proofId: $proofId,
             notes: $this->normalizeText($notes),
             metadata: $metadata,
             now: $now,
@@ -445,6 +672,7 @@ final class WithdrawalService
         }
 
         $value = trim($value);
+
         return $value === '' ? null : $value;
     }
 }

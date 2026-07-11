@@ -16,6 +16,7 @@ use VertoAD\Service\AuditLogService;
 use VertoAD\Service\Operations\Backup\BackupExecutor;
 use VertoAD\Service\Operations\Backup\BackupInventory;
 use VertoAD\Service\Operations\Backup\BackupObjectStorageInterface;
+use VertoAD\Service\Operations\Backup\BackupSourceRegistry;
 use VertoAD\Service\Operations\Backup\MysqlBackupRunnerInterface;
 
 final class BackupExecutorTest extends TestCase
@@ -46,16 +47,34 @@ final class BackupExecutorTest extends TestCase
         self::assertSame(3, $result->objectCount);
         self::assertSame('completed', $stored?->status);
         self::assertSame(hash('sha256', $mysql->dumpBody), $stored?->mysqlSha256);
-        self::assertSame('vertoad-backup-manifest-v1', $manifest['schema']);
+        self::assertSame('vertoad-backup-manifest-v2', $manifest['schema']);
         self::assertSame(
             hash('sha256', $storage->objects['backups/backup_test_id/configuration.json']),
             $manifest['configuration']['sha256'],
         );
         self::assertSame([
+            BackupSourceRegistry::ARCHIVE,
+            BackupSourceRegistry::ASSETS,
+            BackupSourceRegistry::WITHDRAWAL_PROOFS,
+        ], array_column($manifest['objects'], 'source_storage'));
+        self::assertSame([
+            's3://archive/raw.parquet',
             'assets/image.png',
             'proofs/paid.pdf',
-            's3://archive/raw.parquet',
-        ], array_column($manifest['objects'], 'source_object_key'));
+        ], array_column($manifest['objects'], 'source_key'));
+        foreach ($manifest['objects'] as $object) {
+            self::assertSame(
+                ['source_storage', 'source_key', 'target_key', 'sha256', 'bytes', 'content_type'],
+                array_keys($object),
+            );
+            self::assertStringStartsWith('backups/backup_test_id/objects/', $object['target_key']);
+            self::assertSame(64, strlen($object['sha256']));
+            self::assertGreaterThan(0, $object['bytes']);
+        }
+        self::assertSame('application/vnd.apache.parquet', $manifest['objects'][0]['content_type']);
+        self::assertSame('image/png', $manifest['objects'][1]['content_type']);
+        self::assertSame('application/pdf', $manifest['objects'][2]['content_type']);
+        self::assertSame(0, $storage->copyCalls);
         self::assertSame('vertoad-config-backup-v1', $config['schema']);
         self::assertSame('serving.geo_provider', $config['system_config_versions'][0]['config_key']);
         self::assertSame(['include_builtins' => true], $config['system_config_versions'][0]['value']);
@@ -65,22 +84,33 @@ final class BackupExecutorTest extends TestCase
 
     public function testRestoresVerifiedMysqlAndEveryCopiedObjectAndWritesEvidence(): void
     {
-        [$executor, $jobs, $storage, $mysql, $audit] = $this->executor();
+        [$executor, $jobs, $storage, $mysql, $audit, $sources] = $this->executor();
         $jobs->save($this->queuedBackup());
         self::assertSame('completed', $executor->executeNextBackup()->status);
         $jobs->save($this->queuedRestore());
-        $storage->objects['assets/image.png'] = 'changed';
-        $storage->objects['proofs/paid.pdf'] = 'changed';
-        $storage->objects['s3://archive/raw.parquet'] = 'changed';
+        $sources[BackupSourceRegistry::ASSETS]->objects['assets/image.png'] = 'changed';
+        $sources[BackupSourceRegistry::WITHDRAWAL_PROOFS]->objects['proofs/paid.pdf'] = 'changed';
+        $sources[BackupSourceRegistry::ARCHIVE]->objects['s3://archive/raw.parquet'] = 'changed';
 
         $result = $executor->executeNextRestore();
         $restored = $jobs->find('restore_test_id');
 
         self::assertSame('completed', $result->status);
         self::assertSame($mysql->dumpBody, $mysql->restoredBody);
-        self::assertSame('asset-body', $storage->objects['assets/image.png']);
-        self::assertSame('proof-body', $storage->objects['proofs/paid.pdf']);
-        self::assertSame('parquet-body', $storage->objects['s3://archive/raw.parquet']);
+        self::assertSame('asset-body', $sources[BackupSourceRegistry::ASSETS]->objects['assets/image.png']);
+        self::assertSame('proof-body', $sources[BackupSourceRegistry::WITHDRAWAL_PROOFS]->objects['proofs/paid.pdf']);
+        self::assertSame('parquet-body', $sources[BackupSourceRegistry::ARCHIVE]->objects['s3://archive/raw.parquet']);
+        self::assertSame('image/png', $sources[BackupSourceRegistry::ASSETS]->contentTypes['assets/image.png']);
+        self::assertSame('application/pdf', $sources[BackupSourceRegistry::WITHDRAWAL_PROOFS]->contentTypes['proofs/paid.pdf']);
+        self::assertSame(
+            'application/vnd.apache.parquet',
+            $sources[BackupSourceRegistry::ARCHIVE]->contentTypes['s3://archive/raw.parquet'],
+        );
+        self::assertArrayNotHasKey('assets/image.png', $storage->objects);
+        self::assertSame(0, $storage->copyCalls);
+        self::assertSame(0, $sources[BackupSourceRegistry::ASSETS]->copyCalls);
+        self::assertSame(0, $sources[BackupSourceRegistry::WITHDRAWAL_PROOFS]->copyCalls);
+        self::assertSame(0, $sources[BackupSourceRegistry::ARCHIVE]->copyCalls);
         self::assertSame('completed', $jobs->find('backup_test_id')?->status);
         self::assertSame('completed', $restored?->status);
         self::assertSame('backups/restore-evidence/restore_test_id.json', $restored?->evidenceObjectKey);
@@ -107,12 +137,31 @@ final class BackupExecutorTest extends TestCase
         self::assertStringContainsString('measure', (string) $empty->errorMessage);
         self::assertSame('operations.backup.failed', $audit->entries[0]->action);
 
-        [$missingExecutor, $missingJobs, $missingStorage] = $this->executor();
+        [$missingExecutor, $missingJobs, , , , $missingSources] = $this->executor();
         $missingJobs->save($this->queuedBackup());
-        unset($missingStorage->objects['assets/image.png']);
+        unset($missingSources[BackupSourceRegistry::ASSETS]->objects['assets/image.png']);
         $missing = $missingExecutor->executeNextBackup();
         self::assertSame('failed', $missing->status);
         self::assertStringContainsString('Critical object is missing', (string) $missing->errorMessage);
+    }
+
+    public function testBackupRejectsInvalidCriticalSourceMeasurements(): void
+    {
+        [$invalidSize, $invalidSizeJobs, , , , $invalidSizeSources] = $this->executor();
+        $invalidSizeSources[BackupSourceRegistry::ASSETS]->sizeOverrides['assets/image.png'] = -1;
+        $invalidSizeJobs->save($this->queuedBackup());
+        self::assertStringContainsString(
+            'Critical source object size is invalid',
+            (string) $invalidSize->executeNextBackup()->errorMessage,
+        );
+
+        [$invalidHash, $invalidHashJobs, , , , $invalidHashSources] = $this->executor();
+        $invalidHashSources[BackupSourceRegistry::ASSETS]->shaOverrides['assets/image.png'] = 'invalid';
+        $invalidHashJobs->save($this->queuedBackup());
+        self::assertStringContainsString(
+            'Critical source object checksum is invalid',
+            (string) $invalidHash->executeNextBackup()->errorMessage,
+        );
     }
 
     #[DataProvider('invalidManifestProvider')]
@@ -137,15 +186,15 @@ final class BackupExecutorTest extends TestCase
         yield 'malformed json' => ['{', 'Syntax error'];
         yield 'wrong schema' => [['schema' => 'other'], 'schema is invalid'];
         yield 'wrong id' => [[
-            'schema' => 'vertoad-backup-manifest-v1',
+            'schema' => 'vertoad-backup-manifest-v2',
             'backup_id' => 'other',
         ], 'identifier does not match'];
         yield 'incomplete' => [[
-            'schema' => 'vertoad-backup-manifest-v1',
+            'schema' => 'vertoad-backup-manifest-v2',
             'backup_id' => 'backup_test_id',
         ], 'payload is incomplete'];
         yield 'invalid mysql' => [[
-            'schema' => 'vertoad-backup-manifest-v1',
+            'schema' => 'vertoad-backup-manifest-v2',
             'backup_id' => 'backup_test_id',
             'mysql' => ['object_key' => 7, 'sha256' => 'bad', 'byte_count' => 1],
             'configuration' => ['object_key' => 'config.json', 'sha256' => str_repeat('b', 64), 'byte_count' => 1],
@@ -154,7 +203,7 @@ final class BackupExecutorTest extends TestCase
             'payload_byte_count' => 2,
         ], 'MySQL payload is invalid'];
         yield 'invalid configuration' => [[
-            'schema' => 'vertoad-backup-manifest-v1',
+            'schema' => 'vertoad-backup-manifest-v2',
             'backup_id' => 'backup_test_id',
             'mysql' => ['object_key' => 'mysql.sql', 'sha256' => str_repeat('a', 64), 'byte_count' => 1],
             'configuration' => ['object_key' => '', 'sha256' => 'bad', 'byte_count' => 0],
@@ -163,19 +212,50 @@ final class BackupExecutorTest extends TestCase
             'payload_byte_count' => 2,
         ], 'configuration payload is invalid'];
         yield 'invalid object' => [[
-            'schema' => 'vertoad-backup-manifest-v1',
+            'schema' => 'vertoad-backup-manifest-v2',
             'backup_id' => 'backup_test_id',
             'mysql' => ['object_key' => 'mysql.sql', 'sha256' => str_repeat('a', 64), 'byte_count' => 1],
             'configuration' => ['object_key' => 'config.json', 'sha256' => str_repeat('b', 64), 'byte_count' => 1],
             'objects' => [[
-                'source_object_key' => '',
-                'backup_object_key' => 'copy',
+                'source_storage' => 'assets',
+                'source_key' => '',
+                'target_key' => 'copy',
                 'sha256' => str_repeat('c', 64),
-                'byte_count' => -1,
+                'bytes' => -1,
             ]],
             'environment' => 'staging',
             'payload_byte_count' => 2,
         ], 'object inventory is invalid'];
+    }
+
+    public function testRestoreRejectsRedirectedAndDuplicateManifestObjects(): void
+    {
+        $object = [
+            'source_storage' => BackupSourceRegistry::ASSETS,
+            'source_key' => 'assets/image.png',
+            'target_key' => $this->targetKey(BackupSourceRegistry::ASSETS, 'assets/image.png'),
+            'sha256' => hash('sha256', 'asset-body'),
+            'bytes' => strlen('asset-body'),
+            'content_type' => 'image/png',
+        ];
+
+        [$redirected, $redirectedJobs, $redirectedStorage] = $this->executor();
+        $this->installValidRestoreFixture(
+            $redirectedJobs,
+            $redirectedStorage,
+            [array_replace($object, ['target_key' => 'backups/backup_test_id/objects/redirected'])],
+        );
+        self::assertStringContainsString(
+            'object target key is invalid',
+            (string) $redirected->executeNextRestore()->errorMessage,
+        );
+
+        [$duplicate, $duplicateJobs, $duplicateStorage] = $this->executor();
+        $this->installValidRestoreFixture($duplicateJobs, $duplicateStorage, [$object, $object]);
+        self::assertStringContainsString(
+            'inventory contains duplicates',
+            (string) $duplicate->executeNextRestore()->errorMessage,
+        );
     }
 
     public function testRestoreRejectsEnvironmentMissingSourceObjectsAndChecksumMismatch(): void
@@ -195,13 +275,16 @@ final class BackupExecutorTest extends TestCase
         self::assertStringContainsString('could not find backup object', (string) $missingObject->executeNextRestore()->errorMessage);
 
         [$missingCopy, $copyJobs, $copyStorage] = $this->executor();
+        $missingTarget = $this->targetKey(BackupSourceRegistry::ASSETS, 'assets/image.png');
         $this->installValidRestoreFixture($copyJobs, $copyStorage, [[
-            'source_object_key' => 'assets/image.png',
-            'backup_object_key' => 'backups/backup_test_id/objects/image.png',
+            'source_storage' => BackupSourceRegistry::ASSETS,
+            'source_key' => 'assets/image.png',
+            'target_key' => $missingTarget,
             'sha256' => hash('sha256', 'asset-body'),
-            'byte_count' => 10,
+            'bytes' => 10,
+            'content_type' => 'image/png',
         ]]);
-        self::assertStringContainsString('could not find copied object', (string) $missingCopy->executeNextRestore()->errorMessage);
+        self::assertStringContainsString('could not find backup object', (string) $missingCopy->executeNextRestore()->errorMessage);
 
         [$checksum, $checksumJobs, $checksumStorage] = $this->executor();
         $this->installValidRestoreFixture($checksumJobs, $checksumStorage);
@@ -213,7 +296,7 @@ final class BackupExecutorTest extends TestCase
     public function testBackupAndRestoreRejectSizeAndConfigurationIntegrityFailures(): void
     {
         [$copyBackup, $copyBackupJobs, $copyBackupStorage] = $this->executor();
-        $copyBackupStorage->corruptEveryCopy = true;
+        $copyBackupStorage->corruptPutFiles = true;
         $copyBackupJobs->save($this->queuedBackup());
         self::assertStringContainsString('backup size verification failed', (string) $copyBackup->executeNextBackup()->errorMessage);
 
@@ -223,40 +306,77 @@ final class BackupExecutorTest extends TestCase
         self::assertStringContainsString('backup object size verification failed', (string) $requiredSize->executeNextRestore()->errorMessage);
 
         [$copiedSize, $copiedSizeJobs, $copiedSizeStorage] = $this->executor();
-        $copiedObject = 'backups/backup_test_id/objects/image.png';
+        $copiedObject = $this->targetKey(BackupSourceRegistry::ASSETS, 'assets/image.png');
         $copiedSizeStorage->objects[$copiedObject] = 'asset-body';
         $this->installValidRestoreFixture($copiedSizeJobs, $copiedSizeStorage, [[
-            'source_object_key' => 'assets/image.png',
-            'backup_object_key' => $copiedObject,
+            'source_storage' => BackupSourceRegistry::ASSETS,
+            'source_key' => 'assets/image.png',
+            'target_key' => $copiedObject,
             'sha256' => hash('sha256', 'asset-body'),
-            'byte_count' => strlen('asset-body'),
+            'bytes' => strlen('asset-body'),
+            'content_type' => 'image/png',
         ]]);
         $copiedSizeStorage->sizeOverrides[$copiedObject] = 999;
-        self::assertStringContainsString('copied object size verification failed', (string) $copiedSize->executeNextRestore()->errorMessage);
+        self::assertStringContainsString('backed-up object size verification failed', (string) $copiedSize->executeNextRestore()->errorMessage);
 
         [$configHash, $configHashJobs, $configHashStorage] = $this->executor();
         $this->installValidRestoreFixture($configHashJobs, $configHashStorage);
         $configHashStorage->objects['backups/backup_test_id/configuration.json'] = '{"schema":"tampered"}';
         $configHashStorage->sizeOverrides['backups/backup_test_id/configuration.json'] = strlen($this->validConfigJson());
-        self::assertStringContainsString('Configuration backup checksum', (string) $configHash->executeNextRestore()->errorMessage);
+        self::assertStringContainsString('backup object checksum', (string) $configHash->executeNextRestore()->errorMessage);
 
         [$configSchema, $configSchemaJobs, $configSchemaStorage] = $this->executor();
         $this->installValidRestoreFixture($configSchemaJobs, $configSchemaStorage, configJson: '{"schema":"other"}');
         self::assertStringContainsString('Configuration backup schema', (string) $configSchema->executeNextRestore()->errorMessage);
 
-        [$restoredSize, $restoredSizeJobs, $restoredSizeStorage] = $this->executor();
-        $restoredObject = 'backups/backup_test_id/objects/image.png';
+        [$restoredSize, $restoredSizeJobs, $restoredSizeStorage, , , $restoredSizeSources] = $this->executor();
+        $restoredObject = $this->targetKey(BackupSourceRegistry::ASSETS, 'assets/image.png');
         $restoredSizeStorage->objects[$restoredObject] = 'asset-body';
         $this->installValidRestoreFixture($restoredSizeJobs, $restoredSizeStorage, [[
-            'source_object_key' => 'assets/image.png',
-            'backup_object_key' => $restoredObject,
+            'source_storage' => BackupSourceRegistry::ASSETS,
+            'source_key' => 'assets/image.png',
+            'target_key' => $restoredObject,
             'sha256' => hash('sha256', 'asset-body'),
-            'byte_count' => strlen('asset-body'),
+            'bytes' => strlen('asset-body'),
+            'content_type' => 'image/png',
         ]]);
-        $restoredSizeStorage->corruptEveryCopy = true;
+        $restoredSizeSources[BackupSourceRegistry::ASSETS]->corruptPutFiles = true;
         self::assertStringContainsString('Restored object size verification failed', (string) $restoredSize->executeNextRestore()->errorMessage);
         self::assertSame('completed', $restoredSizeJobs->find('backup_test_id')?->status);
         self::assertSame('failed', $restoredSizeJobs->find('restore_test_id')?->status);
+    }
+
+    public function testRestoreRejectsObjectsThatChangeBetweenMetadataChecksAndDownloads(): void
+    {
+        $configKey = 'backups/backup_test_id/configuration.json';
+        [$configRead, $configReadJobs, $configReadStorage] = $this->executor();
+        $this->installValidRestoreFixture($configReadJobs, $configReadStorage);
+        $trustedConfig = $configReadStorage->objects[$configKey];
+        $configReadStorage->objects[$configKey] = '{"schema":"tampered"}';
+        $configReadStorage->sizeOverrides[$configKey] = strlen($trustedConfig);
+        $configReadStorage->shaOverrides[$configKey] = hash('sha256', $trustedConfig);
+        self::assertStringContainsString(
+            'Configuration backup checksum verification failed',
+            (string) $configRead->executeNextRestore()->errorMessage,
+        );
+
+        $mysqlKey = 'backups/backup_test_id/mysql.sql';
+        [$downloadSize, $downloadSizeJobs, $downloadSizeStorage] = $this->executor();
+        $this->installValidRestoreFixture($downloadSizeJobs, $downloadSizeStorage);
+        $downloadSizeStorage->downloadOverrides[$mysqlKey] = 'short';
+        self::assertStringContainsString(
+            'MySQL backup download size verification failed',
+            (string) $downloadSize->executeNextRestore()->errorMessage,
+        );
+
+        [$downloadHash, $downloadHashJobs, $downloadHashStorage] = $this->executor();
+        $this->installValidRestoreFixture($downloadHashJobs, $downloadHashStorage);
+        $trustedDump = $downloadHashStorage->objects[$mysqlKey];
+        $downloadHashStorage->downloadOverrides[$mysqlKey] = 'X' . substr($trustedDump, 1);
+        self::assertStringContainsString(
+            'MySQL backup download checksum verification failed',
+            (string) $downloadHash->executeNextRestore()->errorMessage,
+        );
     }
 
     public function testBackupRejectsEveryUploadedPayloadIntegrityFailure(): void
@@ -278,7 +398,7 @@ final class BackupExecutorTest extends TestCase
         }
 
         [$executor, $jobs, $storage] = $this->executor();
-        $storage->corruptCopiesWithoutChangingSize = true;
+        $storage->corruptPutFilesWithoutChangingSize = true;
         $jobs->save($this->queuedBackup());
         self::assertStringContainsString(
             'Critical object backup checksum',
@@ -315,30 +435,34 @@ final class BackupExecutorTest extends TestCase
         );
 
         [$copiedTamper, $copiedJobs, $copiedStorage] = $this->executor();
-        $copiedObject = 'backups/backup_test_id/objects/image.png';
+        $copiedObject = $this->targetKey(BackupSourceRegistry::ASSETS, 'assets/image.png');
         $copiedStorage->objects[$copiedObject] = 'asset-body';
         $this->installValidRestoreFixture($copiedJobs, $copiedStorage, [[
-            'source_object_key' => 'assets/image.png',
-            'backup_object_key' => $copiedObject,
+            'source_storage' => BackupSourceRegistry::ASSETS,
+            'source_key' => 'assets/image.png',
+            'target_key' => $copiedObject,
             'sha256' => hash('sha256', 'asset-body'),
-            'byte_count' => strlen('asset-body'),
+            'bytes' => strlen('asset-body'),
+            'content_type' => 'image/png',
         ]]);
         $copiedStorage->objects[$copiedObject] = 'Asset-body';
         self::assertStringContainsString(
-            'copied object checksum',
+            'backed-up object checksum',
             (string) $copiedTamper->executeNextRestore()->errorMessage,
         );
 
-        [$restoredTamper, $restoredJobs, $restoredStorage] = $this->executor();
-        $restoredObject = 'backups/backup_test_id/objects/image.png';
+        [$restoredTamper, $restoredJobs, $restoredStorage, , , $restoredSources] = $this->executor();
+        $restoredObject = $this->targetKey(BackupSourceRegistry::ASSETS, 'assets/image.png');
         $restoredStorage->objects[$restoredObject] = 'asset-body';
         $this->installValidRestoreFixture($restoredJobs, $restoredStorage, [[
-            'source_object_key' => 'assets/image.png',
-            'backup_object_key' => $restoredObject,
+            'source_storage' => BackupSourceRegistry::ASSETS,
+            'source_key' => 'assets/image.png',
+            'target_key' => $restoredObject,
             'sha256' => hash('sha256', 'asset-body'),
-            'byte_count' => strlen('asset-body'),
+            'bytes' => strlen('asset-body'),
+            'content_type' => 'image/png',
         ]]);
-        $restoredStorage->corruptCopiesWithoutChangingSize = true;
+        $restoredSources[BackupSourceRegistry::ASSETS]->corruptPutFilesWithoutChangingSize = true;
         self::assertStringContainsString(
             'Restored object checksum',
             (string) $restoredTamper->executeNextRestore()->errorMessage,
@@ -380,7 +504,7 @@ final class BackupExecutorTest extends TestCase
 
     /**
      * @param list<string> $restoreAllowedEnvironments
-     * @return array{BackupExecutor,InMemoryBackupJobRepository,ExecutorMemoryStorage,ExecutorMysqlRunner,OperationAuditRepository}
+     * @return array{BackupExecutor,InMemoryBackupJobRepository,ExecutorMemoryStorage,ExecutorMysqlRunner,OperationAuditRepository,array<string,ExecutorMemoryStorage>}
      */
     private function executor(
         array $restoreAllowedEnvironments = ['staging'],
@@ -389,17 +513,19 @@ final class BackupExecutorTest extends TestCase
     ): array
     {
         $jobs = new InMemoryBackupJobRepository();
-        $storage = new ExecutorMemoryStorage([
-            'assets/image.png' => 'asset-body',
-            'proofs/paid.pdf' => 'proof-body',
-            's3://archive/raw.parquet' => 'parquet-body',
-        ]);
+        $storage = new ExecutorMemoryStorage();
+        $sources = [
+            BackupSourceRegistry::ASSETS => new ExecutorMemoryStorage(['assets/image.png' => 'asset-body']),
+            BackupSourceRegistry::WITHDRAWAL_PROOFS => new ExecutorMemoryStorage(['proofs/paid.pdf' => 'proof-body']),
+            BackupSourceRegistry::ARCHIVE => new ExecutorMemoryStorage(['s3://archive/raw.parquet' => 'parquet-body']),
+        ];
         $mysql = new ExecutorMysqlRunner();
         $audit = new OperationAuditRepository();
         $executor = new BackupExecutor(
             $jobs,
             $mysql,
             $storage,
+            new BackupSourceRegistry($sources),
             new BackupInventory($this->connection()),
             new AuditLogService($audit),
             $baseObjectKey,
@@ -408,7 +534,7 @@ final class BackupExecutorTest extends TestCase
             static fn (): DateTimeImmutable => new DateTimeImmutable('2026-07-10T10:00:00Z'),
         );
 
-        return [$executor, $jobs, $storage, $mysql, $audit];
+        return [$executor, $jobs, $storage, $mysql, $audit, $sources];
     }
 
     private function connection(): Connection
@@ -423,11 +549,11 @@ final class BackupExecutorTest extends TestCase
             'created_by_user_id' => 1,
             'created_at' => '2026-07-10 09:00:00',
         ]);
-        $connection->executeStatement('CREATE TABLE creative_assets (object_key VARCHAR(512))');
-        $connection->insert('creative_assets', ['object_key' => 'assets/image.png']);
-        $connection->executeStatement('CREATE TABLE withdrawal_proofs (object_key VARCHAR(512), status VARCHAR(32))');
-        $connection->insert('withdrawal_proofs', ['object_key' => 'proofs/paid.pdf', 'status' => 'confirmed']);
-        $connection->insert('withdrawal_proofs', ['object_key' => 'proofs/pending.pdf', 'status' => 'pending_upload']);
+        $connection->executeStatement('CREATE TABLE creative_assets (object_key VARCHAR(512), content_type VARCHAR(120))');
+        $connection->insert('creative_assets', ['object_key' => 'assets/image.png', 'content_type' => 'image/png']);
+        $connection->executeStatement('CREATE TABLE withdrawal_proofs (object_key VARCHAR(512), content_type VARCHAR(120), status VARCHAR(32))');
+        $connection->insert('withdrawal_proofs', ['object_key' => 'proofs/paid.pdf', 'content_type' => 'application/pdf', 'status' => 'verified']);
+        $connection->insert('withdrawal_proofs', ['object_key' => 'proofs/pending.pdf', 'content_type' => 'application/pdf', 'status' => 'pending_upload']);
         $connection->executeStatement('CREATE TABLE archive_manifests (status VARCHAR(32), partitions_json TEXT)');
         $connection->insert('archive_manifests', [
             'status' => 'completed',
@@ -501,7 +627,7 @@ final class BackupExecutorTest extends TestCase
         );
     }
 
-    /** @param list<array{source_object_key:string,backup_object_key:string,sha256:string,byte_count:int}> $objects */
+    /** @param list<array{source_storage:string,source_key:string,target_key:string,sha256:string,bytes:int,content_type:string}> $objects */
     private function installValidRestoreFixture(
         InMemoryBackupJobRepository $jobs,
         ExecutorMemoryStorage $storage,
@@ -528,7 +654,7 @@ final class BackupExecutorTest extends TestCase
         ));
     }
 
-    /** @param list<array{source_object_key:string,backup_object_key:string,sha256:string,byte_count:int}> $objects */
+    /** @param list<array{source_storage:string,source_key:string,target_key:string,sha256:string,bytes:int,content_type:string}> $objects */
     private function installValidManifest(
         ExecutorMemoryStorage $storage,
         array $objects = [],
@@ -539,7 +665,7 @@ final class BackupExecutorTest extends TestCase
         $storage->objects['backups/backup_test_id/mysql.sql'] = $mysql;
         $storage->objects['backups/backup_test_id/configuration.json'] = $configJson;
         $manifestJson = json_encode([
-            'schema' => 'vertoad-backup-manifest-v1',
+            'schema' => 'vertoad-backup-manifest-v2',
             'backup_id' => 'backup_test_id',
             'environment' => 'staging',
             'mysql' => [
@@ -555,7 +681,7 @@ final class BackupExecutorTest extends TestCase
             'objects' => $objects,
             'payload_byte_count' => strlen($mysql)
                 + strlen($configJson)
-                + array_sum(array_column($objects, 'byte_count')),
+                + array_sum(array_column($objects, 'bytes')),
         ], JSON_THROW_ON_ERROR);
         $storage->objects['backups/backup_test_id/manifest.json'] = $manifestJson;
 
@@ -565,6 +691,19 @@ final class BackupExecutorTest extends TestCase
     private function validConfigJson(): string
     {
         return '{"schema":"vertoad-config-backup-v1","system_config_versions":[]}';
+    }
+
+    private function targetKey(string $sourceStorage, string $sourceKey): string
+    {
+        $path = parse_url($sourceKey, PHP_URL_PATH);
+        $name = basename(is_string($path) ? $path : $sourceKey);
+
+        return 'backups/backup_test_id/objects/'
+            . $sourceStorage
+            . '/'
+            . hash('sha256', $sourceKey)
+            . '/'
+            . $name;
     }
 
     private function withMysqlSha256(BackupJob $job, string $mysqlSha256): BackupJob
@@ -639,12 +778,17 @@ final class ExecutorMysqlRunner implements MysqlBackupRunnerInterface
 
 final class ExecutorMemoryStorage implements BackupObjectStorageInterface
 {
-    public bool $corruptEveryCopy = false;
-    public bool $corruptCopiesWithoutChangingSize = false;
+    public bool $corruptPutFiles = false;
+    public bool $corruptPutFilesWithoutChangingSize = false;
+    public int $copyCalls = 0;
     /** @var array<string, int> */
     public array $sizeOverrides = [];
     /** @var array<string, string> */
     public array $shaOverrides = [];
+    /** @var array<string, string> */
+    public array $contentTypes = [];
+    /** @var array<string, string> */
+    public array $downloadOverrides = [];
     /** @param array<string, string> $objects */
     public function __construct(public array $objects = [])
     {
@@ -652,17 +796,23 @@ final class ExecutorMemoryStorage implements BackupObjectStorageInterface
 
     public function putFile(string $objectKey, string $localPath, string $contentType): void
     {
-        $this->objects[$objectKey] = (string) file_get_contents($localPath);
+        $body = (string) file_get_contents($localPath);
+        $canCorrupt = !str_ends_with($objectKey, '/mysql.sql');
+        $this->objects[$objectKey] = $this->corruptPutFiles && $canCorrupt
+            ? 'x'
+            : ($this->corruptPutFilesWithoutChangingSize && $canCorrupt ? 'X' . substr($body, 1) : $body);
+        $this->contentTypes[$objectKey] = $contentType;
     }
 
     public function putString(string $objectKey, string $body, string $contentType): void
     {
         $this->objects[$objectKey] = $body;
+        $this->contentTypes[$objectKey] = $contentType;
     }
 
     public function getFile(string $objectKey, string $localPath): void
     {
-        file_put_contents($localPath, $this->objects[$objectKey]);
+        file_put_contents($localPath, $this->downloadOverrides[$objectKey] ?? $this->objects[$objectKey]);
     }
 
     public function readString(string $objectKey): string
@@ -672,13 +822,8 @@ final class ExecutorMemoryStorage implements BackupObjectStorageInterface
 
     public function copy(string $sourceObjectKey, string $destinationObjectKey): void
     {
-        if (!array_key_exists($sourceObjectKey, $this->objects)) {
-            throw new RuntimeException('missing source');
-        }
-        $body = $this->objects[$sourceObjectKey];
-        $this->objects[$destinationObjectKey] = $this->corruptEveryCopy
-            ? 'x'
-            : ($this->corruptCopiesWithoutChangingSize ? 'X' . substr($body, 1) : $body);
+        ++$this->copyCalls;
+        throw new RuntimeException('CopyObject must not be used for backup source transfers.');
     }
 
     public function exists(string $objectKey): bool

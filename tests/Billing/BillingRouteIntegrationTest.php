@@ -37,7 +37,9 @@ use VertoAD\Http\Middleware\AuthenticateRequestMiddleware;
 use VertoAD\Http\Middleware\RequirePermissionMiddleware;
 use VertoAD\Infrastructure\Storage\DeterministicPresignedUploadSigner;
 use VertoAD\Infrastructure\Security\ClientIpResolver;
+use VertoAD\Infrastructure\Storage\ObjectStorageInspectorInterface;
 use VertoAD\Infrastructure\Storage\ObjectStorageUploadSignerInterface;
+use VertoAD\Infrastructure\Storage\StoredObjectInspection;
 use VertoAD\Repository\Billing\WithdrawalRepository;
 use VertoAD\Repository\FirstPartySessionRepository;
 use VertoAD\Repository\FirstPartySessionRepositoryInterface;
@@ -61,6 +63,7 @@ use VertoAD\Service\PointsLedgerService;
 use VertoAD\Service\RechargeKeyPlaintextCipherInterface;
 use VertoAD\Service\RechargeKeyService;
 use VertoAD\Service\TenantAccessService;
+use VertoAD\Tests\Assets\InMemoryObjectStorageInspector;
 
 final class BillingRouteIntegrationTest extends TestCase
 {
@@ -1027,7 +1030,8 @@ final class BillingRouteIntegrationTest extends TestCase
     public function testWithdrawalRoutesHoldRestorePayAndManageProofs(): void
     {
         $connection = $this->createConnection();
-        $app = $this->createApp($connection);
+        $proofInspector = new InMemoryObjectStorageInspector();
+        $app = $this->createApp($connection, proofInspector: $proofInspector);
         $this->handleJson($app, 'POST', '/api/v1/auth/register', [
             'email' => 'withdrawals@example.com',
             'password' => 'correct horse battery staple',
@@ -1048,7 +1052,8 @@ final class BillingRouteIntegrationTest extends TestCase
             'idempotency_key' => 'withdrawal:route:request:1',
         ], $token);
 
-        self::assertSame('requested', $requested['data']['status']);
+        self::assertSame('pending', $requested['data']['review_status']);
+        self::assertSame('not_started', $requested['data']['payment_status']);
         self::assertSame(1000, $requested['data']['points_amount']);
         self::assertSame('10.00', $requested['data']['amount_cny']);
         self::assertSame(100, $requested['data']['points_per_cny']);
@@ -1065,27 +1070,72 @@ final class BillingRouteIntegrationTest extends TestCase
         self::assertSame($requested['data']['ledger_entry_id'], $requestedAgain['data']['ledger_entry_id']);
         self::assertSame(2000, (new PointsLedgerRepository($connection))->balanceForOrganization(99, 'publisher_earnings'));
 
-        $proofIntent = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs?organization_id=99', [
+        $approved = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/approve', [
+            'notes' => 'account reviewed',
+        ], $token);
+        self::assertSame('approved', $approved['data']['review_status']);
+        self::assertSame('pending', $approved['data']['payment_status']);
+
+        $proofIntent = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs?organization_id=100', [
             'filename' => 'receipt.pdf',
             'content_type' => 'application/pdf',
             'byte_size' => 2048,
         ], $token);
         self::assertSame('pending_upload', $proofIntent['data']['proof']['status']);
+        self::assertSame(99, $proofIntent['data']['proof']['organization_id']);
         self::assertSame('PUT', $proofIntent['data']['upload']['method']);
+        self::assertNotSame('', $proofIntent['data']['proof']['created_at']);
 
-        $confirmed = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs/confirm?organization_id=99', [
+        $pendingProofs = $this->handleJson(
+            $app,
+            'GET',
+            '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs?organization_id=100&limit=10',
+            null,
+            $token,
+        );
+        self::assertSame($requested['data']['id'], $pendingProofs['data']['withdrawal_request_id']);
+        self::assertSame(10, $pendingProofs['data']['limit']);
+        self::assertSame([$proofIntent['data']['proof']['id']], array_column($pendingProofs['data']['proofs'], 'id'));
+        self::assertSame(['pending_upload'], array_column($pendingProofs['data']['proofs'], 'status'));
+
+        $proofBody = "%PDF-1.7\nroute payment receipt";
+        $proofInspector->put(new StoredObjectInspection(
+            $proofIntent['data']['proof']['object_key'],
+            'application/pdf',
+            2048,
+            1,
+            1,
+            null,
+            'sha256:' . hash('sha256', $proofBody),
+            $proofBody,
+        ));
+
+        $confirmed = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs/confirm', [
             'proof_id' => $proofIntent['data']['proof']['id'],
-            'object_key' => $proofIntent['data']['proof']['object_key'],
-            'content_type' => 'application/pdf',
-            'byte_size' => 2048,
-            'checksum' => 'sha256:route',
         ], $token);
-        self::assertSame('confirmed', $confirmed['data']['status']);
+        self::assertSame('verified', $confirmed['data']['status']);
 
-        $paid = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/paid?organization_id=99', [
+        $verifiedProofs = $this->handleJson(
+            $app,
+            'GET',
+            '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs?organization_id=100',
+            null,
+            $token,
+        );
+        self::assertSame(['verified'], array_column($verifiedProofs['data']['proofs'], 'status'));
+
+        $paid = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/paid', [
+            'proof_id' => $confirmed['data']['id'],
             'notes' => 'paid',
         ], $token);
-        self::assertSame('paid', $paid['data']['status']);
+        self::assertSame('approved', $paid['data']['review_status']);
+        self::assertSame('paid', $paid['data']['payment_status']);
+        self::assertSame($confirmed['data']['id'], $paid['data']['payment_proof_id']);
+
+        $confirmedReplay = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs/confirm', [
+            'proof_id' => $proofIntent['data']['proof']['id'],
+        ], $token);
+        self::assertSame('verified', $confirmedReplay['data']['status']);
 
         $second = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals?organization_id=99', [
             'points_amount' => 500,
@@ -1096,7 +1146,8 @@ final class BillingRouteIntegrationTest extends TestCase
         $rejected = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $second['data']['id'] . '/reject?organization_id=99', [
             'notes' => 'bad account',
         ], $token);
-        self::assertSame('rejected', $rejected['data']['status']);
+        self::assertSame('rejected', $rejected['data']['review_status']);
+        self::assertSame('not_started', $rejected['data']['payment_status']);
 
         $third = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals?organization_id=99', [
             'points_amount' => 300,
@@ -1105,15 +1156,16 @@ final class BillingRouteIntegrationTest extends TestCase
             'idempotency_key' => 'withdrawal:route:request:3',
         ], $token);
         $revoked = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $third['data']['id'] . '/revoke?organization_id=99', [], $token);
-        self::assertSame('revoked', $revoked['data']['status']);
+        self::assertSame('revoked', $revoked['data']['review_status']);
 
         $resubmitted = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $third['data']['id'] . '/resubmit?organization_id=99', [
             'payout_account' => ['account_no' => '****0000'],
             'notes' => 'updated payout account',
         ], $token);
-        self::assertSame('requested', $resubmitted['data']['status']);
+        self::assertSame('pending', $resubmitted['data']['review_status']);
+        self::assertSame('not_started', $resubmitted['data']['payment_status']);
         self::assertSame(['account_no' => '****0000'], $resubmitted['data']['payout_account']);
-        self::assertSame('updated payout account', $resubmitted['data']['reviewer_notes']);
+        self::assertSame('updated payout account', $resubmitted['data']['applicant_notes']);
         self::assertSame('3.00', $resubmitted['data']['amount_cny']);
         self::assertSame(100, $resubmitted['data']['points_per_cny']);
         self::assertSame(1700, (new PointsLedgerRepository($connection))->balanceForOrganization(99, 'publisher_earnings'));
@@ -1149,6 +1201,7 @@ final class BillingRouteIntegrationTest extends TestCase
             'payout_account' => ['account_no' => '****1234'],
             'idempotency_key' => 'withdrawal:route:proof-conflict',
         ], $token);
+        $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $withdrawal['data']['id'] . '/approve', [], $token);
 
         $intent = $this->handleJsonResponse(
             $app,
@@ -1195,6 +1248,8 @@ final class BillingRouteIntegrationTest extends TestCase
             'payout_account' => ['account_no' => '****5678'],
             'idempotency_key' => 'withdrawal:route:proof-mismatch:second',
         ], $token);
+        $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $first['data']['id'] . '/approve', [], $token);
+        $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $second['data']['id'] . '/approve', [], $token);
 
         $proofIntent = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $first['data']['id'] . '/proofs?organization_id=99', [
             'filename' => 'receipt.pdf',
@@ -1208,17 +1263,12 @@ final class BillingRouteIntegrationTest extends TestCase
             '/api/v1/billing/withdrawals/' . $second['data']['id'] . '/proofs/confirm?organization_id=99',
             [
                 'proof_id' => $proofIntent['data']['proof']['id'],
-                'object_key' => $proofIntent['data']['proof']['object_key'],
-                'content_type' => 'application/pdf',
-                'byte_size' => 2048,
-                'checksum' => 'sha256:route',
             ],
             $token,
         );
 
-        self::assertSame(409, $confirmed['status']);
-        self::assertSame('withdrawal_proof_rejected', $confirmed['body']['error']['code']);
-        self::assertSame('withdrawal_proof_not_found', $confirmed['body']['error']['message']);
+        self::assertSame(404, $confirmed['status']);
+        self::assertSame('withdrawal_proof_not_found', $confirmed['body']['error']['code']);
         self::assertSame(
             'pending_upload',
             (string) $connection->fetchOne('SELECT status FROM withdrawal_proofs WHERE id = ?', [$proofIntent['data']['proof']['id']]),
@@ -1261,12 +1311,35 @@ final class BillingRouteIntegrationTest extends TestCase
             'payout_account' => ['account_no' => '****3333'],
             'idempotency_key' => 'withdrawal:route:admin:latest',
         ], $token);
-        $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $paid['data']['id'] . '/paid?organization_id=99', [
-            'notes' => 'paid',
-        ], $token);
+        $repository = new WithdrawalRepository($connection);
+        $withdrawalService = new WithdrawalService($repository, $ledger, new PointsLedgerRepository($connection));
+        $withdrawalService->approve((int) $paid['data']['id'], 1, null, new DateTimeImmutable('2026-07-10 12:00:00'));
+        $proof = $repository->createProof(
+            (int) $paid['data']['id'],
+            99,
+            1,
+            'withdrawals/99/' . $paid['data']['id'] . '/route-paid.pdf',
+            'application/pdf',
+            2048,
+            new DateTimeImmutable('2026-07-10 12:01:00'),
+        );
+        $verifiedProof = $repository->verifyProofIfPending(
+            (int) $proof->id,
+            'sha256:' . hash('sha256', 'route-paid'),
+            new DateTimeImmutable('2026-07-10 12:02:00'),
+        );
+        self::assertNotNull($verifiedProof);
+        $withdrawalService->markPaid(
+            (int) $paid['data']['id'],
+            1,
+            (int) $proof->id,
+            'paid',
+            new DateTimeImmutable('2026-07-10 12:03:00'),
+        );
 
-        $requestedQueue = $this->handleJson($app, 'GET', '/api/v1/billing/withdrawals?organization_id=10&status=requested&limit=5', null, $token);
-        self::assertSame('requested', $requestedQueue['data']['status']);
+        $requestedQueue = $this->handleJson($app, 'GET', '/api/v1/billing/withdrawals?organization_id=10&review_status=pending&limit=5', null, $token);
+        self::assertSame('pending', $requestedQueue['data']['review_status']);
+        self::assertNull($requestedQueue['data']['payment_status']);
         self::assertSame(5, $requestedQueue['data']['limit']);
         self::assertSame([$latest['data']['id'], $first['data']['id']], array_column($requestedQueue['data']['withdrawals'], 'id'));
         self::assertSame(['25.00', '12.00'], array_column($requestedQueue['data']['withdrawals'], 'amount_cny'));
@@ -1279,8 +1352,11 @@ final class BillingRouteIntegrationTest extends TestCase
         $limitedQueue = $this->handleJson($app, 'GET', '/api/v1/billing/withdrawals?organization_id=10&limit=1', null, $token);
         self::assertSame([$latest['data']['id']], array_column($limitedQueue['data']['withdrawals'], 'id'));
 
-        $invalidStatus = $this->handleJson($app, 'GET', '/api/v1/billing/withdrawals?organization_id=10&status=processing', null, $token);
-        self::assertSame('invalid_request', $invalidStatus['error']['code']);
+        $invalidReviewStatus = $this->handleJson($app, 'GET', '/api/v1/billing/withdrawals?organization_id=10&review_status=processing', null, $token);
+        self::assertSame('invalid_request', $invalidReviewStatus['error']['code']);
+
+        $invalidPaymentStatus = $this->handleJson($app, 'GET', '/api/v1/billing/withdrawals?organization_id=10&payment_status=processing', null, $token);
+        self::assertSame('invalid_request', $invalidPaymentStatus['error']['code']);
 
         $invalidPublisherFilter = $this->handleJson($app, 'GET', '/api/v1/billing/withdrawals?organization_id=10&publisher_organization_id=0', null, $token);
         self::assertSame('invalid_request', $invalidPublisherFilter['error']['code']);
@@ -1288,8 +1364,9 @@ final class BillingRouteIntegrationTest extends TestCase
         $invalidLimit = $this->handleJson($app, 'GET', '/api/v1/billing/withdrawals?organization_id=10&limit=soon', null, $token);
         self::assertSame('invalid_request', $invalidLimit['error']['code']);
 
-        $unboundedLimit = $this->handleJson($app, 'GET', '/api/v1/billing/withdrawals?organization_id=10&status=all&limit=999', null, $token);
-        self::assertNull($unboundedLimit['data']['status']);
+        $unboundedLimit = $this->handleJson($app, 'GET', '/api/v1/billing/withdrawals?organization_id=10&review_status=all&payment_status=all&limit=999', null, $token);
+        self::assertNull($unboundedLimit['data']['review_status']);
+        self::assertNull($unboundedLimit['data']['payment_status']);
         self::assertSame(200, $unboundedLimit['data']['limit']);
 
         $forbiddenApp = $this->createApp($connection, platformPermissions: []);
@@ -1330,31 +1407,27 @@ final class BillingRouteIntegrationTest extends TestCase
         ], $token);
         $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $revoked['data']['id'] . '/revoke?organization_id=99', [], $token);
 
-        $crossOrgProof = $this->handleJsonResponse($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs?organization_id=100', [
-            'filename' => 'receipt.pdf',
-            'content_type' => 'application/pdf',
-            'byte_size' => 2048,
-        ], $token);
-        self::assertSame(404, $crossOrgProof['status']);
-        self::assertSame('withdrawal_not_found', $crossOrgProof['body']['error']['code']);
-
-        $proofIntent = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs?organization_id=99', [
-            'filename' => 'receipt.pdf',
-            'content_type' => 'application/pdf',
-            'byte_size' => 2048,
-        ], $token);
+        $ownHistory = $this->handleJson(
+            $app,
+            'GET',
+            '/api/v1/billing/withdrawals/own?organization_id=99',
+            null,
+            $token,
+        );
+        self::assertSame([$revoked['data']['id'], $requested['data']['id']], array_column($ownHistory['data']['withdrawals'], 'id'));
+        $otherHistory = $this->handleJson(
+            $app,
+            'GET',
+            '/api/v1/billing/withdrawals/own?organization_id=100',
+            null,
+            $token,
+        );
+        self::assertSame([], $otherHistory['data']['withdrawals']);
 
         foreach ([
             ['POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/revoke?organization_id=100', []],
             ['POST', '/api/v1/billing/withdrawals/' . $revoked['data']['id'] . '/resubmit?organization_id=100', [
                 'payout_account' => ['account_no' => '****0000'],
-            ]],
-            ['POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs/confirm?organization_id=100', [
-                'proof_id' => $proofIntent['data']['proof']['id'],
-                'object_key' => $proofIntent['data']['proof']['object_key'],
-                'content_type' => 'application/pdf',
-                'byte_size' => 2048,
-                'checksum' => 'sha256:scope',
             ]],
         ] as [$method, $uri, $payload]) {
             $response = $this->handleJsonResponse($app, $method, $uri, $payload, $token);
@@ -1363,16 +1436,12 @@ final class BillingRouteIntegrationTest extends TestCase
         }
 
         self::assertSame(
-            'requested',
-            (string) $connection->fetchOne('SELECT status FROM withdrawal_requests WHERE id = ?', [$requested['data']['id']]),
+            'pending',
+            (string) $connection->fetchOne('SELECT review_status FROM withdrawal_requests WHERE id = ?', [$requested['data']['id']]),
         );
         self::assertSame(
             'revoked',
-            (string) $connection->fetchOne('SELECT status FROM withdrawal_requests WHERE id = ?', [$revoked['data']['id']]),
-        );
-        self::assertSame(
-            0,
-            (int) $connection->fetchOne('SELECT COUNT(*) FROM withdrawal_proofs WHERE organization_id = 100'),
+            (string) $connection->fetchOne('SELECT review_status FROM withdrawal_requests WHERE id = ?', [$revoked['data']['id']]),
         );
     }
 
@@ -1410,7 +1479,7 @@ final class BillingRouteIntegrationTest extends TestCase
         $request = (new ServerRequestFactory())
             ->createServerRequest('GET', '/api/v1/billing/withdrawals')
             ->withQueryParams([
-                'status' => 123,
+                'review_status' => 123,
                 'publisher_organization_id' => 99,
                 'limit' => 1,
             ]);
@@ -1433,6 +1502,212 @@ final class BillingRouteIntegrationTest extends TestCase
         self::assertSame($withdrawal->id, $validDecoded['withdrawals'][0]['id']);
         self::assertSame(1, $validDecoded['limit']);
         self::assertSame(99, $validDecoded['publisher_organization_id']);
+    }
+
+    public function testWithdrawalOwnRouteReturnsEnvelopesForMissingScopeAndInvalidFilters(): void
+    {
+        $app = $this->createApp($this->createConnection());
+        $this->handleJson($app, 'POST', '/api/v1/auth/register', [
+            'email' => 'withdrawal-own-errors@example.com',
+            'password' => 'correct horse battery staple',
+            'display_name' => 'Publisher Owner',
+        ]);
+        $login = $this->handleJson($app, 'POST', '/api/v1/auth/login', [
+            'email' => 'withdrawal-own-errors@example.com',
+            'password' => 'correct horse battery staple',
+        ]);
+        $token = $login['data']['token']['access_token'];
+
+        $missingScope = $this->handleJsonResponse(
+            $app,
+            'GET',
+            '/api/v1/billing/withdrawals/own',
+            null,
+            $token,
+            headers: ['X-Request-Id' => 'req-withdrawal-own-scope'],
+        );
+        self::assertSame(400, $missingScope['status']);
+        $this->assertApiEnvelope($missingScope['body'], 'req-withdrawal-own-scope');
+        self::assertNull($missingScope['body']['data']);
+        self::assertSame('organization_scope_required', $missingScope['body']['error']['code']);
+
+        $invalidFilter = $this->handleJsonResponse(
+            $app,
+            'GET',
+            '/api/v1/billing/withdrawals/own?organization_id=99&limit=soon',
+            null,
+            $token,
+            headers: ['X-Request-Id' => 'req-withdrawal-own-filter'],
+        );
+        self::assertSame(422, $invalidFilter['status']);
+        $this->assertApiEnvelope($invalidFilter['body'], 'req-withdrawal-own-filter');
+        self::assertNull($invalidFilter['body']['data']);
+        self::assertSame('invalid_request', $invalidFilter['body']['error']['code']);
+        self::assertSame('limit must be a positive integer.', $invalidFilter['body']['error']['message']);
+    }
+
+    public function testWithdrawalRoutesHandleNonScalarAndTypedQueryParamsThroughHttpPipeline(): void
+    {
+        $connection = $this->createConnection();
+        $app = $this->createApp($connection);
+        $this->handleJson($app, 'POST', '/api/v1/auth/register', [
+            'email' => 'withdrawal-typed-http@example.com',
+            'password' => 'correct horse battery staple',
+            'display_name' => 'Publisher Owner',
+        ]);
+        $login = $this->handleJson($app, 'POST', '/api/v1/auth/login', [
+            'email' => 'withdrawal-typed-http@example.com',
+            'password' => 'correct horse battery staple',
+        ]);
+        $token = $login['data']['token']['access_token'];
+        (new PointsLedgerService(new PointsLedgerRepository($connection)))
+            ->credit(99, 'publisher_earnings', null, 500, 'route:withdrawal-typed-http');
+        $withdrawal = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals?organization_id=99', [
+            'points_amount' => 500,
+            'payout_method' => 'bank_transfer',
+            'payout_account' => ['account_no' => '****1234'],
+            'idempotency_key' => 'withdrawal:route:typed-http',
+        ], $token);
+
+        $nonScalarPaymentStatus = $this->handleJsonResponse(
+            $app,
+            'GET',
+            '/api/v1/billing/withdrawals/own?organization_id=99&payment_status[]=pending',
+            null,
+            $token,
+            headers: ['X-Request-Id' => 'req-withdrawal-non-scalar-payment'],
+        );
+        self::assertSame(422, $nonScalarPaymentStatus['status']);
+        $this->assertApiEnvelope($nonScalarPaymentStatus['body'], 'req-withdrawal-non-scalar-payment');
+        self::assertNull($nonScalarPaymentStatus['body']['data']);
+        self::assertSame('invalid_request', $nonScalarPaymentStatus['body']['error']['code']);
+        self::assertSame(
+            'payment_status must be not_started, pending, paid, or all.',
+            $nonScalarPaymentStatus['body']['error']['message'],
+        );
+
+        $typedProofLimitRequest = (new ServerRequestFactory())
+            ->createServerRequest('GET', '/api/v1/billing/withdrawals/' . $withdrawal['data']['id'] . '/proofs')
+            ->withHeader('Authorization', 'Bearer ' . $token)
+            ->withHeader('X-Request-Id', 'req-withdrawal-typed-proof-limit')
+            ->withQueryParams(['limit' => 1]);
+        $typedProofLimitResponse = $app->handle($typedProofLimitRequest);
+        $typedProofLimit = json_decode(
+            (string) $typedProofLimitResponse->getBody(),
+            true,
+            flags: JSON_THROW_ON_ERROR,
+        );
+        self::assertIsArray($typedProofLimit);
+        self::assertSame(200, $typedProofLimitResponse->getStatusCode());
+        $this->assertApiEnvelope($typedProofLimit, 'req-withdrawal-typed-proof-limit');
+        self::assertNull($typedProofLimit['error']);
+        self::assertSame($withdrawal['data']['id'], $typedProofLimit['data']['withdrawal_request_id']);
+        self::assertSame(1, $typedProofLimit['data']['limit']);
+        self::assertSame([], $typedProofLimit['data']['proofs']);
+    }
+
+    public function testWithdrawalProofRoutesMapValidationAndPersistenceFailuresToEnvelopes(): void
+    {
+        $connection = $this->createConnection();
+        $proofInspector = new InMemoryObjectStorageInspector();
+        $app = $this->createApp($connection, proofInspector: $proofInspector);
+        $this->handleJson($app, 'POST', '/api/v1/auth/register', [
+            'email' => 'withdrawal-proof-errors@example.com',
+            'password' => 'correct horse battery staple',
+            'display_name' => 'Finance Operator',
+        ]);
+        $login = $this->handleJson($app, 'POST', '/api/v1/auth/login', [
+            'email' => 'withdrawal-proof-errors@example.com',
+            'password' => 'correct horse battery staple',
+        ]);
+        $token = $login['data']['token']['access_token'];
+        (new PointsLedgerService(new PointsLedgerRepository($connection)))
+            ->credit(99, 'publisher_earnings', null, 1000, 'route:withdrawal-proof-errors');
+        $withdrawal = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals?organization_id=99', [
+            'points_amount' => 1000,
+            'payout_method' => 'bank_transfer',
+            'payout_account' => ['account_no' => '****5678'],
+            'idempotency_key' => 'withdrawal:route:proof-errors',
+        ], $token);
+
+        $invalidType = $this->handleJsonResponse(
+            $app,
+            'POST',
+            '/api/v1/billing/withdrawals/' . $withdrawal['data']['id'] . '/proofs',
+            [
+                'filename' => 'receipt.png',
+                'content_type' => 'application/pdf',
+                'byte_size' => 2048,
+            ],
+            $token,
+            headers: ['X-Request-Id' => 'req-withdrawal-proof-type'],
+        );
+        self::assertSame(422, $invalidType['status']);
+        $this->assertApiEnvelope($invalidType['body'], 'req-withdrawal-proof-type');
+        self::assertNull($invalidType['body']['data']);
+        self::assertSame('withdrawal_proof_type_not_allowed', $invalidType['body']['error']['code']);
+
+        $this->handleJson(
+            $app,
+            'POST',
+            '/api/v1/billing/withdrawals/' . $withdrawal['data']['id'] . '/approve',
+            [],
+            $token,
+        );
+        $proofIntent = $this->handleJson(
+            $app,
+            'POST',
+            '/api/v1/billing/withdrawals/' . $withdrawal['data']['id'] . '/proofs',
+            [
+                'filename' => 'receipt.pdf',
+                'content_type' => 'application/pdf',
+                'byte_size' => 2048,
+            ],
+            $token,
+        );
+        $proofBody = "%PDF-1.7\npersistence failure receipt";
+        $proofInspector->put(new StoredObjectInspection(
+            $proofIntent['data']['proof']['object_key'],
+            'application/pdf',
+            2048,
+            1,
+            1,
+            null,
+            'sha256:' . hash('sha256', $proofBody),
+            $proofBody,
+        ));
+        $connection->executeStatement(
+            'CREATE TRIGGER simulate_withdrawal_proof_persistence_failure
+             AFTER UPDATE OF status ON withdrawal_proofs
+             WHEN NEW.status = \'verified\'
+             BEGIN
+                 DELETE FROM withdrawal_proofs WHERE id = NEW.id;
+             END',
+        );
+
+        $persistenceFailure = $this->handleJsonResponse(
+            $app,
+            'POST',
+            '/api/v1/billing/withdrawals/' . $withdrawal['data']['id'] . '/proofs/confirm',
+            ['proof_id' => $proofIntent['data']['proof']['id']],
+            $token,
+            headers: ['X-Request-Id' => 'req-withdrawal-proof-persistence'],
+        );
+        self::assertSame(409, $persistenceFailure['status']);
+        $this->assertApiEnvelope($persistenceFailure['body'], 'req-withdrawal-proof-persistence');
+        self::assertNull($persistenceFailure['body']['data']);
+        self::assertSame('withdrawal_proof_rejected', $persistenceFailure['body']['error']['code']);
+        self::assertSame(
+            'withdrawal_proof_persistence_failed',
+            $persistenceFailure['body']['error']['message'],
+        );
+        self::assertSame(
+            'pending_upload',
+            (string) $connection->fetchOne(
+                'SELECT status FROM withdrawal_proofs WHERE id = ?',
+                [$proofIntent['data']['proof']['id']],
+            ),
+        );
     }
 
     public function testWithdrawalRoutesReturnControlledErrors(): void
@@ -1497,7 +1772,11 @@ final class BillingRouteIntegrationTest extends TestCase
             'notes' => null,
             'idempotency_key' => 'withdrawal:route:error:paid',
         ], $token);
-        $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/paid?organization_id=99', [], $token);
+        $missingPaymentProof = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/paid', [
+            'notes' => 'paid',
+        ], $token);
+        self::assertSame('invalid_request', $missingPaymentProof['error']['code']);
+        $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/approve', [], $token);
 
         $lateReject = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/reject?organization_id=99', [
             'notes' => 'late',
@@ -1511,6 +1790,19 @@ final class BillingRouteIntegrationTest extends TestCase
         ], $token);
         self::assertSame('invalid_request', $badProof['error']['code']);
 
+        foreach ([
+            '/api/v1/billing/withdrawals/abc/proofs?organization_id=99',
+            '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs?organization_id=99&limit=soon',
+            '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs?organization_id=99&limit=0',
+            '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs?organization_id=99&limit=101',
+        ] as $invalidProofListUri) {
+            $invalidProofList = $this->handleJson($app, 'GET', $invalidProofListUri, null, $token);
+            self::assertSame('invalid_request', $invalidProofList['error']['code']);
+        }
+
+        $missingProofList = $this->handleJson($app, 'GET', '/api/v1/billing/withdrawals/999/proofs?organization_id=99', null, $token);
+        self::assertSame('withdrawal_not_found', $missingProofList['error']['code']);
+
         $badProofBody = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs?organization_id=99', [
             'content_type' => 'application/pdf',
             'byte_size' => 2048,
@@ -1519,12 +1811,17 @@ final class BillingRouteIntegrationTest extends TestCase
 
         $badConfirm = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs/confirm?organization_id=99', [
             'proof_id' => 'bad',
-            'object_key' => 'x',
-            'content_type' => 'application/pdf',
-            'byte_size' => 2048,
-            'checksum' => 'sha256:x',
         ], $token);
         self::assertSame('invalid_request', $badConfirm['error']['code']);
+
+        $untrustedConfirmMetadata = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs/confirm', [
+            'proof_id' => 1,
+            'checksum' => 'sha256:client-controlled',
+            'object_key' => 'client-controlled',
+        ], $token);
+        self::assertSame('invalid_request', $untrustedConfirmMetadata['error']['code']);
+        self::assertStringContainsString('checksum', $untrustedConfirmMetadata['error']['message']);
+        self::assertStringContainsString('object_key', $untrustedConfirmMetadata['error']['message']);
 
         $unauthenticatedProof = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs?organization_id=99', [
             'filename' => 'receipt.pdf',
@@ -1533,12 +1830,15 @@ final class BillingRouteIntegrationTest extends TestCase
         ]);
         self::assertSame('authentication_required', $unauthenticatedProof['error']['code']);
 
+        $unauthenticatedProofList = $this->handleJson(
+            $app,
+            'GET',
+            '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs?organization_id=99',
+        );
+        self::assertSame('authentication_required', $unauthenticatedProofList['error']['code']);
+
         $unauthenticatedConfirm = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/' . $requested['data']['id'] . '/proofs/confirm?organization_id=99', [
             'proof_id' => 1,
-            'object_key' => 'x',
-            'content_type' => 'application/pdf',
-            'byte_size' => 2048,
-            'checksum' => 'sha256:x',
         ]);
         self::assertSame('authentication_required', $unauthenticatedConfirm['error']['code']);
 
@@ -1550,8 +1850,11 @@ final class BillingRouteIntegrationTest extends TestCase
         ]);
         self::assertSame('authentication_required', $unauthenticatedResubmit['error']['code']);
 
-        $missingPaid = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/999/paid?organization_id=99', [], $token);
-        self::assertSame('withdrawal_transition_rejected', $missingPaid['error']['code']);
+        $missingPaid = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/999/paid', [
+            'proof_id' => 1,
+            'notes' => 'paid',
+        ], $token);
+        self::assertSame('withdrawal_not_found', $missingPaid['error']['code']);
 
         $badPaidId = $this->handleJson($app, 'POST', '/api/v1/billing/withdrawals/abc/paid?organization_id=99', [], $token);
         self::assertSame('invalid_request', $badPaidId['error']['code']);
@@ -1621,12 +1924,21 @@ final class BillingRouteIntegrationTest extends TestCase
         return ['status' => $response->getStatusCode(), 'body' => $decoded];
     }
 
+    /** @param array<string, mixed> $body */
+    private function assertApiEnvelope(array $body, string $requestId): void
+    {
+        self::assertSame(['data', 'error', 'meta', 'request_id'], array_keys($body));
+        self::assertSame(['api_version' => 'v1'], $body['meta']);
+        self::assertSame($requestId, $body['request_id']);
+    }
+
     private function createApp(
         Connection $connection,
         ?Closure $plaintextGenerator = null,
         bool $wireRechargeKeyAudit = true,
         ?array $platformPermissions = null,
         ?ObjectStorageUploadSignerInterface $proofSigner = null,
+        ?ObjectStorageInspectorInterface $proofInspector = null,
     ): \Slim\App
     {
         $appKey = $this->appKey;
@@ -1700,10 +2012,13 @@ final class BillingRouteIntegrationTest extends TestCase
                     'secret_access_key' => 'secret-key',
                     'path_style_endpoint' => true,
                 ]),
+            ObjectStorageInspectorInterface::class => static fn (): ObjectStorageInspectorInterface =>
+                $proofInspector ?? new InMemoryObjectStorageInspector(),
             WithdrawalProofService::class => static fn (
                 WithdrawalRepository $repository,
                 ObjectStorageUploadSignerInterface $signer,
-            ): WithdrawalProofService => new WithdrawalProofService($repository, $signer, static fn (): string => 'route-proof'),
+                ObjectStorageInspectorInterface $inspector,
+            ): WithdrawalProofService => new WithdrawalProofService($repository, $signer, static fn (): string => 'route-proof', $inspector),
         ])->build();
 
         SlimAppFactory::setContainer($container);
@@ -1744,11 +2059,14 @@ final class BillingRouteIntegrationTest extends TestCase
             $withdrawalListRoute->add($platformPermission('billing.withdrawal.read.platform'));
         }
         $withdrawalListRoute->add(AuthenticateRequestMiddleware::class);
+        $app->get('/api/v1/billing/withdrawals/own', [WithdrawalAction::class, 'listOwn'])->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/billing/withdrawals', [WithdrawalAction::class, 'request'])->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/paid', [WithdrawalAction::class, 'markPaid'])->add(AuthenticateRequestMiddleware::class);
+        $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/approve', [WithdrawalAction::class, 'approve'])->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/reject', [WithdrawalAction::class, 'reject'])->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/revoke', [WithdrawalAction::class, 'revoke'])->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/resubmit', [WithdrawalAction::class, 'resubmit'])->add(AuthenticateRequestMiddleware::class);
+        $app->get('/api/v1/billing/withdrawals/{withdrawal_id}/proofs', [WithdrawalAction::class, 'listProofs'])->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/proofs', [WithdrawalAction::class, 'createProofIntent'])->add(AuthenticateRequestMiddleware::class);
         $app->post('/api/v1/billing/withdrawals/{withdrawal_id}/proofs/confirm', [WithdrawalAction::class, 'confirmProof'])->add(AuthenticateRequestMiddleware::class);
         $app->add(new ApiEnvelopeMiddleware($app->getResponseFactory()));
@@ -1869,15 +2187,20 @@ final class BillingRouteIntegrationTest extends TestCase
                 amount_cny TEXT NOT NULL,
                 points_per_cny INTEGER NOT NULL,
                 idempotency_key VARCHAR(160) NOT NULL,
-                status TEXT NOT NULL,
+                review_status TEXT NOT NULL,
+                payment_status TEXT NOT NULL,
                 payout_method TEXT NOT NULL,
                 payout_account_json TEXT NOT NULL,
                 applicant_notes TEXT NULL,
                 reviewer_user_id INTEGER NULL,
                 reviewer_notes TEXT NULL,
+                payment_proof_id INTEGER NULL,
+                payment_completed_by_user_id INTEGER NULL,
+                payment_notes TEXT NULL,
                 ledger_entry_id INTEGER NOT NULL,
                 requested_at TEXT NOT NULL,
                 reviewed_at TEXT NULL,
+                approved_at TEXT NULL,
                 paid_at TEXT NULL,
                 rejected_at TEXT NULL,
                 revoked_at TEXT NULL,
@@ -1886,7 +2209,8 @@ final class BillingRouteIntegrationTest extends TestCase
                 UNIQUE (ledger_entry_id),
                 FOREIGN KEY (ledger_entry_id) REFERENCES ledger_entries (id) ON DELETE RESTRICT,
                 CHECK (points_amount > 0),
-                CHECK (status IN (\'requested\', \'paid\', \'rejected\', \'revoked\'))
+                CHECK (review_status IN (\'pending\', \'approved\', \'rejected\', \'revoked\')),
+                CHECK (payment_status IN (\'not_started\', \'pending\', \'paid\'))
             )',
         );
         $connection->executeStatement(
@@ -1900,8 +2224,10 @@ final class BillingRouteIntegrationTest extends TestCase
                 byte_size INTEGER NOT NULL,
                 checksum TEXT NULL,
                 status TEXT NOT NULL,
+                verification_error_code TEXT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                confirmed_at TEXT NULL
+                verification_attempted_at TEXT NULL,
+                verified_at TEXT NULL
             )',
         );
         $connection->executeStatement(
@@ -1911,8 +2237,11 @@ final class BillingRouteIntegrationTest extends TestCase
                 organization_id INTEGER NOT NULL,
                 actor_user_id INTEGER NULL,
                 action TEXT NOT NULL,
-                from_status TEXT NULL,
-                to_status TEXT NOT NULL,
+                from_review_status TEXT NULL,
+                to_review_status TEXT NOT NULL,
+                from_payment_status TEXT NULL,
+                to_payment_status TEXT NOT NULL,
+                proof_id INTEGER NULL,
                 notes TEXT NULL,
                 metadata_json TEXT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP

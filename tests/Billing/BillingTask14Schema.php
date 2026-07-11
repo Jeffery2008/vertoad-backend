@@ -202,25 +202,46 @@ CREATE TABLE withdrawal_requests (
     amount_cny TEXT NOT NULL,
     points_per_cny INTEGER NOT NULL,
     idempotency_key VARCHAR(160) NOT NULL,
-    status VARCHAR(32) NOT NULL,
+    review_status VARCHAR(32) NOT NULL,
+    payment_status VARCHAR(32) NOT NULL,
     payout_method VARCHAR(64) NOT NULL,
     payout_account_json TEXT NOT NULL,
     applicant_notes TEXT NULL,
     reviewer_user_id INTEGER NULL,
     reviewer_notes TEXT NULL,
+    payment_proof_id INTEGER NULL,
+    payment_completed_by_user_id INTEGER NULL,
+    payment_notes TEXT NULL,
     ledger_entry_id INTEGER NOT NULL,
     requested_at DATETIME NOT NULL,
     reviewed_at DATETIME NULL,
+    approved_at DATETIME NULL,
     paid_at DATETIME NULL,
     rejected_at DATETIME NULL,
     revoked_at DATETIME NULL,
     resubmitted_at DATETIME NULL,
+    UNIQUE (id, organization_id),
     UNIQUE (organization_id, idempotency_key),
     UNIQUE (ledger_entry_id),
     FOREIGN KEY (ledger_entry_id) REFERENCES ledger_entries (id) ON DELETE RESTRICT,
     CHECK (points_amount > 0),
-    CHECK (points_per_cny > 0),
-    CHECK (status IN ('requested', 'paid', 'rejected', 'revoked'))
+    CHECK (points_per_cny = 100),
+    CHECK (CAST(amount_cny AS NUMERIC) = CAST(points_amount AS NUMERIC) / 100.0),
+    CHECK (length(trim(idempotency_key)) BETWEEN 1 AND 160),
+    CHECK (length(payout_method) BETWEEN 1 AND 64),
+    CHECK (length(payout_account_json) <= 8192),
+    CHECK (applicant_notes IS NULL OR length(applicant_notes) <= 2000),
+    CHECK (reviewer_notes IS NULL OR length(reviewer_notes) <= 2000),
+    CHECK (payment_notes IS NULL OR length(payment_notes) <= 2000),
+    CHECK (review_status IN ('pending', 'approved', 'rejected', 'revoked')),
+    CHECK (payment_status IN ('not_started', 'pending', 'paid')),
+    CHECK (
+        (review_status = 'pending' AND payment_status = 'not_started' AND reviewer_user_id IS NULL AND reviewer_notes IS NULL AND reviewed_at IS NULL AND approved_at IS NULL AND rejected_at IS NULL AND revoked_at IS NULL AND payment_proof_id IS NULL AND payment_completed_by_user_id IS NULL AND payment_notes IS NULL AND paid_at IS NULL)
+        OR (review_status = 'rejected' AND payment_status = 'not_started' AND reviewer_user_id IS NOT NULL AND reviewer_notes IS NOT NULL AND length(trim(reviewer_notes)) > 0 AND reviewed_at IS NOT NULL AND rejected_at IS NOT NULL AND approved_at IS NULL AND revoked_at IS NULL AND payment_proof_id IS NULL AND payment_completed_by_user_id IS NULL AND payment_notes IS NULL AND paid_at IS NULL)
+        OR (review_status = 'revoked' AND payment_status = 'not_started' AND reviewer_user_id IS NULL AND reviewer_notes IS NULL AND reviewed_at IS NULL AND approved_at IS NULL AND rejected_at IS NULL AND revoked_at IS NOT NULL AND payment_proof_id IS NULL AND payment_completed_by_user_id IS NULL AND payment_notes IS NULL AND paid_at IS NULL)
+        OR (review_status = 'approved' AND payment_status = 'pending' AND reviewer_user_id IS NOT NULL AND reviewed_at IS NOT NULL AND approved_at IS NOT NULL AND rejected_at IS NULL AND revoked_at IS NULL AND payment_proof_id IS NULL AND payment_completed_by_user_id IS NULL AND payment_notes IS NULL AND paid_at IS NULL)
+        OR (review_status = 'approved' AND payment_status = 'paid' AND reviewer_user_id IS NOT NULL AND reviewed_at IS NOT NULL AND approved_at IS NOT NULL AND rejected_at IS NULL AND revoked_at IS NULL AND payment_proof_id IS NOT NULL AND payment_completed_by_user_id IS NOT NULL AND payment_notes IS NOT NULL AND length(trim(payment_notes)) > 0 AND paid_at IS NOT NULL)
+    )
 )
 SQL
         );
@@ -236,11 +257,21 @@ CREATE TABLE withdrawal_proofs (
     byte_size INTEGER NOT NULL,
     checksum VARCHAR(160) NULL,
     status VARCHAR(32) NOT NULL,
+    verification_error_code VARCHAR(120) NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    confirmed_at DATETIME NULL,
-    FOREIGN KEY (withdrawal_request_id) REFERENCES withdrawal_requests (id) ON DELETE CASCADE,
-    CHECK (byte_size > 0),
-    CHECK (status IN ('pending_upload', 'confirmed'))
+    verification_attempted_at DATETIME NULL,
+    verified_at DATETIME NULL,
+    UNIQUE (id, withdrawal_request_id, organization_id),
+    FOREIGN KEY (withdrawal_request_id, organization_id) REFERENCES withdrawal_requests (id, organization_id) ON DELETE RESTRICT,
+    CHECK (object_key GLOB 'withdrawals/[0-9]*/[0-9]*/*-*'),
+    CHECK (content_type IN ('application/pdf', 'image/jpeg', 'image/png')),
+    CHECK (byte_size BETWEEN 1 AND 10485760),
+    CHECK (status IN ('pending_upload', 'verified', 'rejected')),
+    CHECK (
+        (status = 'pending_upload' AND checksum IS NULL AND verification_error_code IS NULL AND verification_attempted_at IS NULL AND verified_at IS NULL)
+        OR (status = 'rejected' AND checksum IS NULL AND verification_error_code IS NOT NULL AND verification_attempted_at IS NOT NULL AND verified_at IS NULL)
+        OR (status = 'verified' AND length(checksum) = 71 AND checksum GLOB 'sha256:[0-9a-f]*' AND verification_error_code IS NULL AND verification_attempted_at IS NOT NULL AND verified_at IS NOT NULL)
+    )
 )
 SQL
         );
@@ -252,19 +283,80 @@ CREATE TABLE withdrawal_audit_events (
     organization_id INTEGER NOT NULL,
     actor_user_id INTEGER NULL,
     action VARCHAR(64) NOT NULL,
-    from_status VARCHAR(32) NULL,
-    to_status VARCHAR(32) NOT NULL,
+    from_review_status VARCHAR(32) NULL,
+    to_review_status VARCHAR(32) NULL,
+    from_payment_status VARCHAR(32) NULL,
+    to_payment_status VARCHAR(32) NULL,
+    proof_id INTEGER NULL,
     notes TEXT NULL,
     metadata_json TEXT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (withdrawal_request_id) REFERENCES withdrawal_requests (id) ON DELETE CASCADE,
-    CHECK (action IN ('requested', 'paid', 'rejected', 'revoked', 'resubmitted')),
+    FOREIGN KEY (withdrawal_request_id, organization_id) REFERENCES withdrawal_requests (id, organization_id) ON DELETE RESTRICT,
+    FOREIGN KEY (proof_id, withdrawal_request_id, organization_id) REFERENCES withdrawal_proofs (id, withdrawal_request_id, organization_id) ON DELETE RESTRICT,
+    CHECK (action IN ('requested', 'approved', 'paid', 'rejected', 'revoked', 'resubmitted', 'proof_upload_created', 'proof_verified', 'proof_rejected', 'proof_verification_deferred')),
     CHECK (
-        (from_status IS NULL OR from_status IN ('requested', 'paid', 'rejected', 'revoked'))
-        AND to_status IN ('requested', 'paid', 'rejected', 'revoked')
+        (from_review_status IS NULL OR from_review_status IN ('pending', 'approved', 'rejected', 'revoked'))
+        AND (to_review_status IS NULL OR to_review_status IN ('pending', 'approved', 'rejected', 'revoked'))
+        AND (from_payment_status IS NULL OR from_payment_status IN ('not_started', 'pending', 'paid'))
+        AND to_payment_status IN ('not_started', 'pending', 'paid')
+    ),
+    CHECK (
+        (action = 'requested' AND from_review_status IS NULL AND from_payment_status IS NULL AND to_review_status = 'pending' AND to_payment_status = 'not_started' AND proof_id IS NULL)
+        OR (action = 'approved' AND from_review_status = 'pending' AND from_payment_status = 'not_started' AND to_review_status = 'approved' AND to_payment_status = 'pending' AND proof_id IS NULL)
+        OR (action = 'rejected' AND from_review_status = 'pending' AND from_payment_status = 'not_started' AND to_review_status = 'rejected' AND to_payment_status = 'not_started' AND proof_id IS NULL)
+        OR (action = 'revoked' AND from_review_status = 'pending' AND from_payment_status = 'not_started' AND to_review_status = 'revoked' AND to_payment_status = 'not_started' AND proof_id IS NULL)
+        OR (action = 'resubmitted' AND from_review_status IN ('rejected', 'revoked') AND from_payment_status = 'not_started' AND to_review_status = 'pending' AND to_payment_status = 'not_started' AND proof_id IS NULL)
+        OR (action = 'paid' AND from_review_status = 'approved' AND from_payment_status = 'pending' AND to_review_status = 'approved' AND to_payment_status = 'paid' AND proof_id IS NOT NULL)
+        OR (action IN ('proof_upload_created', 'proof_verified', 'proof_rejected', 'proof_verification_deferred') AND from_review_status = 'approved' AND from_payment_status = 'pending' AND to_review_status = 'approved' AND to_payment_status = 'pending' AND proof_id IS NOT NULL)
     )
 )
 SQL
         );
+
+        $connection->executeStatement(<<<'SQL'
+CREATE TRIGGER withdrawal_requests_paid_proof_insert
+BEFORE INSERT ON withdrawal_requests
+WHEN NEW.payment_status = 'paid' AND NOT EXISTS (
+    SELECT 1 FROM withdrawal_proofs
+    WHERE id = NEW.payment_proof_id
+      AND withdrawal_request_id = NEW.id
+      AND organization_id = NEW.organization_id
+      AND status = 'verified'
+      AND checksum LIKE 'sha256:%'
+      AND verified_at IS NOT NULL
+)
+BEGIN
+    SELECT RAISE(ABORT, 'paid withdrawal requires a verified payment proof');
+END
+SQL);
+        $connection->executeStatement(<<<'SQL'
+CREATE TRIGGER withdrawal_requests_paid_proof_update
+BEFORE UPDATE ON withdrawal_requests
+WHEN NEW.payment_status = 'paid' AND NOT EXISTS (
+    SELECT 1 FROM withdrawal_proofs
+    WHERE id = NEW.payment_proof_id
+      AND withdrawal_request_id = NEW.id
+      AND organization_id = NEW.organization_id
+      AND status = 'verified'
+      AND checksum LIKE 'sha256:%'
+      AND verified_at IS NOT NULL
+)
+BEGIN
+    SELECT RAISE(ABORT, 'paid withdrawal requires a verified payment proof');
+END
+SQL);
+        $connection->executeStatement(<<<'SQL'
+CREATE TRIGGER withdrawal_proofs_preserve_paid_verification
+BEFORE UPDATE ON withdrawal_proofs
+WHEN OLD.status = 'verified' AND NEW.status <> 'verified' AND EXISTS (
+    SELECT 1 FROM withdrawal_requests
+    WHERE payment_proof_id = OLD.id
+      AND id = OLD.withdrawal_request_id
+      AND payment_status = 'paid'
+)
+BEGIN
+    SELECT RAISE(ABORT, 'paid withdrawal proof verification is immutable');
+END
+SQL);
     }
 }

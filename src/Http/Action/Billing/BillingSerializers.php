@@ -46,15 +46,20 @@ final class BillingSerializers
             'points_per_cny' => $request->pointsPerCny,
             'currency' => 'CNY',
             'idempotency_key' => $request->idempotencyKey,
-            'status' => $request->status->value,
+            'review_status' => $request->reviewStatus->value,
+            'payment_status' => $request->paymentStatus->value,
             'payout_method' => $request->payoutMethod,
             'payout_account' => $request->payoutAccount,
             'applicant_notes' => $request->applicantNotes,
             'reviewer_user_id' => $request->reviewerUserId,
             'reviewer_notes' => $request->reviewerNotes,
+            'payment_proof_id' => $request->paymentProofId,
+            'payment_completed_by_user_id' => $request->paymentCompletedByUserId,
+            'payment_notes' => $request->paymentNotes,
             'ledger_entry_id' => $request->ledgerEntryId,
             'requested_at' => $request->requestedAt->format('Y-m-d H:i:s'),
             'reviewed_at' => $request->reviewedAt?->format('Y-m-d H:i:s'),
+            'approved_at' => $request->approvedAt?->format('Y-m-d H:i:s'),
             'paid_at' => $request->paidAt?->format('Y-m-d H:i:s'),
             'rejected_at' => $request->rejectedAt?->format('Y-m-d H:i:s'),
             'revoked_at' => $request->revokedAt?->format('Y-m-d H:i:s'),
@@ -85,8 +90,21 @@ final class BillingSerializers
             'content_type' => $proof->contentType,
             'byte_size' => $proof->byteSize,
             'checksum' => $proof->checksum,
-            'status' => $proof->status,
+            'status' => $proof->status->value,
+            'verification_error_code' => $proof->verificationErrorCode,
+            'created_at' => $proof->createdAt->format('Y-m-d H:i:s'),
+            'verification_attempted_at' => $proof->verificationAttemptedAt?->format('Y-m-d H:i:s'),
+            'verified_at' => $proof->verifiedAt?->format('Y-m-d H:i:s'),
         ];
+    }
+
+    /**
+     * @param list<WithdrawalProof> $proofs
+     * @return list<array<string, mixed>>
+     */
+    public static function withdrawalProofs(array $proofs): array
+    {
+        return array_map(self::withdrawalProof(...), $proofs);
     }
 
     /**

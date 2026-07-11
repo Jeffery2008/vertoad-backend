@@ -12,16 +12,29 @@ final class BillingRequestGuards
     /**
      * @return array{payload: array<string, string>, status: int}|null
      */
+    public static function requireAuthenticatedUser(RequestUserContext $context): ?array
+    {
+        if ($context->user !== null) {
+            return null;
+        }
+
+        return [
+            'payload' => [
+                'code' => 'authentication_required',
+                'message' => 'Authentication is required for this endpoint.',
+            ],
+            'status' => 401,
+        ];
+    }
+
+    /**
+     * @return array{payload: array<string, string>, status: int}|null
+     */
     public static function requireAuthenticatedOrganization(RequestUserContext $context, ServerRequestInterface $request): ?array
     {
-        if ($context->user === null) {
-            return [
-                'payload' => [
-                    'code' => 'authentication_required',
-                    'message' => 'Authentication is required for this endpoint.',
-                ],
-                'status' => 401,
-            ];
+        $authenticationError = self::requireAuthenticatedUser($context);
+        if ($authenticationError !== null) {
+            return $authenticationError;
         }
 
         $organizationId = $request->getQueryParams()['organization_id'] ?? null;

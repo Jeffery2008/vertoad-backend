@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace VertoAD;
 
+use VertoAD\Domain\Billing\WithdrawalProofPolicy;
 use DI\ContainerBuilder;
 use Doctrine\DBAL\Connection;
 use Dotenv\Dotenv;
@@ -52,6 +53,7 @@ use VertoAD\Infrastructure\Storage\ObjectStorageUploadSignerInterface;
 use VertoAD\Infrastructure\Storage\PublicUrlObjectStorageInspector;
 use VertoAD\Infrastructure\Storage\S3ArchiveObjectStorage;
 use VertoAD\Infrastructure\Storage\S3BackupObjectStorage;
+use VertoAD\Infrastructure\Storage\S3ObjectStorageInspector;
 use VertoAD\Infrastructure\Storage\UnavailableBackupObjectStorage;
 use VertoAD\Infrastructure\Storage\UnavailableObjectStorageInspector;
 use VertoAD\Install\BootstrapSeeder;
@@ -204,6 +206,7 @@ use VertoAD\Service\Operations\ConfigVersionService;
 use VertoAD\Service\Operations\Backup\BackupExecutor;
 use VertoAD\Service\Operations\Backup\BackupInventory;
 use VertoAD\Service\Operations\Backup\BackupObjectStorageInterface;
+use VertoAD\Service\Operations\Backup\BackupSourceRegistry;
 use VertoAD\Service\Operations\Backup\BackupService;
 use VertoAD\Service\Operations\Backup\MysqlBackupRunnerInterface;
 use VertoAD\Service\Operations\Backup\ProcessMysqlBackupRunner;
@@ -552,6 +555,8 @@ final class AppFactory
                     new DatabaseBackupJobRepository($connection),
                 BackupObjectStorageInterface::class => static fn (): BackupObjectStorageInterface =>
                     self::backupObjectStorage($settings),
+                BackupSourceRegistry::class => static fn (): BackupSourceRegistry =>
+                    self::backupSourceRegistry($settings),
                 MysqlBackupRunnerInterface::class => static fn (): MysqlBackupRunnerInterface =>
                     self::mysqlBackupRunner($settings),
                 BackupInventory::class => static fn (Connection $connection): BackupInventory => new BackupInventory($connection),
@@ -570,12 +575,14 @@ final class AppFactory
                     BackupJobRepositoryInterface $jobs,
                     MysqlBackupRunnerInterface $mysql,
                     BackupObjectStorageInterface $storage,
+                    BackupSourceRegistry $sourceRegistry,
                     BackupInventory $inventory,
                     AuditLogService $audit,
                 ): BackupExecutor => new BackupExecutor(
                     $jobs,
                     $mysql,
                     $storage,
+                    $sourceRegistry,
                     $inventory,
                     $audit,
                     (string) ($settings['backup']['base_object_key'] ?? 'backups'),
@@ -699,14 +706,24 @@ final class AppFactory
                     PointsLedgerService $ledger,
                     PointsLedgerRepositoryInterface $ledgerRepository,
                 ): WithdrawalService => new WithdrawalService($repository, $ledger, $ledgerRepository),
-                WithdrawalProofService::class => static fn (
-                    WithdrawalRepository $repository,
-                    ObjectStorageUploadSignerInterface $signer,
-                ): WithdrawalProofService => new WithdrawalProofService(
-                    $repository,
-                    $signer,
-                    static fn (): string => bin2hex(random_bytes(12)),
-                ),
+                WithdrawalProofService::class => static function (WithdrawalRepository $repository) use ($settings): WithdrawalProofService {
+                    $config = self::withdrawalProofStorageConfig($settings);
+                    if (self::localFallbackAllowed($settings)) {
+                        return new WithdrawalProofService(
+                            $repository,
+                            new DeterministicPresignedUploadSigner($config),
+                            static fn (): string => bin2hex(random_bytes(12)),
+                            new UnavailableObjectStorageInspector(),
+                        );
+                    }
+
+                    return new WithdrawalProofService(
+                        $repository,
+                        new AwsS3PresignedUploadSigner($config),
+                        static fn (): string => bin2hex(random_bytes(12)),
+                        new S3ObjectStorageInspector($config),
+                    );
+                },
                 RechargeKeyPlaintextCipherInterface::class => static fn (): RechargeKeyPlaintextCipherInterface =>
                     new DefuseRechargeKeyPlaintextCipher((string) ($settings['app']['key'] ?? '')),
                 RechargeKeyRepositoryInterface::class => static fn (Connection $connection): RechargeKeyRepositoryInterface =>
@@ -1020,6 +1037,130 @@ final class AppFactory
         throw new \RuntimeException('R2_PUBLIC_BASE_URL is required for uploaded asset inspection.');
     }
 
+    /**
+     * @param array<string, mixed> $settings
+     * @return array<string, mixed>
+     */
+    private static function withdrawalProofStorageConfig(array $settings): array
+    {
+        $proofs = $settings['withdrawal_proofs'] ?? [];
+        $proofs = is_array($proofs) ? $proofs : [];
+        $config = $proofs['s3'] ?? [];
+        $config = is_array($config) ? $config : [];
+        $required = ['endpoint', 'bucket', 'access_key_id', 'secret_access_key'];
+        $configuredCount = count(array_filter(
+            $required,
+            static fn (string $key): bool => trim((string) ($config[$key] ?? '')) !== '',
+        ));
+
+        if ($configuredCount === 0 && self::localFallbackAllowed($settings)) {
+            $primary = $settings['storage']['s3'] ?? [];
+            return is_array($primary) ? $primary : [];
+        }
+        if ($configuredCount !== count($required)) {
+            throw new \RuntimeException('Dedicated WITHDRAWAL_PROOF_S3_* storage credentials are required.');
+        }
+
+        $maxInspectBytes = (int) ($config['max_inspect_bytes'] ?? WithdrawalProofPolicy::DEFAULT_MAX_BYTES);
+        if ($maxInspectBytes !== WithdrawalProofPolicy::DEFAULT_MAX_BYTES) {
+            throw new \RuntimeException('WITHDRAWAL_PROOF_S3_MAX_INSPECT_BYTES must equal the payment proof policy limit.');
+        }
+
+        $serverSideEncryption = trim((string) ($config['server_side_encryption'] ?? ''));
+        if (!in_array($serverSideEncryption, ['AES256', 'aws:kms'], true)) {
+            throw new \RuntimeException('WITHDRAWAL_PROOF_S3_SERVER_SIDE_ENCRYPTION must be AES256 or aws:kms.');
+        }
+
+        if (!self::localFallbackAllowed($settings)) {
+            $endpoint = parse_url((string) $config['endpoint']);
+            if (
+                !is_array($endpoint)
+                || strtolower((string) ($endpoint['scheme'] ?? '')) !== 'https'
+                || trim((string) ($endpoint['host'] ?? '')) === ''
+            ) {
+                throw new \RuntimeException('WITHDRAWAL_PROOF_S3_ENDPOINT must use HTTPS outside local/testing.');
+            }
+            if (
+                isset($endpoint['user'])
+                || isset($endpoint['pass'])
+                || isset($endpoint['query'])
+                || isset($endpoint['fragment'])
+            ) {
+                throw new \RuntimeException('WITHDRAWAL_PROOF_S3_ENDPOINT must not contain credentials, a query, or a fragment.');
+            }
+
+            $primary = $settings['storage']['s3'] ?? [];
+            $primary = is_array($primary) ? $primary : [];
+            if (self::sameS3Location($config, $primary)) {
+                throw new \RuntimeException('Withdrawal proof storage must not reuse the public asset bucket.');
+            }
+
+            $backup = $settings['backup']['s3'] ?? [];
+            $backup = is_array($backup) ? $backup : [];
+            if (self::sameS3Location($config, $backup)) {
+                throw new \RuntimeException('Withdrawal proof storage must not reuse the backup target bucket.');
+            }
+        }
+
+        return $config;
+    }
+
+    /** @param array<string, mixed> $left @param array<string, mixed> $right */
+    private static function sameS3Location(array $left, array $right): bool
+    {
+        $leftEndpoint = self::normalizedS3Endpoint((string) ($left['endpoint'] ?? ''));
+        $rightEndpoint = self::normalizedS3Endpoint((string) ($right['endpoint'] ?? ''));
+        $leftBucket = strtolower(trim((string) ($left['bucket'] ?? '')));
+        $rightBucket = strtolower(trim((string) ($right['bucket'] ?? '')));
+
+        return $leftEndpoint !== ''
+            && $leftBucket !== ''
+            && $leftEndpoint === $rightEndpoint
+            && $leftBucket === $rightBucket;
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function backupSourceRegistry(array $settings): BackupSourceRegistry
+    {
+        $primaryConfig = $settings['storage']['s3'] ?? [];
+        $primaryConfig = is_array($primaryConfig) ? $primaryConfig : [];
+        $primaryStorage = self::backupSourceStorage($primaryConfig, $settings, 'Primary asset/archive');
+        $proofStorage = self::backupSourceStorage(
+            self::withdrawalProofStorageConfig($settings),
+            $settings,
+            'Withdrawal proof',
+        );
+
+        return new BackupSourceRegistry([
+            BackupSourceRegistry::ASSETS => $primaryStorage,
+            BackupSourceRegistry::WITHDRAWAL_PROOFS => $proofStorage,
+            BackupSourceRegistry::ARCHIVE => $primaryStorage,
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $config
+     * @param array<string, mixed> $settings
+     */
+    private static function backupSourceStorage(
+        array $config,
+        array $settings,
+        string $label,
+    ): BackupObjectStorageInterface {
+        $configured = trim((string) ($config['endpoint'] ?? '')) !== ''
+            && trim((string) ($config['bucket'] ?? '')) !== ''
+            && trim((string) ($config['access_key_id'] ?? '')) !== ''
+            && trim((string) ($config['secret_access_key'] ?? '')) !== '';
+        if ($configured) {
+            return new S3BackupObjectStorage($config);
+        }
+        if (self::localFallbackAllowed($settings)) {
+            return new UnavailableBackupObjectStorage();
+        }
+
+        throw new \RuntimeException($label . ' S3 storage is required as a backup source outside local/testing.');
+    }
+
     /** @param array<string, mixed> $settings */
     private static function backupObjectStorage(array $settings): BackupObjectStorageInterface
     {
@@ -1035,16 +1176,24 @@ final class AppFactory
         if ($configured) {
             if (!self::localFallbackAllowed($settings)) {
                 $endpoint = parse_url((string) $config['endpoint']);
-                if (!is_array($endpoint) || strtolower((string) ($endpoint['scheme'] ?? '')) !== 'https') {
+                if (
+                    !is_array($endpoint)
+                    || strtolower((string) ($endpoint['scheme'] ?? '')) !== 'https'
+                    || trim((string) ($endpoint['host'] ?? '')) === ''
+                ) {
                     throw new \RuntimeException('BACKUP_S3_ENDPOINT must use HTTPS outside local/testing.');
+                }
+                if (
+                    isset($endpoint['user'])
+                    || isset($endpoint['pass'])
+                    || isset($endpoint['query'])
+                    || isset($endpoint['fragment'])
+                ) {
+                    throw new \RuntimeException('BACKUP_S3_ENDPOINT must not contain credentials, a query, or a fragment.');
                 }
                 $primary = $settings['storage']['s3'] ?? [];
                 $primary = is_array($primary) ? $primary : [];
-                if (
-                    self::normalizedS3Endpoint((string) ($primary['endpoint'] ?? ''))
-                        === self::normalizedS3Endpoint((string) $config['endpoint'])
-                    && trim((string) ($primary['bucket'] ?? '')) === trim((string) $config['bucket'])
-                ) {
+                if (self::sameS3Location($config, $primary)) {
                     throw new \RuntimeException('Backup storage must use a bucket isolated from primary object storage.');
                 }
             }
@@ -1060,7 +1209,20 @@ final class AppFactory
 
     private static function normalizedS3Endpoint(string $endpoint): string
     {
-        return strtolower(rtrim(trim($endpoint), '/'));
+        $endpoint = rtrim(trim($endpoint), '/');
+        $parts = parse_url($endpoint);
+        if (!is_array($parts) || !isset($parts['scheme'], $parts['host'])) {
+            return strtolower($endpoint);
+        }
+
+        $scheme = strtolower((string) $parts['scheme']);
+        $host = strtolower((string) $parts['host']);
+        $port = isset($parts['port']) ? (int) $parts['port'] : null;
+        $isDefaultPort = ($scheme === 'https' && $port === 443) || ($scheme === 'http' && $port === 80);
+        $portSuffix = $port === null || $isDefaultPort ? '' : ':' . $port;
+        $path = strtolower(rtrim((string) ($parts['path'] ?? ''), '/'));
+
+        return $scheme . '://' . $host . $portSuffix . $path;
     }
 
     /** @param array<string, mixed> $settings */

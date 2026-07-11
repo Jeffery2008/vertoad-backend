@@ -13,6 +13,7 @@ final readonly class AwsS3PresignedUploadSigner implements ObjectStorageUploadSi
 {
     private S3Client $client;
     private string $bucket;
+    private ?string $serverSideEncryption;
     /** @var callable(): DateTimeImmutable */
     private mixed $clock;
 
@@ -27,6 +28,8 @@ final readonly class AwsS3PresignedUploadSigner implements ObjectStorageUploadSi
         $this->bucket = trim((string) ($config['bucket'] ?? ''));
         $accessKeyId = trim((string) ($config['access_key_id'] ?? ''));
         $secretAccessKey = (string) ($config['secret_access_key'] ?? '');
+        $serverSideEncryption = trim((string) ($config['server_side_encryption'] ?? ''));
+        $this->serverSideEncryption = $serverSideEncryption === '' ? null : $serverSideEncryption;
 
         if ($endpoint === '') {
             throw new InvalidArgumentException('S3 endpoint is required.');
@@ -38,6 +41,9 @@ final readonly class AwsS3PresignedUploadSigner implements ObjectStorageUploadSi
 
         if ($accessKeyId === '' || $secretAccessKey === '') {
             throw new InvalidArgumentException('S3 access key and secret are required.');
+        }
+        if ($this->serverSideEncryption !== null && !in_array($this->serverSideEncryption, ['AES256', 'aws:kms'], true)) {
+            throw new InvalidArgumentException('S3 server-side encryption must be AES256 or aws:kms.');
         }
 
         $this->client = new S3Client([
@@ -58,25 +64,34 @@ final readonly class AwsS3PresignedUploadSigner implements ObjectStorageUploadSi
             throw new InvalidArgumentException('S3 presigned upload expiry must be in the future.');
         }
 
-        $command = $this->client->getCommand('PutObject', [
+        $parameters = [
             'Bucket' => $this->bucket,
             'Key' => $request->objectKey,
             'ContentType' => $request->contentType,
             'Metadata' => [
                 'vertoad-byte-size' => (string) $request->byteSize,
             ],
-        ]);
+        ];
+        if ($this->serverSideEncryption !== null) {
+            $parameters['ServerSideEncryption'] = $this->serverSideEncryption;
+        }
+        $command = $this->client->getCommand('PutObject', $parameters);
         $presigned = $this->client->createPresignedRequest($command, '+' . $ttlSeconds . ' seconds');
+
+        $headers = [
+            'Content-Type' => $request->contentType,
+            'x-amz-meta-vertoad-byte-size' => (string) $request->byteSize,
+        ];
+        if ($this->serverSideEncryption !== null) {
+            $headers['x-amz-server-side-encryption'] = $this->serverSideEncryption;
+        }
 
         return new PresignedUpload(
             url: (string) $presigned->getUri(),
             method: 'PUT',
             objectKey: $request->objectKey,
             statusCode: 200,
-            headers: [
-                'Content-Type' => $request->contentType,
-                'x-amz-meta-vertoad-byte-size' => (string) $request->byteSize,
-            ],
+            headers: $headers,
         );
     }
 }

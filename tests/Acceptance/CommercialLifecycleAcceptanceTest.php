@@ -15,7 +15,9 @@ use Psr\Http\Message\ResponseInterface;
 use Slim\App;
 use Slim\Factory\AppFactory as SlimAppFactory;
 use Slim\Psr7\Factory\ServerRequestFactory;
-use VertoAD\Domain\Billing\WithdrawalStatus;
+use VertoAD\Domain\Billing\WithdrawalPaymentStatus;
+use VertoAD\Domain\Billing\WithdrawalProofStatus;
+use VertoAD\Domain\Billing\WithdrawalReviewStatus;
 use VertoAD\Domain\Serving\ServingRequestContext;
 use VertoAD\Http\Action\Serving\ClickAction;
 use VertoAD\Http\Action\Serving\ServeAction;
@@ -473,51 +475,74 @@ final class CommercialLifecycleAcceptanceTest extends TestCase
         );
         self::assertSame($withdrawal->id, $withdrawalReplay->id);
         self::assertSame('0.90', $withdrawal->amountCny);
-        self::assertCount(1, $withdrawals->listQueue(WithdrawalStatus::Requested, self::PUBLISHER_ORGANIZATION_ID, 10));
-
-        $paid = $withdrawals->markPaid(
+        self::assertCount(1, $withdrawals->listQueue(
+            WithdrawalReviewStatus::Pending,
+            WithdrawalPaymentStatus::NotStarted,
+            self::PUBLISHER_ORGANIZATION_ID,
+            10,
+        ));
+        $approved = $withdrawals->approve(
             (int) $withdrawal->id,
             self::ADMIN_USER_ID,
-            'Reviewed and paid manually.',
+            'Reviewed for manual payout.',
             $conversionOccurredAt->modify('+3 minutes'),
         );
-        $paidReplay = $withdrawals->markPaid(
-            (int) $withdrawal->id,
-            self::ADMIN_USER_ID,
-            'Reviewed and paid manually.',
-            $conversionOccurredAt->modify('+4 minutes'),
-        );
-        self::assertSame('paid', $paid->status->value);
-        self::assertSame('paid', $paidReplay->status->value);
-        self::assertSame(6, $ledgerRepository->balanceForOrganization(self::PUBLISHER_ORGANIZATION_ID, 'publisher_earnings'));
-        self::assertSame(1, (int) $connection->fetchOne("SELECT COUNT(*) FROM withdrawal_audit_events WHERE action = 'paid'"));
+        self::assertSame(WithdrawalReviewStatus::Approved, $approved->reviewStatus);
+        self::assertSame(WithdrawalPaymentStatus::Pending, $approved->paymentStatus);
 
+        $proofInspector = new InMemoryObjectStorageInspector();
         $proofs = new WithdrawalProofService(
             $withdrawalRepository,
             $this->signer('withdrawal-proofs'),
             static fn (): string => 'commercial-proof',
+            $proofInspector,
         );
         $proofIntent = $proofs->createUploadIntent(
             (int) $withdrawal->id,
-            self::PUBLISHER_ORGANIZATION_ID,
             self::ADMIN_USER_ID,
             'payout.pdf',
             'application/pdf',
             4_096,
-            $conversionOccurredAt->modify('+5 minutes'),
+            $conversionOccurredAt->modify('+4 minutes'),
         );
-        $proof = $proofs->confirmUploadedProof(
-            (int) $proofIntent->proof->id,
-            (int) $withdrawal->id,
-            self::PUBLISHER_ORGANIZATION_ID,
-            self::ADMIN_USER_ID,
+        $proofBody = "%PDF-1.7\ncommercial payment receipt";
+        $proofChecksum = 'sha256:' . hash('sha256', $proofBody);
+        $proofInspector->put(new StoredObjectInspection(
             $proofIntent->proof->objectKey,
             'application/pdf',
             4_096,
-            'sha256:commercial-proof',
+            1,
+            1,
+            null,
+            $proofChecksum,
+            $proofBody,
+        ));
+        $proof = $proofs->confirmUploadedProof(
+            (int) $proofIntent->proof->id,
+            (int) $withdrawal->id,
+            self::ADMIN_USER_ID,
+            $conversionOccurredAt->modify('+5 minutes'),
+        );
+        self::assertSame(WithdrawalProofStatus::Verified, $proof->status);
+
+        $paid = $withdrawals->markPaid(
+            (int) $withdrawal->id,
+            self::ADMIN_USER_ID,
+            (int) $proof->id,
+            'Reviewed and paid manually.',
             $conversionOccurredAt->modify('+6 minutes'),
         );
-        self::assertSame('confirmed', $proof->status);
+        $paidReplay = $withdrawals->markPaid(
+            (int) $withdrawal->id,
+            self::ADMIN_USER_ID,
+            (int) $proof->id,
+            'Reviewed and paid manually.',
+            $conversionOccurredAt->modify('+7 minutes'),
+        );
+        self::assertSame(WithdrawalPaymentStatus::Paid, $paid->paymentStatus);
+        self::assertSame(WithdrawalPaymentStatus::Paid, $paidReplay->paymentStatus);
+        self::assertSame(6, $ledgerRepository->balanceForOrganization(self::PUBLISHER_ORGANIZATION_ID, 'publisher_earnings'));
+        self::assertSame(1, (int) $connection->fetchOne("SELECT COUNT(*) FROM withdrawal_audit_events WHERE action = 'paid'"));
     }
 
     private function createConnection(): Connection

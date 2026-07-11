@@ -144,11 +144,18 @@ final class AppContainerTest extends TestCase
     public function testBackupFactoriesEnforceProductionConfigurationAndLocalFallbacks(): void
     {
         $storageFactory = new \ReflectionMethod(AppFactory::class, 'backupObjectStorage');
+        $sourceStorageFactory = new \ReflectionMethod(AppFactory::class, 'backupSourceStorage');
+        $endpointNormalizer = new \ReflectionMethod(AppFactory::class, 'normalizedS3Endpoint');
         $mysqlFactory = new \ReflectionMethod(AppFactory::class, 'mysqlBackupRunner');
         $summaryFactory = new \ReflectionMethod(AppFactory::class, 'backupSummaryRepository');
 
         $local = ['app' => ['env' => 'local'], 'storage' => ['s3' => []], 'backup' => 'invalid'];
         self::assertInstanceOf(UnavailableBackupObjectStorage::class, $storageFactory->invoke(null, $local));
+        self::assertInstanceOf(
+            UnavailableBackupObjectStorage::class,
+            $sourceStorageFactory->invoke(null, [], $local, 'Primary asset/archive'),
+        );
+        self::assertSame('not a valid endpoint', $endpointNormalizer->invoke(null, 'NOT A VALID ENDPOINT'));
         self::assertInstanceOf(UnavailableMysqlBackupRunner::class, $mysqlFactory->invoke(null, [
             'app' => ['env' => 'testing'],
             'database' => ['driver' => 'pdo_sqlite'],
@@ -183,6 +190,17 @@ final class AppContainerTest extends TestCase
             ]],
         ];
         self::assertInstanceOf(S3BackupObjectStorage::class, $storageFactory->invoke(null, $productionBackup));
+        try {
+            $sourceStorageFactory->invoke(
+                null,
+                [],
+                ['app' => ['env' => 'production']],
+                'Primary asset/archive',
+            );
+            self::fail('Production backup sources must have complete S3 credentials.');
+        } catch (\RuntimeException $exception) {
+            self::assertStringContainsString('S3 storage is required as a backup source', $exception->getMessage());
+        }
         self::assertInstanceOf(ProcessMysqlBackupRunner::class, $mysqlFactory->invoke(null, [
             'app' => ['env' => 'testing'],
             'database' => [
@@ -200,8 +218,20 @@ final class AppContainerTest extends TestCase
                 'backup' => ['s3' => ['endpoint' => 'http://backup.example.test']],
             ]), 'must use HTTPS'],
             [$storageFactory, array_replace_recursive($productionBackup, [
+                'backup' => ['s3' => ['endpoint' => 'https://operator:secret@backup.example.test']],
+            ]), 'must not contain credentials'],
+            [$storageFactory, array_replace_recursive($productionBackup, [
+                'backup' => ['s3' => ['endpoint' => 'https://backup.example.test?private=true']],
+            ]), 'must not contain credentials'],
+            [$storageFactory, array_replace_recursive($productionBackup, [
                 'backup' => ['s3' => [
                     'endpoint' => 'https://primary.example.test/',
+                    'bucket' => 'primary-bucket',
+                ]],
+            ]), 'bucket isolated'],
+            [$storageFactory, array_replace_recursive($productionBackup, [
+                'backup' => ['s3' => [
+                    'endpoint' => 'https://primary.example.test:443/',
                     'bucket' => 'primary-bucket',
                 ]],
             ]), 'bucket isolated'],

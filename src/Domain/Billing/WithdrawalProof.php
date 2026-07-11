@@ -17,9 +17,11 @@ final readonly class WithdrawalProof
         public string $contentType,
         public int $byteSize,
         public ?string $checksum,
-        public string $status,
+        public WithdrawalProofStatus $status,
+        public ?string $verificationErrorCode,
         public DateTimeImmutable $createdAt,
-        public ?DateTimeImmutable $confirmedAt,
+        public ?DateTimeImmutable $verificationAttemptedAt,
+        public ?DateTimeImmutable $verifiedAt,
     ) {
     }
 }

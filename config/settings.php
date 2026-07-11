@@ -97,6 +97,21 @@ return [
             'public_base_url' => getenv('R2_PUBLIC_BASE_URL') ?: '',
         ],
     ],
+    'withdrawal_proofs' => [
+        's3' => [
+            'endpoint' => getenv('WITHDRAWAL_PROOF_S3_ENDPOINT') ?: '',
+            'region' => getenv('WITHDRAWAL_PROOF_S3_REGION') ?: 'auto',
+            'bucket' => getenv('WITHDRAWAL_PROOF_S3_BUCKET') ?: '',
+            'access_key_id' => getenv('WITHDRAWAL_PROOF_S3_ACCESS_KEY_ID') ?: '',
+            'secret_access_key' => getenv('WITHDRAWAL_PROOF_S3_SECRET_ACCESS_KEY') ?: '',
+            'path_style_endpoint' => filter_var(
+                getenv('WITHDRAWAL_PROOF_S3_PATH_STYLE_ENDPOINT') ?: true,
+                FILTER_VALIDATE_BOOL
+            ),
+            'server_side_encryption' => getenv('WITHDRAWAL_PROOF_S3_SERVER_SIDE_ENCRYPTION') ?: 'AES256',
+            'max_inspect_bytes' => (int) (getenv('WITHDRAWAL_PROOF_S3_MAX_INSPECT_BYTES') ?: 10_485_760),
+        ],
+    ],
     'archive' => [
         'raw_events_base_object_key' => getenv('ARCHIVE_RAW_EVENTS_BASE_OBJECT_KEY') ?: 's3://vertoad-archive/raw-events',
         'query_results_base_object_key' => getenv('ARCHIVE_QUERY_RESULTS_BASE_OBJECT_KEY') ?: 's3://vertoad-archive/query-results',

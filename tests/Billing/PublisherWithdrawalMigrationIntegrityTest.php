@@ -15,6 +15,7 @@ final class PublisherWithdrawalMigrationIntegrityTest extends TestCase
         $path = dirname(__DIR__, 2) . '/db/migrations/20260608100000_create_publisher_withdrawal_tables.php';
         self::assertFileExists($path);
         self::assertFileDoesNotExist(dirname(__DIR__, 2) . '/db/migrations/20260612100000_harden_publisher_withdrawal_integrity.php');
+        self::assertFileDoesNotExist(dirname(__DIR__, 2) . '/db/migrations/20260710030000_productionize_withdrawal_payments.php');
 
         $sql = preg_replace('/\s+/', ' ', strtolower((string) file_get_contents($path))) ?? '';
         foreach ([
@@ -34,15 +35,29 @@ final class PublisherWithdrawalMigrationIntegrityTest extends TestCase
             'amount_cny decimal(18,2) not null',
             'points_per_cny int unsigned not null',
             'constraint fk_withdrawal_requests_ledger foreign key (ledger_entry_id) references ledger_entries (id) on delete restrict',
-            "constraint chk_withdrawal_requests_status check (status in ('requested', 'paid', 'rejected', 'revoked'))",
             'constraint chk_withdrawal_requests_points_positive check (points_amount > 0)',
-            'constraint chk_withdrawal_requests_points_per_cny_positive check (points_per_cny > 0)',
-            'constraint chk_withdrawal_requests_amount_cny_non_negative check (amount_cny >= 0)',
-            'constraint fk_withdrawal_proofs_request foreign key (withdrawal_request_id) references withdrawal_requests (id) on delete cascade',
-            "constraint chk_withdrawal_proofs_status check (status in ('pending_upload', 'confirmed'))",
-            'constraint chk_withdrawal_proofs_byte_size_positive check (byte_size > 0)',
-            'constraint fk_withdrawal_audit_events_request foreign key (withdrawal_request_id) references withdrawal_requests (id) on delete cascade',
-            "constraint chk_withdrawal_audit_events_statuses check ( (from_status is null or from_status in ('requested', 'paid', 'rejected', 'revoked')) and to_status in ('requested', 'paid', 'rejected', 'revoked') )",
+            "constraint chk_withdrawal_requests_review_status check (review_status in ('pending', 'approved', 'rejected', 'revoked'))",
+            "constraint chk_withdrawal_requests_payment_status check (payment_status in ('not_started', 'pending', 'paid'))",
+            'constraint chk_withdrawal_requests_conversion check (points_per_cny = 100 and amount_cny = points_amount / 100)',
+            'constraint chk_withdrawal_requests_state_roles check',
+            'constraint fk_withdrawal_requests_payment_proof foreign key (payment_proof_id, id) references withdrawal_proofs (id, withdrawal_request_id) on delete restrict',
+            'constraint fk_withdrawal_proofs_request_organization foreign key (withdrawal_request_id, organization_id) references withdrawal_requests (id, organization_id) on delete restrict',
+            "constraint chk_withdrawal_proofs_status check (status in ('pending_upload', 'verified', 'rejected'))",
+            "constraint chk_withdrawal_proofs_content_type check (content_type in ('application/pdf', 'image/jpeg', 'image/png'))",
+            'constraint chk_withdrawal_proofs_byte_size check (byte_size between 1 and 10485760)',
+            "checksum regexp '^sha256:[0-9a-f]{64}$'",
+            'constraint fk_withdrawal_audit_events_request_organization foreign key (withdrawal_request_id, organization_id) references withdrawal_requests (id, organization_id) on delete restrict',
+            'constraint fk_withdrawal_audit_events_proof_request_organization foreign key (proof_id, withdrawal_request_id, organization_id) references withdrawal_proofs (id, withdrawal_request_id, organization_id) on delete restrict',
+            'constraint chk_withdrawal_audit_events_transition check',
+            'create trigger trg_withdrawal_proofs_ready_insert',
+            "withdrawal proof requires an approved pending payment",
+            'create trigger trg_withdrawal_requests_paid_proof_update',
+            'create trigger trg_withdrawal_proofs_preserve_paid_verification',
+            'not (new.object_key <=> old.object_key)',
+            'not (new.checksum <=> old.checksum)',
+            'withdrawal proof upload identity is immutable',
+            'withdrawal proof verification requires an approved pending payment',
+            'paid withdrawal proof verification is immutable',
         ] as $fragment) {
             self::assertStringContainsString($fragment, $sql);
         }
@@ -86,7 +101,7 @@ final class PublisherWithdrawalMigrationIntegrityTest extends TestCase
         ]));
     }
 
-    public function testWithdrawalRequestsConstrainAmountStatusAndLedgerReference(): void
+    public function testWithdrawalRequestsConstrainAmountStateAndLedgerReference(): void
     {
         $connection = $this->createBillingConnection();
 
@@ -99,7 +114,19 @@ final class PublisherWithdrawalMigrationIntegrityTest extends TestCase
         ]));
 
         $this->assertDatabaseRejects(fn () => $this->insertWithdrawalRequest($connection, [
-            'status' => 'processing',
+            'review_status' => 'processing',
+        ]));
+
+        $this->assertDatabaseRejects(fn () => $this->insertWithdrawalRequest($connection, [
+            'payment_status' => 'paid',
+            'review_status' => 'approved',
+            'reviewer_user_id' => 7,
+            'reviewed_at' => '2026-06-08 12:05:00',
+            'approved_at' => '2026-06-08 12:05:00',
+            'payment_proof_id' => 999,
+            'payment_completed_by_user_id' => 7,
+            'payment_notes' => 'paid',
+            'paid_at' => '2026-06-08 12:10:00',
         ]));
 
         $this->assertDatabaseRejects(fn () => $this->insertWithdrawalRequest($connection, [
@@ -130,8 +157,10 @@ final class PublisherWithdrawalMigrationIntegrityTest extends TestCase
             'organization_id' => 42,
             'actor_user_id' => 7,
             'action' => 'requested',
-            'from_status' => null,
-            'to_status' => 'requested',
+            'from_review_status' => null,
+            'to_review_status' => 'pending',
+            'from_payment_status' => null,
+            'to_payment_status' => 'not_started',
         ]));
     }
 
@@ -181,15 +210,20 @@ final class PublisherWithdrawalMigrationIntegrityTest extends TestCase
             'amount_cny' => '1.00',
             'points_per_cny' => 100,
             'idempotency_key' => 'withdrawal:migration:' . ($overrides['id'] ?? bin2hex(random_bytes(4))),
-            'status' => 'requested',
+            'review_status' => 'pending',
+            'payment_status' => 'not_started',
             'payout_method' => 'bank_transfer',
             'payout_account_json' => '{"account_no":"x"}',
             'applicant_notes' => null,
             'reviewer_user_id' => null,
             'reviewer_notes' => null,
+            'payment_proof_id' => null,
+            'payment_completed_by_user_id' => null,
+            'payment_notes' => null,
             'ledger_entry_id' => 1,
             'requested_at' => '2026-06-08 12:00:00',
             'reviewed_at' => null,
+            'approved_at' => null,
             'paid_at' => null,
             'rejected_at' => null,
             'revoked_at' => null,

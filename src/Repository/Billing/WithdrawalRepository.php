@@ -7,9 +7,11 @@ namespace VertoAD\Repository\Billing;
 use DateTimeImmutable;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\Platforms\SQLitePlatform;
+use VertoAD\Domain\Billing\WithdrawalPaymentStatus;
 use VertoAD\Domain\Billing\WithdrawalProof;
+use VertoAD\Domain\Billing\WithdrawalProofStatus;
 use VertoAD\Domain\Billing\WithdrawalRequest;
-use VertoAD\Domain\Billing\WithdrawalStatus;
+use VertoAD\Domain\Billing\WithdrawalReviewStatus;
 
 final class WithdrawalRepository
 {
@@ -62,17 +64,16 @@ final class WithdrawalRepository
             'amount_cny' => $amountCny,
             'points_per_cny' => $pointsPerCny,
             'idempotency_key' => $idempotencyKey,
-            'status' => WithdrawalStatus::Requested->value,
+            'review_status' => WithdrawalReviewStatus::Pending->value,
+            'payment_status' => WithdrawalPaymentStatus::NotStarted->value,
             'payout_method' => $payoutMethod,
             'payout_account_json' => json_encode($payoutAccount, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
             'applicant_notes' => $notes,
             'ledger_entry_id' => $ledgerEntryId,
-            'requested_at' => $now->format('Y-m-d H:i:s'),
+            'requested_at' => $this->date($now),
         ]);
 
-        $request = $this->findRequest((int) $this->connection->lastInsertId());
-        assert($request instanceof WithdrawalRequest);
-        return $request;
+        return $this->requireRequest((int) $this->connection->lastInsertId());
     }
 
     public function findRequestByIdempotencyKey(int $organizationId, string $idempotencyKey): ?WithdrawalRequest
@@ -110,26 +111,48 @@ final class WithdrawalRepository
         return $row === false ? null : $this->hydrateRequest($row);
     }
 
+    public function findRequestForUpdate(int $id): ?WithdrawalRequest
+    {
+        if ($id <= 0) {
+            return null;
+        }
+
+        $sql = 'SELECT * FROM withdrawal_requests WHERE id = ?';
+        if (!$this->connection->getDatabasePlatform() instanceof SQLitePlatform) {
+            $sql .= ' FOR UPDATE';
+        }
+
+        $row = $this->connection->fetchAssociative($sql, [$id]);
+
+        return $row === false ? null : $this->hydrateRequest($row);
+    }
+
     /**
      * @return list<WithdrawalRequest>
      */
     public function listRequests(
-        ?WithdrawalStatus $status,
+        ?WithdrawalReviewStatus $reviewStatus,
+        ?WithdrawalPaymentStatus $paymentStatus,
         ?int $organizationId,
         int $limit,
     ): array {
-        $limit = max(1, min(200, $limit));
         $query = $this->connection->createQueryBuilder()
             ->select('*')
             ->from('withdrawal_requests')
             ->orderBy('requested_at', 'DESC')
             ->addOrderBy('id', 'DESC')
-            ->setMaxResults($limit);
+            ->setMaxResults(max(1, min(200, $limit)));
 
-        if ($status !== null) {
+        if ($reviewStatus !== null) {
             $query
-                ->where('status = :status')
-                ->setParameter('status', $status->value);
+                ->andWhere('review_status = :review_status')
+                ->setParameter('review_status', $reviewStatus->value);
+        }
+
+        if ($paymentStatus !== null) {
+            $query
+                ->andWhere('payment_status = :payment_status')
+                ->setParameter('payment_status', $paymentStatus->value);
         }
 
         if ($organizationId !== null && $organizationId > 0) {
@@ -138,37 +161,150 @@ final class WithdrawalRepository
                 ->setParameter('organization_id', $organizationId);
         }
 
-        $rows = $query->fetchAllAssociative();
+        return array_map(
+            fn (array $row): WithdrawalRequest => $this->hydrateRequest($row),
+            $query->fetchAllAssociative(),
+        );
+    }
 
-        return array_map(fn (array $row): WithdrawalRequest => $this->hydrateRequest($row), $rows);
+    public function approveIfPending(
+        int $id,
+        int $reviewerUserId,
+        ?string $reviewerNotes,
+        DateTimeImmutable $now,
+    ): ?WithdrawalRequest {
+        $affected = $this->connection->update('withdrawal_requests', [
+            'review_status' => WithdrawalReviewStatus::Approved->value,
+            'payment_status' => WithdrawalPaymentStatus::Pending->value,
+            'reviewer_user_id' => $reviewerUserId,
+            'reviewer_notes' => $reviewerNotes,
+            'reviewed_at' => $this->date($now),
+            'approved_at' => $this->date($now),
+        ], [
+            'id' => $id,
+            'review_status' => WithdrawalReviewStatus::Pending->value,
+            'payment_status' => WithdrawalPaymentStatus::NotStarted->value,
+        ]);
+
+        return $affected < 1 ? null : $this->requireRequest($id);
+    }
+
+    public function rejectIfPending(
+        int $id,
+        int $reviewerUserId,
+        ?string $reviewerNotes,
+        DateTimeImmutable $now,
+    ): ?WithdrawalRequest {
+        $affected = $this->connection->update('withdrawal_requests', [
+            'review_status' => WithdrawalReviewStatus::Rejected->value,
+            'reviewer_user_id' => $reviewerUserId,
+            'reviewer_notes' => $reviewerNotes,
+            'reviewed_at' => $this->date($now),
+            'rejected_at' => $this->date($now),
+        ], [
+            'id' => $id,
+            'review_status' => WithdrawalReviewStatus::Pending->value,
+            'payment_status' => WithdrawalPaymentStatus::NotStarted->value,
+        ]);
+
+        return $affected < 1 ? null : $this->requireRequest($id);
+    }
+
+    public function revokeIfPending(int $id, DateTimeImmutable $now): ?WithdrawalRequest
+    {
+        $affected = $this->connection->update('withdrawal_requests', [
+            'review_status' => WithdrawalReviewStatus::Revoked->value,
+            'revoked_at' => $this->date($now),
+        ], [
+            'id' => $id,
+            'review_status' => WithdrawalReviewStatus::Pending->value,
+            'payment_status' => WithdrawalPaymentStatus::NotStarted->value,
+        ]);
+
+        return $affected < 1 ? null : $this->requireRequest($id);
     }
 
     /**
-     * @param array<string, mixed>|null $payoutAccount
+     * @param array<string, mixed> $payoutAccount
      */
-    public function updateRequestStateIfCurrent(
+    public function resubmitIfTerminal(
         int $id,
-        WithdrawalStatus $expectedStatus,
-        WithdrawalStatus $status,
-        ?int $reviewerUserId,
-        ?string $reviewerNotes,
-        ?array $payoutAccount,
-        ?int $ledgerEntryId,
+        WithdrawalReviewStatus $expectedReviewStatus,
+        array $payoutAccount,
+        ?string $applicantNotes,
+        int $ledgerEntryId,
         DateTimeImmutable $now,
     ): ?WithdrawalRequest {
-        $affected = $this->connection->update(
-            'withdrawal_requests',
-            $this->stateFields($status, $reviewerUserId, $reviewerNotes, $payoutAccount, $ledgerEntryId, $now),
-            ['id' => $id, 'status' => $expectedStatus->value],
+        $affected = $this->connection->update('withdrawal_requests', [
+            'review_status' => WithdrawalReviewStatus::Pending->value,
+            'payment_status' => WithdrawalPaymentStatus::NotStarted->value,
+            'payout_account_json' => json_encode($payoutAccount, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            'applicant_notes' => $applicantNotes,
+            'reviewer_user_id' => null,
+            'reviewer_notes' => null,
+            'payment_proof_id' => null,
+            'payment_completed_by_user_id' => null,
+            'payment_notes' => null,
+            'ledger_entry_id' => $ledgerEntryId,
+            'reviewed_at' => null,
+            'approved_at' => null,
+            'paid_at' => null,
+            'rejected_at' => null,
+            'revoked_at' => null,
+            'resubmitted_at' => $this->date($now),
+        ], [
+            'id' => $id,
+            'review_status' => $expectedReviewStatus->value,
+            'payment_status' => WithdrawalPaymentStatus::NotStarted->value,
+        ]);
+
+        return $affected < 1 ? null : $this->requireRequest($id);
+    }
+
+    public function markPaidIfReady(
+        int $id,
+        int $proofId,
+        int $completedByUserId,
+        ?string $paymentNotes,
+        DateTimeImmutable $now,
+    ): ?WithdrawalRequest {
+        $affected = $this->connection->executeStatement(
+            <<<'SQL'
+UPDATE withdrawal_requests
+SET payment_status = ?,
+    payment_proof_id = ?,
+    payment_completed_by_user_id = ?,
+    payment_notes = ?,
+    paid_at = ?
+WHERE id = ?
+  AND review_status = ?
+  AND payment_status = ?
+  AND EXISTS (
+      SELECT 1
+      FROM withdrawal_proofs
+      WHERE withdrawal_proofs.id = ?
+        AND withdrawal_proofs.withdrawal_request_id = withdrawal_requests.id
+        AND withdrawal_proofs.organization_id = withdrawal_requests.organization_id
+        AND withdrawal_proofs.status = ?
+        AND withdrawal_proofs.checksum IS NOT NULL
+        AND withdrawal_proofs.verified_at IS NOT NULL
+  )
+SQL,
+            [
+                WithdrawalPaymentStatus::Paid->value,
+                $proofId,
+                $completedByUserId,
+                $paymentNotes,
+                $this->date($now),
+                $id,
+                WithdrawalReviewStatus::Approved->value,
+                WithdrawalPaymentStatus::Pending->value,
+                $proofId,
+                WithdrawalProofStatus::Verified->value,
+            ],
         );
 
-        if ($affected < 1) {
-            return null;
-        }
-
-        $request = $this->findRequest($id);
-        assert($request instanceof WithdrawalRequest);
-        return $request;
+        return $affected < 1 ? null : $this->requireRequest($id);
     }
 
     /**
@@ -179,8 +315,11 @@ final class WithdrawalRepository
         int $organizationId,
         ?int $actorUserId,
         string $action,
-        ?WithdrawalStatus $fromStatus,
-        WithdrawalStatus $toStatus,
+        ?WithdrawalReviewStatus $fromReviewStatus,
+        WithdrawalReviewStatus $toReviewStatus,
+        ?WithdrawalPaymentStatus $fromPaymentStatus,
+        WithdrawalPaymentStatus $toPaymentStatus,
+        ?int $proofId,
         ?string $notes,
         ?array $metadata,
         DateTimeImmutable $now,
@@ -190,11 +329,14 @@ final class WithdrawalRepository
             'organization_id' => $organizationId,
             'actor_user_id' => $actorUserId,
             'action' => $action,
-            'from_status' => $fromStatus?->value,
-            'to_status' => $toStatus->value,
+            'from_review_status' => $fromReviewStatus?->value,
+            'to_review_status' => $toReviewStatus->value,
+            'from_payment_status' => $fromPaymentStatus?->value,
+            'to_payment_status' => $toPaymentStatus->value,
+            'proof_id' => $proofId,
             'notes' => $notes,
             'metadata_json' => $metadata === null ? null : json_encode($metadata, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
-            'created_at' => $now->format('Y-m-d H:i:s'),
+            'created_at' => $this->date($now),
         ]);
     }
 
@@ -215,14 +357,14 @@ final class WithdrawalRepository
             'content_type' => $contentType,
             'byte_size' => $byteSize,
             'checksum' => null,
-            'status' => 'pending_upload',
-            'created_at' => $now->format('Y-m-d H:i:s'),
-            'confirmed_at' => null,
+            'status' => WithdrawalProofStatus::PendingUpload->value,
+            'verification_error_code' => null,
+            'created_at' => $this->date($now),
+            'verification_attempted_at' => null,
+            'verified_at' => null,
         ]);
 
-        $proof = $this->findProof((int) $this->connection->lastInsertId());
-        assert($proof instanceof WithdrawalProof);
-        return $proof;
+        return $this->requireProof((int) $this->connection->lastInsertId());
     }
 
     public function findProof(int $id): ?WithdrawalProof
@@ -241,45 +383,99 @@ final class WithdrawalRepository
         return $row === false ? null : $this->hydrateProof($row);
     }
 
-    public function confirmProof(
+    public function findProofForRequest(
         int $proofId,
         int $withdrawalRequestId,
-        int $organizationId,
-        int $uploadedByUserId,
-        string $objectKey,
-        string $contentType,
-        int $byteSize,
-        string $checksum,
-        DateTimeImmutable $now,
-    ): WithdrawalProof {
-        $affected = $this->connection->update('withdrawal_proofs', [
-            'object_key' => $objectKey,
-            'content_type' => $contentType,
-            'byte_size' => $byteSize,
-            'checksum' => $checksum,
-            'status' => 'confirmed',
-            'confirmed_at' => $now->format('Y-m-d H:i:s'),
-        ], [
-            'id' => $proofId,
-            'withdrawal_request_id' => $withdrawalRequestId,
-            'organization_id' => $organizationId,
-            'uploaded_by_user_id' => $uploadedByUserId,
-        ]);
-        if ($affected < 1) {
-            throw new \RuntimeException('withdrawal_proof_not_found');
+    ): ?WithdrawalProof {
+        if ($proofId <= 0 || $withdrawalRequestId <= 0) {
+            return null;
         }
 
-        $proof = $this->findProof($proofId);
-        assert($proof instanceof WithdrawalProof);
-        return $proof;
+        $row = $this->connection->createQueryBuilder()
+            ->select('*')
+            ->from('withdrawal_proofs')
+            ->where('id = :id')
+            ->andWhere('withdrawal_request_id = :withdrawal_request_id')
+            ->setParameter('id', $proofId)
+            ->setParameter('withdrawal_request_id', $withdrawalRequestId)
+            ->fetchAssociative();
+
+        return $row === false ? null : $this->hydrateProof($row);
     }
 
-    /**
-     * @param array<string, mixed> $row
-     */
+    /** @return list<WithdrawalProof> */
+    public function listProofsForRequest(int $withdrawalRequestId, int $limit): array
+    {
+        if ($withdrawalRequestId <= 0) {
+            return [];
+        }
+
+        $rows = $this->connection->createQueryBuilder()
+            ->select('*')
+            ->from('withdrawal_proofs')
+            ->where('withdrawal_request_id = :withdrawal_request_id')
+            ->setParameter('withdrawal_request_id', $withdrawalRequestId)
+            ->orderBy('created_at', 'DESC')
+            ->addOrderBy('id', 'DESC')
+            ->setMaxResults(max(1, min(100, $limit)))
+            ->fetchAllAssociative();
+
+        return array_map($this->hydrateProof(...), $rows);
+    }
+
+    public function findProofForUpdate(int $proofId, int $withdrawalRequestId): ?WithdrawalProof
+    {
+        if ($proofId <= 0 || $withdrawalRequestId <= 0) {
+            return null;
+        }
+
+        $sql = 'SELECT * FROM withdrawal_proofs WHERE id = ? AND withdrawal_request_id = ?';
+        if (!$this->connection->getDatabasePlatform() instanceof SQLitePlatform) {
+            $sql .= ' FOR UPDATE';
+        }
+
+        $row = $this->connection->fetchAssociative($sql, [$proofId, $withdrawalRequestId]);
+
+        return $row === false ? null : $this->hydrateProof($row);
+    }
+
+    public function verifyProofIfPending(int $proofId, string $checksum, DateTimeImmutable $now): ?WithdrawalProof
+    {
+        $affected = $this->connection->update('withdrawal_proofs', [
+            'checksum' => $checksum,
+            'status' => WithdrawalProofStatus::Verified->value,
+            'verification_error_code' => null,
+            'verification_attempted_at' => $this->date($now),
+            'verified_at' => $this->date($now),
+        ], [
+            'id' => $proofId,
+            'status' => WithdrawalProofStatus::PendingUpload->value,
+        ]);
+
+        return $affected < 1 ? null : $this->requireProof($proofId);
+    }
+
+    public function rejectProofIfPending(int $proofId, string $errorCode, DateTimeImmutable $now): ?WithdrawalProof
+    {
+        $affected = $this->connection->update('withdrawal_proofs', [
+            'checksum' => null,
+            'status' => WithdrawalProofStatus::Rejected->value,
+            'verification_error_code' => $errorCode,
+            'verification_attempted_at' => $this->date($now),
+            'verified_at' => null,
+        ], [
+            'id' => $proofId,
+            'status' => WithdrawalProofStatus::PendingUpload->value,
+        ]);
+
+        return $affected < 1 ? null : $this->requireProof($proofId);
+    }
+
+    /** @param array<string, mixed> $row */
     private function hydrateRequest(array $row): WithdrawalRequest
     {
         $payoutAccount = json_decode((string) $row['payout_account_json'], true, flags: JSON_THROW_ON_ERROR);
+
         return new WithdrawalRequest(
             id: (int) $row['id'],
             organizationId: (int) $row['organization_id'],
@@ -288,15 +484,20 @@ final class WithdrawalRepository
             amountCny: (string) $row['amount_cny'],
             pointsPerCny: (int) $row['points_per_cny'],
             idempotencyKey: (string) $row['idempotency_key'],
-            status: WithdrawalStatus::from((string) $row['status']),
+            reviewStatus: WithdrawalReviewStatus::from((string) $row['review_status']),
+            paymentStatus: WithdrawalPaymentStatus::from((string) $row['payment_status']),
             payoutMethod: (string) $row['payout_method'],
             payoutAccount: is_array($payoutAccount) ? $payoutAccount : [],
-            applicantNotes: $row['applicant_notes'] === null ? null : (string) $row['applicant_notes'],
+            applicantNotes: $this->nullableString($row['applicant_notes']),
             reviewerUserId: $row['reviewer_user_id'] === null ? null : (int) $row['reviewer_user_id'],
-            reviewerNotes: $row['reviewer_notes'] === null ? null : (string) $row['reviewer_notes'],
+            reviewerNotes: $this->nullableString($row['reviewer_notes']),
+            paymentProofId: $row['payment_proof_id'] === null ? null : (int) $row['payment_proof_id'],
+            paymentCompletedByUserId: $row['payment_completed_by_user_id'] === null ? null : (int) $row['payment_completed_by_user_id'],
+            paymentNotes: $this->nullableString($row['payment_notes']),
             ledgerEntryId: (int) $row['ledger_entry_id'],
             requestedAt: new DateTimeImmutable((string) $row['requested_at']),
             reviewedAt: $this->nullableDate($row['reviewed_at']),
+            approvedAt: $this->nullableDate($row['approved_at']),
             paidAt: $this->nullableDate($row['paid_at']),
             rejectedAt: $this->nullableDate($row['rejected_at']),
             revokedAt: $this->nullableDate($row['revoked_at']),
@@ -304,9 +505,7 @@ final class WithdrawalRepository
         );
     }
 
-    /**
-     * @param array<string, mixed> $row
-     */
+    /** @param array<string, mixed> $row */
     private function hydrateProof(array $row): WithdrawalProof
     {
         return new WithdrawalProof(
@@ -317,11 +516,33 @@ final class WithdrawalRepository
             objectKey: (string) $row['object_key'],
             contentType: (string) $row['content_type'],
             byteSize: (int) $row['byte_size'],
-            checksum: $row['checksum'] === null ? null : (string) $row['checksum'],
-            status: (string) $row['status'],
+            checksum: $this->nullableString($row['checksum']),
+            status: WithdrawalProofStatus::from((string) $row['status']),
+            verificationErrorCode: $this->nullableString($row['verification_error_code']),
             createdAt: new DateTimeImmutable((string) $row['created_at']),
-            confirmedAt: $this->nullableDate($row['confirmed_at']),
+            verificationAttemptedAt: $this->nullableDate($row['verification_attempted_at']),
+            verifiedAt: $this->nullableDate($row['verified_at']),
         );
+    }
+
+    private function requireRequest(int $id): WithdrawalRequest
+    {
+        $request = $this->findRequest($id);
+        if (!$request instanceof WithdrawalRequest) {
+            throw new \RuntimeException('withdrawal_request_persistence_failed');
+        }
+
+        return $request;
+    }
+
+    private function requireProof(int $id): WithdrawalProof
+    {
+        $proof = $this->findProof($id);
+        if (!$proof instanceof WithdrawalProof) {
+            throw new \RuntimeException('withdrawal_proof_persistence_failed');
+        }
+
+        return $proof;
     }
 
     private function nullableDate(mixed $value): ?DateTimeImmutable
@@ -329,43 +550,13 @@ final class WithdrawalRepository
         return $value === null ? null : new DateTimeImmutable((string) $value);
     }
 
-    /**
-     * @param array<string, mixed>|null $payoutAccount
-     * @return array<string, mixed>
-     */
-    private function stateFields(
-        WithdrawalStatus $status,
-        ?int $reviewerUserId,
-        ?string $reviewerNotes,
-        ?array $payoutAccount,
-        ?int $ledgerEntryId,
-        DateTimeImmutable $now,
-    ): array {
-        $fields = [
-            'status' => $status->value,
-            'reviewer_user_id' => $reviewerUserId,
-            'reviewer_notes' => $reviewerNotes,
-        ];
+    private function nullableString(mixed $value): ?string
+    {
+        return $value === null ? null : (string) $value;
+    }
 
-        if ($payoutAccount !== null) {
-            $fields['payout_account_json'] = json_encode($payoutAccount, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
-        }
-
-        if ($ledgerEntryId !== null) {
-            $fields['ledger_entry_id'] = $ledgerEntryId;
-        }
-
-        match ($status) {
-            WithdrawalStatus::Paid => $fields['paid_at'] = $now->format('Y-m-d H:i:s'),
-            WithdrawalStatus::Rejected => $fields['rejected_at'] = $now->format('Y-m-d H:i:s'),
-            WithdrawalStatus::Revoked => $fields['revoked_at'] = $now->format('Y-m-d H:i:s'),
-            WithdrawalStatus::Requested => $fields['resubmitted_at'] = $now->format('Y-m-d H:i:s'),
-        };
-
-        if ($status === WithdrawalStatus::Paid || $status === WithdrawalStatus::Rejected) {
-            $fields['reviewed_at'] = $now->format('Y-m-d H:i:s');
-        }
-
-        return $fields;
+    private function date(DateTimeImmutable $value): string
+    {
+        return $value->format('Y-m-d H:i:s');
     }
 }

@@ -90,6 +90,45 @@ final class AwsS3PresignedUploadSignerTest extends TestCase
         } catch (\InvalidArgumentException $exception) {
             self::assertSame('S3 access key and secret are required.', $exception->getMessage());
         }
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('S3 server-side encryption must be AES256 or aws:kms.');
+        new AwsS3PresignedUploadSigner([
+            'endpoint' => 'https://account-id.r2.cloudflarestorage.com',
+            'bucket' => 'creative-assets',
+            'access_key_id' => 'access-key',
+            'secret_access_key' => 'secret-key',
+            'server_side_encryption' => 'none',
+        ]);
+    }
+
+    public function testSignsRequiredServerSideEncryptionHeaderForPrivateUploads(): void
+    {
+        $signer = new AwsS3PresignedUploadSigner(
+            [
+                'endpoint' => 'https://minio.example.test',
+                'region' => 'us-east-1',
+                'bucket' => 'withdrawal-proofs',
+                'access_key_id' => 'access-key',
+                'secret_access_key' => 'secret-key',
+                'server_side_encryption' => 'AES256',
+            ],
+            static fn (): DateTimeImmutable => new DateTimeImmutable('2026-07-10 10:00:00 UTC'),
+        );
+
+        $upload = $signer->presignPut(new PresignedUploadRequest(
+            objectKey: 'withdrawals/42/7/token-receipt.pdf',
+            contentType: 'application/pdf',
+            byteSize: 4096,
+            expiresAt: new DateTimeImmutable('2026-07-10 10:15:00 UTC'),
+        ));
+
+        self::assertSame('AES256', $upload->headers['x-amz-server-side-encryption'] ?? null);
+        self::assertStringContainsString('x-amz-server-side-encryption=AES256', $upload->url);
+        self::assertStringContainsString(
+            'X-Amz-SignedHeaders=host%3Bx-amz-meta-vertoad-byte-size%3Bx-amz-server-side-encryption',
+            $upload->url,
+        );
     }
 
     public function testRejectsExpiredUploadIntent(): void

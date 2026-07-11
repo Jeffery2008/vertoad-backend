@@ -17,6 +17,7 @@ use VertoAD\Service\Cron\BackupRestoreJob;
 use VertoAD\Service\Operations\Backup\BackupExecutor;
 use VertoAD\Service\Operations\Backup\BackupInventory;
 use VertoAD\Service\Operations\Backup\BackupObjectStorageInterface;
+use VertoAD\Service\Operations\Backup\BackupSourceRegistry;
 use VertoAD\Service\Operations\Backup\MysqlBackupRunnerInterface;
 use VertoAD\Tests\Operations\OperationAuditRepository;
 
@@ -112,6 +113,7 @@ final class BackupExecutionJobTest extends TestCase
             $jobs,
             new CronMysqlRunner(),
             $storage,
+            new BackupSourceRegistry([]),
             new BackupInventory($connection),
             new AuditLogService(new OperationAuditRepository()),
             'backups',
