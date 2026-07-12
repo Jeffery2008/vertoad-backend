@@ -45,9 +45,12 @@ composer test:redis-integration
 
 Object-storage readiness uses the same ignored environment file as the API and
 performs an authenticated bucket check, direct PUT/HEAD/GET round trip,
-presigned PUT round trip, checksum verification, required SSE verification, and
-verified cleanup. Run each configured storage boundary independently; the
-command never prints credentials or presigned URLs:
+presigned PUT round trip, checksum verification, provider encryption evidence,
+and verified cleanup. AWS/MinIO profiles verify returned SSE metadata; the
+explicit `R2-AES256` profile verifies the HTTPS Cloudflare R2 endpoint and
+its documented AES-256 at-rest guarantee because R2 does not implement SSE-S3
+metadata. Run each configured storage boundary independently; the command never
+prints credentials or presigned URLs:
 
 ```powershell
 composer s3:readiness -- --profile=asset
@@ -119,7 +122,7 @@ Creative upload limits are business configuration, not deployment variables. Upl
 
 Upload confirmation queues a durable snapshot job and returns `snapshot_status=pending`; generated URLs remain null until the protected `asset-snapshot-generate` Cron job completes. The job verifies source size and SHA-256 again, then writes a PNG snapshot, WebP snapshot, and WebP thumbnail under the asset's organization-scoped derived-object prefix. Images are decoded directly, Fabric payloads use their validated embedded snapshot, text creatives render to a controlled canvas, and videos use a bounded FFmpeg subprocess. Failures use a lease, bounded attempts, exponential retry, and terminal `failed` state instead of blocking upload confirmation. PHP GD with WebP support is required for every snapshot type, and FFmpeg is required for video snapshots.
 
-Finance payment proofs use a separate private S3-compatible bucket configured with `WITHDRAWAL_PROOF_S3_*`. Outside local/testing, the endpoint must use HTTPS, the bucket must differ from both public `S3_*` assets and the `BACKUP_S3_*` target, and presigned uploads require server-side encryption (`AES256` by default). `WITHDRAWAL_PROOF_S3_MAX_INSPECT_BYTES` must remain `10485760`, matching the API and database limit. Proof confirmation accepts only `proof_id`; the backend reads the private object through the S3 API, validates key/MIME/size/magic bytes and actual SSE metadata, and computes the authoritative `sha256:` checksum before a withdrawal can be marked paid.
+Finance payment proofs use a separate private S3-compatible bucket configured with `WITHDRAWAL_PROOF_S3_*`. Outside local/testing, the endpoint must use HTTPS, the bucket must differ from both public `S3_*` assets and the `BACKUP_S3_*` target, and presigned uploads require provider encryption (`AES256`/`aws:kms` metadata or R2's explicit `R2-AES256` managed encryption). `WITHDRAWAL_PROOF_S3_MAX_INSPECT_BYTES` must remain `10485760`, matching the API and database limit. Proof confirmation accepts only `proof_id`; the backend reads the private object through the S3 API, validates key/MIME/size/magic bytes and provider encryption evidence, and computes the authoritative `sha256:` checksum before a withdrawal can be marked paid.
 
 Creative templates and design versions are first-class backend records. `/api/v1/creative/templates` lists platform templates plus the requested organization's templates, with platform templates ordered before organization-private templates. `POST /api/v1/creative/templates` creates organization templates with `creative.template.write.own` and platform templates with `creative.template.manage.platform`; platform template creation must not be hard-coded to super administrators. `/api/v1/creative/designs` creates an organization design and initial version in one transaction, while `/api/v1/creative/designs/{design_id}/versions` lists or appends append-only versions. Cross-organization design/version access returns `404 not_found`. All Creative endpoints use the standard API envelope, preserve `request_id`, write audit events for template/design/version creation, and are covered by OpenAPI contract tests.
 
@@ -156,7 +159,7 @@ Asset snapshot runtime settings:
 
 - `ASSET_S3_MAX_READ_BYTES`: maximum source object bytes read by the snapshot worker; staging/prod validation requires at least `209715200`.
 - `ASSET_S3_SNAPSHOT_CACHE_CONTROL`: cache policy applied only to generated snapshot objects.
-- `ASSET_S3_SERVER_SIDE_ENCRYPTION`: empty, `AES256`, or `aws:kms`, according to storage-provider support.
+- `ASSET_S3_SERVER_SIDE_ENCRYPTION`: empty, `AES256`, `aws:kms`, or `R2-AES256`; the latter is only valid for a Cloudflare R2 account endpoint.
 - `CRON_ASSET_SNAPSHOT_BATCH_SIZE`: maximum durable snapshot jobs leased per Cron invocation.
 - `CRON_ASSET_SNAPSHOT_LEASE_SECONDS`: lease duration before an interrupted job can be reclaimed.
 - `CRON_ASSET_SNAPSHOT_MAX_ATTEMPTS`: terminal failure threshold for retryable processing errors.

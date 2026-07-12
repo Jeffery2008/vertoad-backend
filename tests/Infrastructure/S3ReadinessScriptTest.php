@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VertoAD\Tests\Infrastructure;
 
 use Aws\Command;
+use Aws\CommandInterface;
 use Aws\Exception\AwsException;
 use Aws\MockHandler as AwsMockHandler;
 use Aws\Result;
@@ -108,12 +109,55 @@ final class S3ReadinessScriptTest extends TestCase
             'presigned_put_round_trip' => 'passed',
             'cleanup' => 'passed',
             'probe_objects_remaining' => 0,
+            'encryption_evidence' => 'AES256',
         ], $result);
         self::assertCount(1, $history);
         self::assertSame('PUT', $history[0]['request']->getMethod());
         self::assertSame($presignedBody, (string) $history[0]['request']->getBody());
         self::assertSame('text/plain', $history[0]['request']->getHeaderLine('Content-Type'));
         self::assertSame('AES256', $history[0]['request']->getHeaderLine('x-amz-server-side-encryption'));
+    }
+
+    public function testR2ManagedEncryptionUsesProviderEvidenceWithoutAwsSseHeaders(): void
+    {
+        $nonce = 'r2readiness123';
+        $directBody = $this->body($nonce, 'direct');
+        $presignedBody = $this->body($nonce, 'presigned');
+        $directPut = null;
+        $aws = new AwsMockHandler();
+        $aws->append(new Result([]));
+        $aws->append(static function (CommandInterface $command) use (&$directPut): Result {
+            $directPut = $command;
+
+            return new Result([]);
+        });
+        $aws->append(new Result([
+            'ContentLength' => strlen($directBody),
+            'ContentType' => 'text/plain',
+        ]));
+        $aws->append(new Result(['Body' => Utils::streamFor($directBody)]));
+        $aws->append(new Result([
+            'ContentLength' => strlen($presignedBody),
+            'ContentType' => 'text/plain',
+        ]));
+        $aws->append(new Result(['Body' => Utils::streamFor($presignedBody)]));
+        $this->appendSuccessfulCleanup($aws);
+
+        $history = [];
+        $stack = HandlerStack::create(new HttpMockHandler([new Response(200)]));
+        $stack->push(Middleware::history($history));
+        $result = $this->probe(
+            $aws,
+            new Client(['handler' => $stack]),
+            $nonce,
+            'R2-AES256',
+        )->run();
+
+        self::assertSame('cloudflare-r2-managed-aes256', $result['encryption_evidence']);
+        self::assertNotNull($directPut);
+        self::assertArrayNotHasKey('ServerSideEncryption', $directPut->toArray());
+        self::assertCount(1, $history);
+        self::assertSame('', $history[0]['request']->getHeaderLine('x-amz-server-side-encryption'));
     }
 
     public function testProbePreservesPrimaryFailureAndReportsCleanupFailure(): void
@@ -226,17 +270,19 @@ final class S3ReadinessScriptTest extends TestCase
         );
     }
 
-    private function profile(): S3ReadinessProfile
+    private function profile(string $encryption = 'AES256'): S3ReadinessProfile
     {
         return new S3ReadinessProfile(
             'asset',
-            'https://s3.example.test',
+            $encryption === 'R2-AES256'
+                ? 'https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com'
+                : 'https://s3.example.test',
             'auto',
             'assets',
             'access-key',
             'secret-key',
             true,
-            'AES256',
+            $encryption,
         );
     }
 
@@ -252,10 +298,15 @@ final class S3ReadinessScriptTest extends TestCase
         ]);
     }
 
-    private function probe(AwsMockHandler $handler, Client $http, string $nonce): S3ReadinessProbe
+    private function probe(
+        AwsMockHandler $handler,
+        Client $http,
+        string $nonce,
+        string $encryption = 'AES256',
+    ): S3ReadinessProbe
     {
         return new S3ReadinessProbe(
-            $this->profile(),
+            $this->profile($encryption),
             $this->client($handler),
             $http,
             static fn (): string => $nonce,

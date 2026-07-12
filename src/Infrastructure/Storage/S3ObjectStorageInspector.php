@@ -16,7 +16,7 @@ final readonly class S3ObjectStorageInspector implements ObjectStorageInspectorI
     private S3Client $client;
     private string $bucket;
     private int $maxInspectBytes;
-    private ?string $serverSideEncryption;
+    private S3EncryptionPolicy $encryption;
 
     /** @param array<string, mixed> $config */
     public function __construct(array $config, ?S3Client $client = null)
@@ -27,8 +27,7 @@ final readonly class S3ObjectStorageInspector implements ObjectStorageInspectorI
         $accessKeyId = trim((string) ($config['access_key_id'] ?? ''));
         $secretAccessKey = (string) ($config['secret_access_key'] ?? '');
         $this->maxInspectBytes = (int) ($config['max_inspect_bytes'] ?? 10_485_760);
-        $serverSideEncryption = trim((string) ($config['server_side_encryption'] ?? ''));
-        $this->serverSideEncryption = $serverSideEncryption === '' ? null : $serverSideEncryption;
+        $this->encryption = S3EncryptionPolicy::fromConfig($config, 'S3 private object');
 
         if ($endpoint === '') {
             throw new InvalidArgumentException('S3 endpoint is required for private object inspection.');
@@ -42,10 +41,6 @@ final readonly class S3ObjectStorageInspector implements ObjectStorageInspectorI
         if ($this->maxInspectBytes <= 0) {
             throw new InvalidArgumentException('S3 private object inspection byte limit must be positive.');
         }
-        if ($this->serverSideEncryption !== null && !in_array($this->serverSideEncryption, ['AES256', 'aws:kms'], true)) {
-            throw new InvalidArgumentException('S3 private object server-side encryption must be AES256 or aws:kms.');
-        }
-
         $this->client = $client ?? new S3Client([
             'version' => 'latest',
             'region' => $region === '' ? 'auto' : $region,
@@ -79,12 +74,10 @@ final readonly class S3ObjectStorageInspector implements ObjectStorageInspectorI
         if ($byteSize > $this->maxInspectBytes) {
             throw new RuntimeException('Private object exceeds the configured inspection byte limit.');
         }
-        if (
-            $this->serverSideEncryption !== null
-            && trim((string) ($head['ServerSideEncryption'] ?? '')) !== $this->serverSideEncryption
-        ) {
-            throw new RuntimeException('Private object does not use the required server-side encryption.');
-        }
+        $this->encryption->assertMetadata(
+            $head->toArray(),
+            'Private object does not use the required server-side encryption.',
+        );
 
         try {
             $object = $this->client->getObject(['Bucket' => $this->bucket, 'Key' => $objectKey]);

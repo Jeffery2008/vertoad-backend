@@ -1374,7 +1374,7 @@ paths:
         - Billing
       operationId: createWithdrawalProofUploadIntent
       summary: Create a finance payment-proof upload intent.
-      description: Creates a platform-finance upload intent only for an approved withdrawal whose payment is pending. The generated object key is scoped to the withdrawal's publisher organization and the upload targets the dedicated non-public `WITHDRAWAL_PROOF_S3_*` bucket with server-side encryption.
+      description: Creates a platform-finance upload intent only for an approved withdrawal whose payment is pending. The generated object key is scoped to the withdrawal's publisher organization and the upload targets the dedicated non-public `WITHDRAWAL_PROOF_S3_*` bucket with provider encryption. AWS/MinIO providers return required SSE metadata; Cloudflare R2 uses explicit R2-AES256 provider-managed AES-256 at-rest evidence.
       security:
         - BearerAuth: []
       x-permissions:
@@ -1420,7 +1420,7 @@ paths:
         - Billing
       operationId: confirmWithdrawalProofUpload
       summary: Verify a finance payment-proof object after upload.
-      description: The client submits only the proof identifier. The server reads the upload intent and dedicated private S3-compatible storage through authenticated API calls, verifies the object key, content type, byte size, magic bytes, and required server-side encryption metadata, and computes the authoritative SHA-256 checksum. Client-supplied object metadata or checksums are rejected and not accepted as trusted input.
+      description: The client submits only the proof identifier. The server reads the upload intent and dedicated private S3-compatible storage through authenticated API calls, verifies the object key, content type, byte size, magic bytes, and provider encryption evidence, and computes the authoritative SHA-256 checksum. Client-supplied object metadata or checksums are rejected and not accepted as trusted input.
       security:
         - BearerAuth: []
       x-permissions:

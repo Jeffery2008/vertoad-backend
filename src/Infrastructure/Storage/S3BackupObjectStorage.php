@@ -16,7 +16,7 @@ final readonly class S3BackupObjectStorage implements BackupObjectStorageInterfa
 {
     private S3Client $client;
     private string $bucket;
-    private string $serverSideEncryption;
+    private S3EncryptionPolicy $encryption;
 
     /** @param array<string, mixed> $config */
     public function __construct(array $config, ?S3Client $client = null)
@@ -26,7 +26,7 @@ final readonly class S3BackupObjectStorage implements BackupObjectStorageInterfa
         $this->bucket = trim((string) ($config['bucket'] ?? ''));
         $accessKeyId = trim((string) ($config['access_key_id'] ?? ''));
         $secretAccessKey = (string) ($config['secret_access_key'] ?? '');
-        $this->serverSideEncryption = trim((string) ($config['server_side_encryption'] ?? 'AES256'));
+        $this->encryption = S3EncryptionPolicy::fromConfig($config, 'Backup S3', 'AES256');
 
         if ($endpoint === '') {
             throw new InvalidArgumentException('S3 endpoint is required for backup storage.');
@@ -37,10 +37,6 @@ final readonly class S3BackupObjectStorage implements BackupObjectStorageInterfa
         if ($accessKeyId === '' || $secretAccessKey === '') {
             throw new InvalidArgumentException('S3 credentials are required for backup storage.');
         }
-        if (!in_array($this->serverSideEncryption, ['AES256', 'aws:kms'], true)) {
-            throw new InvalidArgumentException('Backup S3 server-side encryption must be AES256 or aws:kms.');
-        }
-
         $this->client = $client ?? new S3Client([
             'version' => 'latest',
             'region' => $region === '' ? 'auto' : $region,
@@ -60,7 +56,9 @@ final readonly class S3BackupObjectStorage implements BackupObjectStorageInterfa
         try {
             $this->put($objectKey, $stream, $contentType);
         } finally {
-            fclose($stream);
+            if (is_resource($stream)) {
+                fclose($stream);
+            }
         }
     }
 
@@ -99,12 +97,11 @@ final readonly class S3BackupObjectStorage implements BackupObjectStorageInterfa
     {
         [$sourceBucket, $sourceKey] = $this->parseObjectKey($sourceObjectKey);
         [$destinationBucket, $destinationKey] = $this->parseObjectKey($destinationObjectKey);
-        $this->client->copyObject([
+        $this->client->copyObject(array_merge([
             'Bucket' => $destinationBucket,
             'Key' => $destinationKey,
             'CopySource' => $this->copySource($sourceBucket, $sourceKey),
-            'ServerSideEncryption' => $this->serverSideEncryption,
-        ]);
+        ], $this->encryption->putParameters()));
         $this->assertServerSideEncryption($destinationObjectKey);
     }
 
@@ -147,22 +144,21 @@ final readonly class S3BackupObjectStorage implements BackupObjectStorageInterfa
     private function put(string $objectKey, mixed $body, string $contentType): void
     {
         [$bucket, $key] = $this->parseObjectKey($objectKey);
-        $this->client->putObject([
+        $this->client->putObject(array_merge([
             'Bucket' => $bucket,
             'Key' => $key,
             'Body' => $body,
             'ContentType' => $contentType,
-            'ServerSideEncryption' => $this->serverSideEncryption,
-        ]);
+        ], $this->encryption->putParameters()));
         $this->assertServerSideEncryption($objectKey);
     }
 
     private function assertServerSideEncryption(string $objectKey): void
     {
-        $actual = trim((string) ($this->head($objectKey)['ServerSideEncryption'] ?? ''));
-        if (!hash_equals($this->serverSideEncryption, $actual)) {
-            throw new RuntimeException('Backup object does not use the required server-side encryption.');
-        }
+        $this->encryption->assertMetadata(
+            $this->head($objectKey),
+            'Backup object does not use the required server-side encryption.',
+        );
     }
 
     /** @return array<string, mixed> */

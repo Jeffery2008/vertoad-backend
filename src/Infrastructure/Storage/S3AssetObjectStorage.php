@@ -20,7 +20,7 @@ final readonly class S3AssetObjectStorage implements AssetObjectStorageInterface
     private string $bucket;
     private int $maxReadBytes;
     private string $cacheControl;
-    private ?string $serverSideEncryption;
+    private S3EncryptionPolicy $encryption;
 
     /** @var \Closure(string, string, string): array{width:int, height:int, duration_seconds:?float} */
     private \Closure $videoProbe;
@@ -47,8 +47,7 @@ final readonly class S3AssetObjectStorage implements AssetObjectStorageInterface
         $secretAccessKey = (string) ($config['secret_access_key'] ?? '');
         $this->maxReadBytes = (int) ($config['max_read_bytes'] ?? 209_715_200);
         $this->cacheControl = trim((string) ($config['snapshot_cache_control'] ?? 'public, max-age=31536000, immutable'));
-        $encryption = trim((string) ($config['server_side_encryption'] ?? ''));
-        $this->serverSideEncryption = $encryption === '' ? null : $encryption;
+        $this->encryption = S3EncryptionPolicy::fromConfig($config, 'Asset S3');
         $this->videoProbe = \Closure::fromCallable($videoProbe ?? $this->defaultVideoProbe(...));
         $this->temporaryPathFactory = \Closure::fromCallable(
             $temporaryPathFactory ?? static fn (): ?string => tempnam(sys_get_temp_dir(), 'vertoad-asset-') ?: null,
@@ -60,10 +59,6 @@ final readonly class S3AssetObjectStorage implements AssetObjectStorageInterface
         if ($this->maxReadBytes <= 0 || $this->cacheControl === '') {
             throw new InvalidArgumentException('Asset storage read limit and snapshot cache control must be configured.');
         }
-        if ($this->serverSideEncryption !== null && !in_array($this->serverSideEncryption, ['AES256', 'aws:kms'], true)) {
-            throw new InvalidArgumentException('Asset S3 server-side encryption must be AES256 or aws:kms.');
-        }
-
         $this->client = $client ?? new S3Client([
             'version' => 'latest',
             'region' => $region === '' ? 'auto' : $region,
@@ -119,12 +114,10 @@ final readonly class S3AssetObjectStorage implements AssetObjectStorageInterface
             throw new RuntimeException('Asset object storage metadata read failed.', previous: $exception);
         }
         $length = $this->contentLength($head['ContentLength'] ?? null);
-        if (
-            $this->serverSideEncryption !== null
-            && trim((string) ($head['ServerSideEncryption'] ?? '')) !== $this->serverSideEncryption
-        ) {
-            throw new RuntimeException('Asset object does not use the required server-side encryption.');
-        }
+        $this->encryption->assertMetadata(
+            $head->toArray(),
+            'Asset object does not use the required server-side encryption.',
+        );
         $contentType = strtolower(trim(explode(';', (string) ($head['ContentType'] ?? 'application/octet-stream'), 2)[0]));
         if ($contentType === '') {
             $contentType = 'application/octet-stream';
@@ -207,9 +200,7 @@ final readonly class S3AssetObjectStorage implements AssetObjectStorageInterface
             'ContentDisposition' => 'inline',
             'Metadata' => ['sha256' => hash('sha256', $body)],
         ];
-        if ($this->serverSideEncryption !== null) {
-            $arguments['ServerSideEncryption'] = $this->serverSideEncryption;
-        }
+        $arguments = array_merge($arguments, $this->encryption->putParameters());
 
         try {
             $this->client->putObject($arguments);

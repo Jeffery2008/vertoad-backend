@@ -19,7 +19,7 @@ final readonly class AwsS3PresignedUploadSigner implements ObjectStorageUploadSi
     private string $bucket;
     private int $maxReadBytes;
     private string $immutableCacheControl;
-    private ?string $serverSideEncryption;
+    private S3EncryptionPolicy $encryption;
     /** @var callable(): DateTimeImmutable */
     private mixed $clock;
 
@@ -39,8 +39,7 @@ final readonly class AwsS3PresignedUploadSigner implements ObjectStorageUploadSi
             $config['asset_cache_control']
             ?? 'public, max-age=31536000, immutable'
         ));
-        $serverSideEncryption = trim((string) ($config['server_side_encryption'] ?? ''));
-        $this->serverSideEncryption = $serverSideEncryption === '' ? null : $serverSideEncryption;
+        $this->encryption = S3EncryptionPolicy::fromConfig($config, 'S3 asset');
 
         if ($endpoint === '') {
             throw new InvalidArgumentException('S3 endpoint is required.');
@@ -56,10 +55,6 @@ final readonly class AwsS3PresignedUploadSigner implements ObjectStorageUploadSi
         if ($this->maxReadBytes <= 0 || $this->immutableCacheControl === '') {
             throw new InvalidArgumentException('S3 asset finalization limits and cache control must be configured.');
         }
-        if ($this->serverSideEncryption !== null && !in_array($this->serverSideEncryption, ['AES256', 'aws:kms'], true)) {
-            throw new InvalidArgumentException('S3 server-side encryption must be AES256 or aws:kms.');
-        }
-
         $this->client = $client ?? new S3Client([
             'version' => 'latest',
             'region' => $region === '' ? 'auto' : $region,
@@ -89,9 +84,7 @@ final readonly class AwsS3PresignedUploadSigner implements ObjectStorageUploadSi
                 'vertoad-byte-size' => (string) $request->byteSize,
             ],
         ];
-        if ($this->serverSideEncryption !== null) {
-            $parameters['ServerSideEncryption'] = $this->serverSideEncryption;
-        }
+        $parameters = array_merge($parameters, $this->encryption->putParameters());
         $command = $this->client->getCommand('PutObject', $parameters);
         $presigned = $this->client->createPresignedRequest($command, '+' . $ttlSeconds . ' seconds');
 
@@ -99,8 +92,8 @@ final readonly class AwsS3PresignedUploadSigner implements ObjectStorageUploadSi
             'Content-Type' => $request->contentType,
             'x-amz-meta-vertoad-byte-size' => (string) $request->byteSize,
         ];
-        if ($this->serverSideEncryption !== null) {
-            $headers['x-amz-server-side-encryption'] = $this->serverSideEncryption;
+        if ($this->encryption->mode !== null && !$this->encryption->providerManaged) {
+            $headers['x-amz-server-side-encryption'] = $this->encryption->mode;
         }
 
         return new PresignedUpload(
@@ -143,12 +136,10 @@ final readonly class AwsS3PresignedUploadSigner implements ObjectStorageUploadSi
         if ($contentType === '') {
             throw new RuntimeException('S3 asset object returned no content type.');
         }
-        if (
-            $this->serverSideEncryption !== null
-            && trim((string) ($head['ServerSideEncryption'] ?? '')) !== $this->serverSideEncryption
-        ) {
-            throw new RuntimeException('S3 asset object does not use the required server-side encryption.');
-        }
+        $this->encryption->assertMetadata(
+            $head->toArray(),
+            'S3 asset object does not use the required server-side encryption.',
+        );
 
         try {
             $object = $this->client->getObject(['Bucket' => $this->bucket, 'Key' => $key]);
@@ -242,9 +233,7 @@ final readonly class AwsS3PresignedUploadSigner implements ObjectStorageUploadSi
             'ContentDisposition' => 'inline',
             'Metadata' => ['sha256' => substr($expectedChecksum, strlen('sha256:'))],
         ];
-        if ($this->serverSideEncryption !== null) {
-            $parameters['ServerSideEncryption'] = $this->serverSideEncryption;
-        }
+        $parameters = array_merge($parameters, $this->encryption->putParameters());
 
         try {
             $this->client->putObject($parameters);

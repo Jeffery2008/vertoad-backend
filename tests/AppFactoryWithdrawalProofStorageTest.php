@@ -92,11 +92,11 @@ final class AppFactoryWithdrawalProofStorageTest extends TestCase
 
         $missingEncryption = $this->settings('prod');
         $missingEncryption['withdrawal_proofs'] = ['s3' => [...$this->s3('withdrawal-proofs'), 'server_side_encryption' => '']];
-        $cases['missing encryption'] = [$missingEncryption, 'WITHDRAWAL_PROOF_S3_SERVER_SIDE_ENCRYPTION must be AES256 or aws:kms.'];
+            $cases['missing encryption'] = [$missingEncryption, 'WITHDRAWAL_PROOF_S3_SERVER_SIDE_ENCRYPTION must be AES256, aws:kms, or R2-AES256.'];
 
         $invalidEncryption = $this->settings('prod');
         $invalidEncryption['withdrawal_proofs'] = ['s3' => [...$this->s3('withdrawal-proofs'), 'server_side_encryption' => 'AES128']];
-        $cases['invalid encryption'] = [$invalidEncryption, 'WITHDRAWAL_PROOF_S3_SERVER_SIDE_ENCRYPTION must be AES256 or aws:kms.'];
+            $cases['invalid encryption'] = [$invalidEncryption, 'WITHDRAWAL_PROOF_S3_SERVER_SIDE_ENCRYPTION must be AES256, aws:kms, or R2-AES256.'];
 
         $http = $this->settings('prod');
         $http['withdrawal_proofs'] = ['s3' => [...$this->s3('withdrawal-proofs'), 'endpoint' => 'http://minio.example.test']];

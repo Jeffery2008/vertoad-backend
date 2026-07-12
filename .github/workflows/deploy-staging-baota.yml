@@ -1,0 +1,213 @@
+name: Deploy backend dev to Baota staging
+
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-baota-staging-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Pull backend dev on Baota LAMP
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: staging
+    env:
+      DEPLOY_BRANCH: dev
+      BAOTA_SSH_HOST: ${{ secrets.BAOTA_STAGING_SSH_HOST }}
+      BAOTA_SSH_PORT: ${{ vars.BAOTA_STAGING_SSH_PORT }}
+      BAOTA_SSH_USER: ${{ secrets.BAOTA_STAGING_SSH_USER }}
+      BAOTA_SSH_PRIVATE_KEY: ${{ secrets.BAOTA_STAGING_SSH_PRIVATE_KEY }}
+      BAOTA_SSH_KNOWN_HOSTS: ${{ secrets.BAOTA_STAGING_SSH_KNOWN_HOSTS }}
+      BAOTA_REPOSITORY: ${{ vars.BAOTA_STAGING_REPOSITORY }}
+      BAOTA_SITE_PATH: ${{ vars.BAOTA_STAGING_SITE_PATH }}
+      BAOTA_ENV_FILE: ${{ vars.BAOTA_STAGING_ENV_FILE }}
+      BAOTA_HEALTH_URL: ${{ vars.BAOTA_STAGING_HEALTH_URL }}
+      BAOTA_PHP_BIN: ${{ vars.BAOTA_STAGING_PHP_BIN }}
+      BAOTA_PHP_FPM_SERVICE: ${{ vars.BAOTA_STAGING_PHP_FPM_SERVICE }}
+
+    steps:
+      - name: Validate deployment settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          required_vars=(
+            BAOTA_SSH_HOST BAOTA_SSH_PORT BAOTA_SSH_USER
+            BAOTA_SSH_PRIVATE_KEY BAOTA_SSH_KNOWN_HOSTS BAOTA_REPOSITORY
+            BAOTA_SITE_PATH BAOTA_ENV_FILE BAOTA_HEALTH_URL BAOTA_PHP_BIN
+            BAOTA_PHP_FPM_SERVICE
+          )
+          for variable in "${required_vars[@]}"; do
+            if [[ -z "${!variable:-}" ]]; then
+              echo "::error::Required Baota staging setting $variable is not configured."
+              exit 1
+            fi
+          done
+          [[ "$BAOTA_SSH_PORT" =~ ^[0-9]+$ ]] || {
+            echo '::error::BAOTA_SSH_PORT must be numeric.'
+            exit 1
+          }
+          [[ "$BAOTA_REPOSITORY" != *'@'* ]] || {
+            echo '::error::BAOTA_REPOSITORY must not contain embedded credentials.'
+            exit 1
+          }
+          [[ "$BAOTA_HEALTH_URL" == https://* ]] || {
+            echo '::error::BAOTA_HEALTH_URL must use HTTPS.'
+            exit 1
+          }
+
+      - name: Pull, migrate, and health-check the Baota site
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          known_hosts_file="$RUNNER_TEMP/baota-staging-known-hosts"
+          printf '%s\n' "$BAOTA_SSH_KNOWN_HOSTS" | tr -d '\r' > "$known_hosts_file"
+          chmod 600 "$known_hosts_file"
+
+          eval "$(ssh-agent -s)"
+          cleanup() {
+            ssh-agent -k >/dev/null 2>&1 || true
+            rm -f "$known_hosts_file"
+          }
+          trap cleanup EXIT
+          printf '%s\n' "$BAOTA_SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+
+          config_json="$(jq -cn \
+            --arg branch "$DEPLOY_BRANCH" \
+            --arg commit "$GITHUB_SHA" \
+            --arg repository "$BAOTA_REPOSITORY" \
+            --arg sitePath "$BAOTA_SITE_PATH" \
+            --arg environmentFile "$BAOTA_ENV_FILE" \
+            --arg healthUrl "$BAOTA_HEALTH_URL" \
+            --arg phpBin "$BAOTA_PHP_BIN" \
+            --arg phpFpmService "$BAOTA_PHP_FPM_SERVICE" \
+            '{branch: $branch, commit: $commit, repository: $repository, sitePath: $sitePath, environmentFile: $environmentFile, healthUrl: $healthUrl, phpBin: $phpBin, phpFpmService: $phpFpmService}')"
+          config_b64="$(printf '%s' "$config_json" | base64 -w0)"
+
+          ssh \
+            -p "$BAOTA_SSH_PORT" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=20 \
+            -o PasswordAuthentication=no \
+            -o KbdInteractiveAuthentication=no \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$known_hosts_file" \
+            "$BAOTA_SSH_USER@$BAOTA_SSH_HOST" \
+            "BAOTA_CONFIG_B64='$config_b64' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+
+          config_json="$(printf '%s' "$BAOTA_CONFIG_B64" | base64 -d)"
+          read_config() {
+            CONFIG_JSON="$config_json" python3 - "$1" <<'PY'
+          import json
+          import os
+          import sys
+          print(json.loads(os.environ["CONFIG_JSON"])[sys.argv[1]])
+          PY
+          }
+
+          branch="$(read_config branch)"
+          commit="$(read_config commit)"
+          repository="$(read_config repository)"
+          site_path="$(read_config sitePath)"
+          environment_file="$(read_config environmentFile)"
+          health_url="$(read_config healthUrl)"
+          php_bin="$(read_config phpBin)"
+          php_fpm_service="$(read_config phpFpmService)"
+
+          [[ "$branch" == dev ]] || { echo 'deployment branch must be dev' >&2; exit 1; }
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo 'deployment commit must be a full SHA' >&2; exit 1; }
+          [[ "$repository" != *'@'* ]] || { echo 'repository credentials are forbidden' >&2; exit 1; }
+          [[ "$health_url" == https://* ]] || { echo 'health URL must use HTTPS' >&2; exit 1; }
+          [[ -d "$site_path" ]] || { echo 'Baota site path does not exist' >&2; exit 1; }
+          [[ -f "$environment_file" ]] || { echo 'external environment file is missing' >&2; exit 1; }
+          [[ -x "$php_bin" ]] || { echo 'configured PHP binary is not executable' >&2; exit 1; }
+          [[ "$("$php_bin" -r 'echo PHP_VERSION;')" == 8.4.22 ]] || {
+            echo 'configured PHP binary is not PHP 8.4.22' >&2
+            exit 1
+          }
+          test -L "$site_path/storage"
+          test "$(readlink -f "$site_path/storage")" != "$site_path/storage"
+          test -f "$site_path/storage/install.lock"
+          test "$(stat -c '%U:%G:%a' "$environment_file")" = 'root:www:640'
+
+          export VERTOAD_ENV_FILE="$environment_file"
+          export PHINX_ENVIRONMENT=production
+          export COMPOSER_ALLOW_SUPERUSER=1
+          export PATH="$(dirname "$php_bin"):$PATH"
+
+          cd "$site_path"
+          git config --global --add safe.directory "$site_path" || true
+          git diff --quiet
+          git diff --cached --quiet
+          while IFS= read -r entry; do
+            case "$entry" in
+              '?? .user.ini'|'?? storage') ;;
+              '') ;;
+              *) echo "unexpected working-tree entry: $entry" >&2; exit 1 ;;
+            esac
+          done < <(git status --porcelain --untracked-files=all)
+
+          git remote set-url origin "$repository"
+          previous_commit="$(git rev-parse HEAD)"
+          git fetch --prune origin "$branch"
+          git switch "$branch"
+          git reset --hard "origin/$branch"
+          test "$(git rev-parse HEAD)" = "$commit"
+
+          health_headers=''
+          health_body=''
+          cleanup_health() {
+            [[ -z "$health_headers" ]] || rm -f "$health_headers"
+            [[ -z "$health_body" ]] || rm -f "$health_body"
+          }
+          rollback() {
+            cleanup_health
+            git reset --hard "$previous_commit" || true
+            "$php_bin" /usr/bin/composer install --no-dev --classmap-authoritative --no-interaction --prefer-dist || true
+            systemctl reload "$php_fpm_service" || true
+          }
+          trap rollback ERR
+
+          "$php_bin" /usr/bin/composer install --no-dev --classmap-authoritative --no-interaction --prefer-dist
+          "$php_bin" vendor/bin/phinx migrate --environment=production --configuration=phinx.php
+          "$php_bin" scripts/openapi-check.php docs/openapi.yaml
+          systemctl reload "$php_fpm_service"
+          health_headers="$(mktemp)"
+          health_body="$(mktemp)"
+          curl --fail --silent --show-error --retry 5 --retry-delay 2 \
+            --dump-header "$health_headers" \
+            --output "$health_body" \
+            "$health_url"
+          "$php_bin" -r '
+            $headers = file($argv[1], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            $body = json_decode((string) file_get_contents($argv[2]), true, 16, JSON_THROW_ON_ERROR);
+            $headerRequestId = null;
+            foreach ($headers as $header) {
+                if (stripos($header, "X-Request-Id:") === 0) {
+                    $headerRequestId = trim(substr($header, strlen("X-Request-Id:")));
+                }
+            }
+            $bodyRequestId = $body["request_id"] ?? null;
+            if (($body["data"]["status"] ?? null) !== "ok"
+                || ($body["error"] ?? null) !== null
+                || !is_string($bodyRequestId)
+                || preg_match("/^[a-f0-9]{32}$/D", $bodyRequestId) !== 1
+                || !hash_equals($bodyRequestId, (string) $headerRequestId)) {
+                fwrite(STDERR, "health response contract validation failed\n");
+                exit(1);
+            }
+          ' "$health_headers" "$health_body"
+          cleanup_health
+          trap - ERR
+          printf 'baota-staging-deploy-ok commit=%s\n' "$(git rev-parse HEAD)"
+          REMOTE

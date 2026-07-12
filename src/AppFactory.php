@@ -56,6 +56,7 @@ use VertoAD\Infrastructure\Storage\PublicUrlObjectStorageInspector;
 use VertoAD\Infrastructure\Storage\S3ArchiveObjectStorage;
 use VertoAD\Infrastructure\Storage\S3AssetObjectStorage;
 use VertoAD\Infrastructure\Storage\S3BackupObjectStorage;
+use VertoAD\Infrastructure\Storage\S3EncryptionPolicy;
 use VertoAD\Infrastructure\Storage\S3ObjectStorageInspector;
 use VertoAD\Infrastructure\Storage\UnavailableAssetObjectStorage;
 use VertoAD\Infrastructure\Storage\UnavailableBackupObjectStorage;
@@ -1217,8 +1218,10 @@ final class AppFactory
         }
 
         $serverSideEncryption = trim((string) ($config['server_side_encryption'] ?? ''));
-        if (!in_array($serverSideEncryption, ['AES256', 'aws:kms'], true)) {
-            throw new \RuntimeException('WITHDRAWAL_PROOF_S3_SERVER_SIDE_ENCRYPTION must be AES256 or aws:kms.');
+        if (!in_array($serverSideEncryption, ['AES256', 'aws:kms', S3EncryptionPolicy::R2_AES256], true)) {
+            throw new \RuntimeException(
+                'WITHDRAWAL_PROOF_S3_SERVER_SIDE_ENCRYPTION must be AES256, aws:kms, or R2-AES256.'
+            );
         }
 
         if (!self::localFallbackAllowed($settings)) {

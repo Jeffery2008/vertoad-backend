@@ -103,7 +103,9 @@ final class AwsS3PresignedUploadSignerTest extends TestCase
         }
 
         $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('S3 server-side encryption must be AES256 or aws:kms.');
+        $this->expectExceptionMessage(
+            'S3 asset server-side encryption must be AES256, aws:kms, or R2-AES256.'
+        );
         new AwsS3PresignedUploadSigner([
             'endpoint' => 'https://account-id.r2.cloudflarestorage.com',
             'bucket' => 'creative-assets',

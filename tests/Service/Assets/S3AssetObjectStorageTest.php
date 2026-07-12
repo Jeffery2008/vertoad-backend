@@ -70,7 +70,7 @@ final class S3AssetObjectStorageTest extends TestCase
         );
         $this->assertInvalidConfiguration(
             $this->config(['server_side_encryption' => 'AES128']),
-            'Asset S3 server-side encryption must be AES256 or aws:kms.',
+            'Asset S3 server-side encryption must be AES256, aws:kms, or R2-AES256.',
         );
 
         self::assertInstanceOf(S3AssetObjectStorage::class, new S3AssetObjectStorage($this->config([

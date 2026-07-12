@@ -15,11 +15,15 @@ use GuzzleHttp\Psr7\Utils;
 use InvalidArgumentException;
 use RuntimeException;
 use Throwable;
+use VertoAD\Infrastructure\Storage\S3EncryptionPolicy;
 
 require dirname(__DIR__) . '/vendor/autoload.php';
 
 final readonly class S3ReadinessProfile
 {
+    public S3EncryptionPolicy $encryption;
+    public ?string $serverSideEncryption;
+
     public function __construct(
         public string $name,
         public string $endpoint,
@@ -28,7 +32,7 @@ final readonly class S3ReadinessProfile
         public string $accessKeyId,
         public string $secretAccessKey,
         public bool $pathStyleEndpoint,
-        public ?string $serverSideEncryption,
+        S3EncryptionPolicy|string|null $encryption,
     ) {
         if (!in_array($this->name, ['asset', 'withdrawal-proof', 'backup'], true)) {
             throw new InvalidArgumentException('Unknown S3 readiness profile.');
@@ -46,12 +50,15 @@ final readonly class S3ReadinessProfile
         ) {
             throw new InvalidArgumentException('S3 endpoint must be an HTTP(S) origin without credentials, query, or fragment.');
         }
+        $this->encryption = $encryption instanceof S3EncryptionPolicy
+            ? $encryption
+            : S3EncryptionPolicy::fromConfig(
+                ['endpoint' => $this->endpoint, 'server_side_encryption' => $encryption ?? ''],
+                strtoupper(str_replace('-', ' ', $this->name)) . ' S3',
+            );
+        $this->serverSideEncryption = $this->encryption->mode;
         if ($this->bucket === '' || $this->accessKeyId === '' || $this->secretAccessKey === '') {
             throw new InvalidArgumentException('S3 bucket and credentials are required.');
-        }
-        if ($this->serverSideEncryption !== null
-            && !in_array($this->serverSideEncryption, ['AES256', 'aws:kms'], true)) {
-            throw new InvalidArgumentException('S3 server-side encryption must be AES256 or aws:kms.');
         }
     }
 
@@ -72,6 +79,10 @@ final readonly class S3ReadinessProfile
             throw new InvalidArgumentException('Staging and production S3 endpoints must use HTTPS.');
         }
         $encryption = trim((string) ($environment[$encryptionKey] ?? $defaultEncryption));
+        $encryptionPolicy = S3EncryptionPolicy::fromConfig(
+            ['endpoint' => $endpoint, 'server_side_encryption' => $encryption],
+            strtoupper(str_replace('-', ' ', $name)) . ' S3',
+        );
 
         return new self(
             name: $name,
@@ -84,7 +95,7 @@ final readonly class S3ReadinessProfile
                 $environment[$prefix . '_PATH_STYLE_ENDPOINT'] ?? 'true',
                 FILTER_VALIDATE_BOOL,
             ),
-            serverSideEncryption: $encryption === '' ? null : $encryption,
+            encryption: $encryptionPolicy,
         );
     }
 
@@ -162,6 +173,7 @@ final class S3ReadinessProbe
             'presigned_put_round_trip' => 'passed',
             'cleanup' => 'passed',
             'probe_objects_remaining' => 0,
+            'encryption_evidence' => $this->profile->encryption->readinessEvidence(),
         ];
     }
 
@@ -175,11 +187,7 @@ final class S3ReadinessProbe
             'ContentType' => 'text/plain',
             'Metadata' => ['vertoad-readiness' => 'true'],
         ];
-        if ($this->profile->serverSideEncryption !== null) {
-            $parameters['ServerSideEncryption'] = $this->profile->serverSideEncryption;
-        }
-
-        return $parameters;
+        return array_merge($parameters, $this->profile->encryption->putParameters());
     }
 
     private function putPresigned(string $key, string $body): void
@@ -202,10 +210,10 @@ final class S3ReadinessProbe
         if ((int) ($head['ContentLength'] ?? -1) !== strlen($expectedBody)) {
             throw new RuntimeException('S3 readiness object length did not match the uploaded payload.');
         }
-        if ($this->profile->serverSideEncryption !== null
-            && trim((string) ($head['ServerSideEncryption'] ?? '')) !== $this->profile->serverSideEncryption) {
-            throw new RuntimeException('S3 readiness object does not use the required server-side encryption.');
-        }
+        $this->profile->encryption->assertMetadata(
+            $head->toArray(),
+            'S3 readiness object does not use the required server-side encryption.',
+        );
         $object = $this->client->getObject([
             'Bucket' => $this->profile->bucket,
             'Key' => $key,

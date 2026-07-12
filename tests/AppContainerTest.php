@@ -141,6 +141,7 @@ use VertoAD\Infrastructure\Storage\ObjectStorageUploadSignerInterface;
 use VertoAD\Infrastructure\Storage\S3ArchiveObjectStorage;
 use VertoAD\Infrastructure\Storage\S3AssetObjectStorage;
 use VertoAD\Infrastructure\Storage\S3BackupObjectStorage;
+use VertoAD\Infrastructure\Storage\S3EncryptionPolicy;
 use VertoAD\Infrastructure\Storage\UnavailableAssetObjectStorage;
 use VertoAD\Infrastructure\Storage\UnavailableBackupObjectStorage;
 use VertoAD\Infrastructure\Storage\UnavailableObjectStorageInspector;
@@ -205,7 +206,9 @@ final class AppContainerTest extends TestCase
             'server_side_encryption' => '',
         ], $local, 'Primary asset/archive');
         self::assertInstanceOf(S3BackupObjectStorage::class, $encryptedSource);
-        self::assertSame('AES256', $this->privateStringProperty($encryptedSource, 'serverSideEncryption'));
+        $encryptionPolicy = $this->privateObjectProperty($encryptedSource, 'encryption');
+        self::assertInstanceOf(S3EncryptionPolicy::class, $encryptionPolicy);
+        self::assertSame('AES256', $encryptionPolicy->mode);
         self::assertSame('not a valid endpoint', $endpointNormalizer->invoke(null, 'NOT A VALID ENDPOINT'));
         self::assertInstanceOf(UnavailableMysqlBackupRunner::class, $mysqlFactory->invoke(null, [
             'app' => ['env' => 'testing'],
