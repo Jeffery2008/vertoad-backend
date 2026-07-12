@@ -81,12 +81,12 @@ final readonly class InstallerService implements InstallerInterface
                 $connection->close();
             }
 
-            return $result + ['oauth_client_secret' => $secrets['oauth_client_secret']];
+            return $result;
         });
     }
 
     /**
-     * @param array{installation_id: string, app_key: string, oauth_encryption_key: string, oauth_client_id: string, oauth_client_secret: string, cron_api_token: string, webhook_signing_secret: string} $secrets
+     * @param array{installation_id: string, app_key: string, oauth_encryption_key: string, oauth_client_id: string, cron_api_token: string, webhook_signing_secret: string} $secrets
      * @param array{private_key_path: string, public_key_path: string} $keyPaths
      * @return array<string, scalar|null>
      */

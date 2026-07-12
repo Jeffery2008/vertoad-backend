@@ -1,0 +1,96 @@
+name: MySQL 8 install rehearsal
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/mysql-install-rehearsal.yml'
+      - '.env.example'
+      - 'composer.json'
+      - 'composer.lock'
+      - 'config/**'
+      - 'db/migrations/**'
+      - 'src/AppFactory.php'
+      - 'src/Bootstrap/**'
+      - 'src/Install/**'
+      - 'tests/Install/**'
+      - 'src/Repository/OAuthTokenRepository.php'
+      - 'src/Service/OAuthTokenService.php'
+      - 'tests/OAuth/mysql-refresh-token-family-rehearsal.php'
+  push:
+    branches:
+      - dev
+      - main
+    paths:
+      - '.github/workflows/mysql-install-rehearsal.yml'
+      - '.env.example'
+      - 'composer.json'
+      - 'composer.lock'
+      - 'config/**'
+      - 'db/migrations/**'
+      - 'src/AppFactory.php'
+      - 'src/Bootstrap/**'
+      - 'src/Install/**'
+      - 'tests/Install/**'
+      - 'src/Repository/OAuthTokenRepository.php'
+      - 'src/Service/OAuthTokenService.php'
+      - 'tests/OAuth/mysql-refresh-token-family-rehearsal.php'
+
+permissions:
+  contents: read
+
+jobs:
+  mysql-install-rehearsal:
+    name: Installer against MySQL 8.4
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ${{ format('vertoad-ci-{0}-{1}', github.run_id, github.run_attempt) }}
+          MYSQL_ROOT_HOST: '%'
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping --host=127.0.0.1 --silent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up PHP 8.4
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4.22'
+          extensions: openssl, pdo_mysql
+          tools: composer:v2
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Validate Composer metadata
+        run: composer validate --no-check-publish
+
+      - name: Run executable installer gate
+        run: composer run test:mysql-install-rehearsal
+        env:
+          VERTOAD_MYSQL_INSTALL_REHEARSAL: '1'
+          MYSQL_REHEARSAL_HOST: 127.0.0.1
+          MYSQL_REHEARSAL_PORT: '3306'
+          MYSQL_REHEARSAL_USERNAME: root
+          MYSQL_REHEARSAL_PASSWORD: ${{ format('vertoad-ci-{0}-{1}', github.run_id, github.run_attempt) }}
+          MYSQL_REHEARSAL_CONNECT_TIMEOUT_SECONDS: '10'
+
+      - name: Run concurrent OAuth refresh-family gate
+        run: composer run test:mysql-oauth-rehearsal
+        env:
+          APP_ENV: testing
+          DB_HOST: 127.0.0.1
+          DB_PORT: '3306'
+          DB_USERNAME: root
+          DB_PASSWORD: ${{ format('vertoad-ci-{0}-{1}', github.run_id, github.run_attempt) }}

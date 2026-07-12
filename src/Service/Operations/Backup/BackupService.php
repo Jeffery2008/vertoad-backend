@@ -98,7 +98,7 @@ final readonly class BackupService
         }
         $existing = $this->jobs->list('restore', 1000, 0)['items'];
         foreach ($existing as $job) {
-            if ($job->sourceBackupId === $backupId && in_array($job->status, ['queued', 'running'], true)) {
+            if (in_array($job->status, ['queued', 'running'], true)) {
                 throw new RuntimeException('restore_already_queued');
             }
         }

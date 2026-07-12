@@ -6,18 +6,32 @@ namespace VertoAD\Install;
 
 final readonly class InstallFilesystem
 {
+    private const ATOMIC_REPLACE_ATTEMPTS = 5;
+    private const ATOMIC_REPLACE_DELAY_MICROSECONDS = 50_000;
+    private const REMOVED_INSTALL_ENVIRONMENT_KEYS = ['OAUTH_PRIVATE_KEY_PASSPHRASE'];
+
+    private string $environmentPath;
     private \Closure $openFile;
     private \Closure $readFile;
     private \Closure $writeFile;
     private \Closure $removeFile;
+    private \Closure $changeMode;
+    private \Closure $replaceFile;
+    private \Closure $delay;
 
     public function __construct(
         private string $rootPath,
+        ?string $environmentPath = null,
         ?callable $openFile = null,
         ?callable $readFile = null,
         ?callable $writeFile = null,
         ?callable $removeFile = null,
+        ?callable $changeMode = null,
+        ?callable $replaceFile = null,
+        ?callable $delay = null,
     ) {
+        $this->environmentPath = $environmentPath
+            ?? $this->rootPath . DIRECTORY_SEPARATOR . '.env';
         $this->openFile = $openFile === null
             ? static fn (string $path, string $mode): mixed => @\fopen($path, $mode)
             : \Closure::fromCallable($openFile);
@@ -30,6 +44,15 @@ final readonly class InstallFilesystem
         $this->removeFile = $removeFile === null
             ? static fn (string $path): bool => @\unlink($path)
             : \Closure::fromCallable($removeFile);
+        $this->changeMode = $changeMode === null
+            ? static fn (string $path, int $mode): bool => @\chmod($path, $mode)
+            : \Closure::fromCallable($changeMode);
+        $this->replaceFile = $replaceFile === null
+            ? static fn (string $source, string $target): bool => @\rename($source, $target)
+            : \Closure::fromCallable($replaceFile);
+        $this->delay = $delay === null
+            ? static fn (int $microseconds): null => \usleep($microseconds)
+            : \Closure::fromCallable($delay);
     }
 
     public function synchronized(callable $operation): mixed
@@ -65,9 +88,13 @@ final readonly class InstallFilesystem
         array $lockMetadata,
         callable $commitDatabase,
     ): void {
+        if (!array_key_exists('INSTALL_TOKEN', $environment) || $environment['INSTALL_TOKEN'] !== '') {
+            throw new \InvalidArgumentException('A completed installation must clear INSTALL_TOKEN.');
+        }
+
         $keyPaths = $this->oauthKeyPaths();
         $paths = [
-            $this->rootPath . DIRECTORY_SEPARATOR . '.env',
+            $this->environmentPath,
             $keyPaths['private_key_path'],
             $keyPaths['public_key_path'],
             $this->rootPath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'install.lock',
@@ -76,7 +103,7 @@ final readonly class InstallFilesystem
 
         try {
             $this->writeOAuthKeyPair($keyPair);
-            $this->writeEnvironment($environment);
+            $this->writeEnvironmentConfiguration($environment, self::REMOVED_INSTALL_ENVIRONMENT_KEYS);
             $this->writePermanentLock($lockMetadata);
             $commitDatabase();
         } catch (\Throwable $exception) {
@@ -97,16 +124,28 @@ final readonly class InstallFilesystem
     /** @param array<string, scalar|null> $values */
     public function writeEnvironment(array $values): void
     {
-        $environmentPath = $this->rootPath . DIRECTORY_SEPARATOR . '.env';
+        $this->writeEnvironmentConfiguration($values);
+    }
+
+    /**
+     * @param array<string, scalar|null> $values
+     * @param list<string> $removedKeys
+     */
+    private function writeEnvironmentConfiguration(array $values, array $removedKeys = []): void
+    {
         $templatePath = $this->rootPath . DIRECTORY_SEPARATOR . '.env.example';
-        $source = is_file($environmentPath)
-            ? ($this->readFile)($environmentPath)
+        $source = is_file($this->environmentPath)
+            ? ($this->readFile)($this->environmentPath)
             : (is_file($templatePath) ? ($this->readFile)($templatePath) : '');
         if ($source === false) {
             throw new \RuntimeException('Unable to read the existing environment configuration.');
         }
 
-        $this->atomicWrite($environmentPath, $this->mergeEnvironment($source, $values), 0600);
+        $this->atomicWrite(
+            $this->environmentPath,
+            $this->mergeEnvironment($source, $values, $removedKeys),
+            0600,
+        );
     }
 
     /** @param array{private_key: string, public_key: string} $keyPair */
@@ -159,8 +198,11 @@ final readonly class InstallFilesystem
         );
     }
 
-    /** @param array<string, scalar|null> $values */
-    private function mergeEnvironment(string $source, array $values): string
+    /**
+     * @param array<string, scalar|null> $values
+     * @param list<string> $removedKeys
+     */
+    private function mergeEnvironment(string $source, array $values, array $removedKeys): string
     {
         $normalized = [];
         foreach ($values as $key => $value) {
@@ -169,18 +211,29 @@ final readonly class InstallFilesystem
             }
             $normalized[$key] = $this->encodeEnvironmentValue($value);
         }
+        $removed = array_fill_keys(array_map('strtoupper', $removedKeys), true);
+        foreach ($removed as $key => $_) {
+            unset($normalized[$key]);
+        }
 
         $trimmedSource = rtrim($source, "\r\n");
         $lines = $trimmedSource === '' ? [] : (preg_split('/\R/', $trimmedSource) ?: []);
         $rendered = [];
         $written = [];
         foreach ($lines as $line) {
-            if (preg_match('/^\s*([A-Z][A-Z0-9_]*)\s*=/', $line, $matches) !== 1 || !array_key_exists($matches[1], $normalized)) {
+            if (preg_match('/^(?:\xEF\xBB\xBF)?\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=/i', $line, $matches) !== 1) {
                 $rendered[] = $line;
                 continue;
             }
 
-            $key = $matches[1];
+            $key = strtoupper($matches[1]);
+            if (isset($removed[$key])) {
+                continue;
+            }
+            if (!array_key_exists($key, $normalized)) {
+                $rendered[] = $line;
+                continue;
+            }
             if (!isset($written[$key])) {
                 $rendered[] = $key . '=' . $normalized[$key];
                 $written[$key] = true;
@@ -267,10 +320,24 @@ final readonly class InstallFilesystem
     {
         $directory = dirname($path);
         $this->ensureDirectory($directory, 0700);
+        // A same-directory temporary file keeps replacement on one volume and inherits the directory ACL on Windows.
         $temporary = $directory . DIRECTORY_SEPARATOR . '.' . basename($path) . '.' . bin2hex(random_bytes(8)) . '.tmp';
         $handle = ($this->openFile)($temporary, 'x+b');
         if ($handle === false) {
             throw new \RuntimeException('Unable to create a temporary installer file.');
+        }
+        try {
+            $permissionsSecured = ($this->changeMode)($temporary, $mode);
+        } catch (\Throwable $exception) {
+            fclose($handle);
+            $this->discardTemporaryFile($temporary, $exception);
+        }
+        if (!$permissionsSecured) {
+            fclose($handle);
+            $this->discardTemporaryFile(
+                $temporary,
+                new \RuntimeException('Unable to secure temporary installer file permissions.'),
+            );
         }
 
         try {
@@ -288,17 +355,45 @@ final readonly class InstallFilesystem
             }
         } catch (\Throwable $exception) {
             fclose($handle);
-            ($this->removeFile)($temporary);
-            throw $exception;
+            $this->discardTemporaryFile($temporary, $exception);
         }
 
         fclose($handle);
-        @chmod($temporary, $mode);
-        if (!@rename($temporary, $path)) {
-            ($this->removeFile)($temporary);
-            throw new \RuntimeException('Unable to atomically replace ' . basename($path) . '.');
+        try {
+            for ($attempt = 1; $attempt <= self::ATOMIC_REPLACE_ATTEMPTS; $attempt++) {
+                if (($this->replaceFile)($temporary, $path)) {
+                    return;
+                }
+                if ($attempt < self::ATOMIC_REPLACE_ATTEMPTS) {
+                    ($this->delay)(self::ATOMIC_REPLACE_DELAY_MICROSECONDS);
+                }
+            }
+        } catch (\Throwable $exception) {
+            $this->discardTemporaryFile($temporary, $exception);
         }
-        @chmod($path, $mode);
+
+        $this->discardTemporaryFile(
+            $temporary,
+            new \RuntimeException('Unable to atomically replace ' . basename($path) . '.'),
+        );
+    }
+
+    private function discardTemporaryFile(string $path, \Throwable $failure): never
+    {
+        try {
+            $removed = (!is_file($path) && !is_link($path)) || ($this->removeFile)($path);
+        } catch (\Throwable) {
+            $removed = false;
+        }
+        if (!$removed) {
+            throw new \RuntimeException(
+                'Installer file update failed and its temporary file could not be removed.',
+                0,
+                $failure,
+            );
+        }
+
+        throw $failure;
     }
 
     private function ensureDirectory(string $path, int $mode): void

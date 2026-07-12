@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use Dotenv\Dotenv;
+use VertoAD\Bootstrap\EnvironmentLoader;
 
 $root = __DIR__;
 
@@ -10,9 +10,7 @@ if (is_file($root . '/vendor/autoload.php')) {
     require_once $root . '/vendor/autoload.php';
 }
 
-if (class_exists(Dotenv::class) && is_file($root . '/.env')) {
-    Dotenv::createImmutable($root)->safeLoad();
-}
+EnvironmentLoader::load($root);
 
 $databaseUrl = $_ENV['DATABASE_URL'] ?? getenv('DATABASE_URL') ?: null;
 

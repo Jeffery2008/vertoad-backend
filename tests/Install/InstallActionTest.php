@@ -78,11 +78,10 @@ final class InstallActionTest extends TestCase
         self::assertSame('application/json', $response->getHeaderLine('Content-Type'));
     }
 
-    public function testLocalPostInstallsAndEscapesOneTimeOauthCredentialsInHtml(): void
+    public function testLocalPostInstallsAndEscapesPublicOauthClientIdInHtml(): void
     {
         $result = $this->installResult();
         $result['oauth_client_id'] = 'voc_<client>';
-        $result['oauth_client_secret'] = 'vocs_<secret>';
         $calls = new \ArrayObject();
         $action = new InstallAction(new InstallSecurity(''), $this->installer($result, $calls));
         $body = InstallTestInput::valid(local: true) + ['_csrf' => 'csrf-local'];
@@ -95,8 +94,8 @@ final class InstallActionTest extends TestCase
         self::assertSame(201, $response->getStatusCode());
         self::assertStringContainsString('Installation complete', (string) $response->getBody());
         self::assertStringContainsString('voc_&lt;client&gt;', (string) $response->getBody());
-        self::assertStringContainsString('vocs_&lt;secret&gt;', (string) $response->getBody());
-        self::assertStringNotContainsString('vocs_<secret>', (string) $response->getBody());
+        self::assertStringContainsString('Authorization Code + S256 PKCE', (string) $response->getBody());
+        self::assertStringContainsString('No client secret is issued', (string) $response->getBody());
         self::assertStringContainsString('Max-Age=0', $response->getHeaderLine('Set-Cookie'));
         self::assertTrue($calls[0]['local_installation']);
     }
@@ -124,9 +123,11 @@ final class InstallActionTest extends TestCase
 
         self::assertSame(201, $response->getStatusCode());
         self::assertTrue($payload['installed']);
-        self::assertTrue($payload['credentials_shown_once']);
         self::assertSame('voc_test_client', $payload['oauth_client_id']);
-        self::assertSame('vocs_test_secret', $payload['oauth_client_secret']);
+        self::assertSame('public', $payload['oauth_client_type']);
+        self::assertTrue($payload['oauth_pkce_required']);
+        self::assertArrayNotHasKey('oauth_client_secret', $payload);
+        self::assertArrayNotHasKey('credentials_shown_once', $payload);
         self::assertStringContainsString('Secure', $response->getHeaderLine('Set-Cookie'));
         self::assertCount(1, $calls);
         self::assertFalse($calls[0]['local_installation']);
@@ -207,7 +208,7 @@ final class InstallActionTest extends TestCase
             ->withCookieParams(['vertoad_install_csrf' => 'csrf-local']);
     }
 
-    /** @return array{installation_id: string, admin_user_id: int, organization_id: int, oauth_client_id: string, oauth_client_secret: string} */
+    /** @return array{installation_id: string, admin_user_id: int, organization_id: int, oauth_client_id: string} */
     private function installResult(): array
     {
         return [
@@ -215,7 +216,6 @@ final class InstallActionTest extends TestCase
             'admin_user_id' => 1,
             'organization_id' => 2,
             'oauth_client_id' => 'voc_test_client',
-            'oauth_client_secret' => 'vocs_test_secret',
         ];
     }
 

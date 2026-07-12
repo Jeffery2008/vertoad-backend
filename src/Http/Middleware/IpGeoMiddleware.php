@@ -70,7 +70,7 @@ final readonly class IpGeoMiddleware implements MiddlewareInterface
     private function shouldApply(ServerRequestInterface $request): bool
     {
         $path = '/' . ltrim($request->getUri()->getPath(), '/');
-        $key = strtoupper($request->getMethod()) . ':' . $path;
+        $key = strtoupper($request->getMethod() . ':' . $path);
 
         return isset($this->enabledEndpoints[$key]);
     }

@@ -61,6 +61,335 @@ ENV);
         self::assertStringContainsString('CUSTOM_VALUE="preserve-me"', $updated);
     }
 
+    public function testWritesAndRestoresAnExternalEnvironmentTarget(): void
+    {
+        $root = $this->temporaryDirectory();
+        $secretDirectory = $this->temporaryDirectory();
+        $environmentPath = $secretDirectory . DIRECTORY_SEPARATOR . 'staging.env';
+        file_put_contents(
+            $environmentPath,
+            "INSTALL_TOKEN=keep-me\nOAUTH_PRIVATE_KEY_PASSPHRASE=legacy-passphrase\nCUSTOM=external\n",
+        );
+        $filesystem = new InstallFilesystem($root, environmentPath: $environmentPath);
+
+        $filesystem->writeEnvironment(['APP_INSTALLED' => true]);
+        self::assertStringContainsString('APP_INSTALLED=true', (string) file_get_contents($environmentPath));
+        self::assertFileDoesNotExist($root . DIRECTORY_SEPARATOR . '.env');
+
+        try {
+            $filesystem->commitInstallation(
+                ['APP_INSTALLED' => true, 'INSTALL_TOKEN' => ''],
+                ['private_key' => 'PRIVATE', 'public_key' => 'PUBLIC'],
+                ['state' => 'installed'],
+                static fn (): never => throw new \RuntimeException('database commit failed'),
+            );
+            self::fail('Expected database commit failure.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('database commit failed', $exception->getMessage());
+        }
+
+        $restored = (string) file_get_contents($environmentPath);
+        self::assertStringContainsString('INSTALL_TOKEN=keep-me', $restored);
+        self::assertStringContainsString('OAUTH_PRIVATE_KEY_PASSPHRASE=legacy-passphrase', $restored);
+        self::assertStringContainsString('CUSTOM=external', $restored);
+        self::assertStringContainsString('APP_INSTALLED=true', $restored);
+        self::assertFileDoesNotExist($root . '/storage/install.lock');
+    }
+
+    public function testSuccessfulCommitClearsTokenOnlyInExternalEnvironmentTarget(): void
+    {
+        $root = $this->temporaryDirectory();
+        $secretDirectory = $this->temporaryDirectory();
+        $environmentPath = $secretDirectory . DIRECTORY_SEPARATOR . 'staging.env';
+        file_put_contents(
+            $environmentPath,
+            "INSTALL_TOKEN=installer-secret\nexport oauth_private_key_passphrase=legacy-passphrase\nCUSTOM=external\n",
+        );
+        $databaseCommitted = false;
+
+        (new InstallFilesystem($root, environmentPath: $environmentPath))->commitInstallation(
+            [
+                'APP_INSTALLED' => true,
+                'INSTALL_TOKEN' => '',
+                'OAUTH_PRIVATE_KEY_PASSPHRASE' => 'new-payload-passphrase',
+            ],
+            ['private_key' => 'PRIVATE', 'public_key' => 'PUBLIC'],
+            ['state' => 'installed'],
+            static function () use (&$databaseCommitted): void {
+                $databaseCommitted = true;
+            },
+        );
+
+        $environment = (string) file_get_contents($environmentPath);
+        self::assertTrue($databaseCommitted);
+        self::assertStringContainsString('INSTALL_TOKEN=""', $environment);
+        self::assertSame(1, substr_count($environment, 'INSTALL_TOKEN='));
+        self::assertStringNotContainsString('installer-secret', $environment);
+        self::assertStringNotContainsString('OAUTH_PRIVATE_KEY_PASSPHRASE', strtoupper($environment));
+        self::assertStringNotContainsString('legacy-passphrase', $environment);
+        self::assertStringNotContainsString('new-payload-passphrase', $environment);
+        self::assertStringContainsString('CUSTOM=external', $environment);
+        self::assertFileDoesNotExist($root . DIRECTORY_SEPARATOR . '.env');
+        self::assertFileExists($root . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'install.lock');
+    }
+
+    public function testEnvironmentMergeClearsExportedBomPrefixedCaseVariantsAndDuplicates(): void
+    {
+        $root = $this->temporaryDirectory();
+        $environmentPath = $root . DIRECTORY_SEPARATOR . '.env';
+        file_put_contents(
+            $environmentPath,
+            "\xEF\xBB\xBFexport install_token=first-secret\r\nINSTALL_TOKEN=second-secret\r\nCUSTOM=preserved\r\n",
+        );
+
+        (new InstallFilesystem($root))->writeEnvironment(['INSTALL_TOKEN' => '']);
+
+        $environment = (string) file_get_contents($environmentPath);
+        self::assertSame(1, substr_count($environment, 'INSTALL_TOKEN='));
+        self::assertStringStartsWith('INSTALL_TOKEN=""' . PHP_EOL, $environment);
+        self::assertStringNotContainsString('first-secret', $environment);
+        self::assertStringNotContainsString('second-secret', $environment);
+        self::assertStringNotContainsString("\xEF\xBB\xBF", $environment);
+        self::assertStringContainsString('CUSTOM=preserved', $environment);
+    }
+
+    public function testCommitRejectsMissingOrRetainedInstallTokenBeforeWriting(): void
+    {
+        foreach ([[], ['INSTALL_TOKEN' => 'still-enabled'], ['INSTALL_TOKEN' => null], ['INSTALL_TOKEN' => false]] as $environment) {
+            $root = $this->temporaryDirectory();
+            $databaseCommitted = false;
+            try {
+                (new InstallFilesystem($root))->commitInstallation(
+                    $environment,
+                    ['private_key' => 'PRIVATE', 'public_key' => 'PUBLIC'],
+                    ['state' => 'installed'],
+                    static function () use (&$databaseCommitted): void {
+                        $databaseCommitted = true;
+                    },
+                );
+                self::fail('Expected an uncleared installation token to be rejected.');
+            } catch (\InvalidArgumentException $exception) {
+                self::assertSame('A completed installation must clear INSTALL_TOKEN.', $exception->getMessage());
+            }
+
+            self::assertFalse($databaseCommitted);
+            self::assertFileDoesNotExist($root . DIRECTORY_SEPARATOR . '.env');
+            self::assertDirectoryDoesNotExist($root . DIRECTORY_SEPARATOR . 'storage');
+        }
+    }
+
+    public function testAtomicReplaceRetriesTransientWindowsStyleSharingFailure(): void
+    {
+        $root = $this->temporaryDirectory();
+        file_put_contents($root . DIRECTORY_SEPARATOR . '.env', "APP_ENV=old\n");
+        $replaceAttempts = 0;
+        $delays = [];
+        $filesystem = new InstallFilesystem(
+            $root,
+            replaceFile: static function (string $source, string $target) use (&$replaceAttempts): bool {
+                $replaceAttempts++;
+                return $replaceAttempts >= 3 && rename($source, $target);
+            },
+            delay: static function (int $microseconds) use (&$delays): void {
+                $delays[] = $microseconds;
+            },
+        );
+
+        $filesystem->writeEnvironment(['APP_ENV' => 'staging']);
+
+        self::assertSame(3, $replaceAttempts);
+        self::assertSame([50_000, 50_000], $delays);
+        self::assertSame('APP_ENV="staging"' . PHP_EOL, file_get_contents($root . DIRECTORY_SEPARATOR . '.env'));
+        self::assertSame([], $this->temporaryInstallerFiles($root));
+    }
+
+    public function testAtomicReplaceFailureKeepsOldFileAndRemovesTemporarySecret(): void
+    {
+        $root = $this->temporaryDirectory();
+        $environmentPath = $root . DIRECTORY_SEPARATOR . '.env';
+        file_put_contents($environmentPath, "INSTALL_TOKEN=old-secret\n");
+        $replaceAttempts = 0;
+        $delays = 0;
+        $filesystem = new InstallFilesystem(
+            $root,
+            replaceFile: static function () use (&$replaceAttempts): bool {
+                $replaceAttempts++;
+                return false;
+            },
+            delay: static function () use (&$delays): void {
+                $delays++;
+            },
+        );
+
+        try {
+            $filesystem->writeEnvironment(['INSTALL_TOKEN' => 'new-secret']);
+            self::fail('Expected atomic replacement to fail.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('Unable to atomically replace .env.', $exception->getMessage());
+        }
+
+        self::assertSame(5, $replaceAttempts);
+        self::assertSame(4, $delays);
+        self::assertSame("INSTALL_TOKEN=old-secret\n", file_get_contents($environmentPath));
+        self::assertSame([], $this->temporaryInstallerFiles($root));
+    }
+
+    public function testPermissionFailureKeepsOldFileAndRemovesTemporarySecret(): void
+    {
+        $root = $this->temporaryDirectory();
+        $environmentPath = $root . DIRECTORY_SEPARATOR . '.env';
+        file_put_contents($environmentPath, "INSTALL_TOKEN=old-secret\n");
+        $replaceCalled = false;
+        $filesystem = new InstallFilesystem(
+            $root,
+            changeMode: static fn (): false => false,
+            replaceFile: static function () use (&$replaceCalled): bool {
+                $replaceCalled = true;
+                return true;
+            },
+        );
+
+        try {
+            $filesystem->writeEnvironment(['INSTALL_TOKEN' => 'new-secret']);
+            self::fail('Expected permission hardening to fail.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('Unable to secure temporary installer file permissions.', $exception->getMessage());
+        }
+
+        self::assertFalse($replaceCalled);
+        self::assertSame("INSTALL_TOKEN=old-secret\n", file_get_contents($environmentPath));
+        self::assertSame([], $this->temporaryInstallerFiles($root));
+    }
+
+    public function testThrownPermissionFailureKeepsOldFileAndRemovesTemporarySecret(): void
+    {
+        $root = $this->temporaryDirectory();
+        $environmentPath = $root . DIRECTORY_SEPARATOR . '.env';
+        file_put_contents($environmentPath, "INSTALL_TOKEN=old-secret\n");
+        $filesystem = new InstallFilesystem(
+            $root,
+            changeMode: static fn (): never => throw new \RuntimeException('permission callback failed'),
+        );
+
+        try {
+            $filesystem->writeEnvironment(['INSTALL_TOKEN' => 'new-secret']);
+            self::fail('Expected permission hardening to throw.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('permission callback failed', $exception->getMessage());
+        }
+
+        self::assertSame("INSTALL_TOKEN=old-secret\n", file_get_contents($environmentPath));
+        self::assertSame([], $this->temporaryInstallerFiles($root));
+    }
+
+    public function testCleanupFailureIsReportedWithoutHidingAtomicReplaceFailure(): void
+    {
+        $root = $this->temporaryDirectory();
+        $environmentPath = $root . DIRECTORY_SEPARATOR . '.env';
+        file_put_contents($environmentPath, "INSTALL_TOKEN=old-secret\n");
+        $filesystem = new InstallFilesystem(
+            $root,
+            removeFile: static fn (): false => false,
+            replaceFile: static fn (): false => false,
+            delay: static fn (): null => null,
+        );
+
+        try {
+            $filesystem->writeEnvironment(['INSTALL_TOKEN' => 'new-secret']);
+            self::fail('Expected temporary file cleanup to fail.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('Installer file update failed and its temporary file could not be removed.', $exception->getMessage());
+            self::assertSame('Unable to atomically replace .env.', $exception->getPrevious()?->getMessage());
+        }
+
+        self::assertSame("INSTALL_TOKEN=old-secret\n", file_get_contents($environmentPath));
+        self::assertCount(1, $this->temporaryInstallerFiles($root));
+    }
+
+    public function testThrownReplaceFailureKeepsOldFileAndRemovesTemporarySecret(): void
+    {
+        $root = $this->temporaryDirectory();
+        $environmentPath = $root . DIRECTORY_SEPARATOR . '.env';
+        file_put_contents($environmentPath, "INSTALL_TOKEN=old-secret\n");
+        $filesystem = new InstallFilesystem(
+            $root,
+            replaceFile: static fn (): never => throw new \RuntimeException('replace callback failed'),
+        );
+
+        try {
+            $filesystem->writeEnvironment(['INSTALL_TOKEN' => 'new-secret']);
+            self::fail('Expected the replacement callback to fail.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('replace callback failed', $exception->getMessage());
+        }
+
+        self::assertSame("INSTALL_TOKEN=old-secret\n", file_get_contents($environmentPath));
+        self::assertSame([], $this->temporaryInstallerFiles($root));
+    }
+
+    public function testThrownCleanupFailureIsWrappedWithOriginalWriteFailure(): void
+    {
+        $root = $this->temporaryDirectory();
+        $filesystem = new InstallFilesystem(
+            $root,
+            writeFile: static fn (): never => throw new \RuntimeException('write callback failed'),
+            removeFile: static fn (): never => throw new \RuntimeException('cleanup callback failed'),
+        );
+
+        try {
+            $filesystem->writeEnvironment(['INSTALL_TOKEN' => 'new-secret']);
+            self::fail('Expected temporary file cleanup to fail.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('Installer file update failed and its temporary file could not be removed.', $exception->getMessage());
+            self::assertSame('write callback failed', $exception->getPrevious()?->getMessage());
+        }
+
+        self::assertCount(1, $this->temporaryInstallerFiles($root));
+    }
+
+    public function testWindowsReadOnlyTargetFailsClosed(): void
+    {
+        if (PHP_OS_FAMILY !== 'Windows') {
+            self::assertNotSame('Windows', PHP_OS_FAMILY);
+            return;
+        }
+
+        $root = $this->temporaryDirectory();
+        $environmentPath = $root . DIRECTORY_SEPARATOR . '.env';
+        file_put_contents($environmentPath, "INSTALL_TOKEN=old-secret\n");
+        self::assertTrue(chmod($environmentPath, 0444));
+
+        try {
+            (new InstallFilesystem($root, delay: static fn (): null => null))
+                ->writeEnvironment(['INSTALL_TOKEN' => 'new-secret']);
+            self::fail('Expected a read-only Windows target to reject replacement.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('Unable to atomically replace .env.', $exception->getMessage());
+            self::assertSame("INSTALL_TOKEN=old-secret\n", file_get_contents($environmentPath));
+            self::assertSame([], $this->temporaryInstallerFiles($root));
+        } finally {
+            chmod($environmentPath, 0666);
+        }
+    }
+
+    public function testWindowsAtomicReplacementRetainsInheritedDirectoryAcl(): void
+    {
+        if (PHP_OS_FAMILY !== 'Windows') {
+            self::assertNotSame('Windows', PHP_OS_FAMILY);
+            return;
+        }
+
+        $root = $this->temporaryDirectory();
+        $environmentPath = $root . DIRECTORY_SEPARATOR . '.env';
+        file_put_contents($environmentPath, "INSTALL_TOKEN=old-secret\n");
+        $before = $this->windowsAclListing($environmentPath);
+
+        (new InstallFilesystem($root))->writeEnvironment(['INSTALL_TOKEN' => '']);
+
+        self::assertSame($before, $this->windowsAclListing($environmentPath));
+        self::assertSame('INSTALL_TOKEN=""' . PHP_EOL, file_get_contents($environmentPath));
+    }
+
     public function testWritesEnvironmentWithoutTemplateAndRejectsInvalidKeys(): void
     {
         $root = $this->temporaryDirectory();
@@ -166,8 +495,8 @@ ENV);
 
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('previous filesystem state could not be fully restored');
-        $filesystem->commitInstallation(
-            ['APP_INSTALLED' => true],
+            $filesystem->commitInstallation(
+                ['APP_INSTALLED' => true, 'INSTALL_TOKEN' => ''],
             ['private_key' => 'PRIVATE', 'public_key' => 'PUBLIC'],
             ['state' => 'installed'],
             static function () use ($root): never {
@@ -186,7 +515,7 @@ ENV);
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('Installer target is not a regular file');
         (new InstallFilesystem($root))->commitInstallation(
-            ['APP_INSTALLED' => true],
+            ['APP_INSTALLED' => true, 'INSTALL_TOKEN' => ''],
             ['private_key' => 'PRIVATE', 'public_key' => 'PUBLIC'],
             ['state' => 'installed'],
             static fn (): null => null,
@@ -211,6 +540,55 @@ ENV);
         $this->temporaryPaths[] = $path;
 
         return $path;
+    }
+
+    /** @return list<string> */
+    private function temporaryInstallerFiles(string $directory): array
+    {
+        $files = [];
+        foreach (new \DirectoryIterator($directory) as $item) {
+            if ($item->isFile() && str_ends_with($item->getFilename(), '.tmp')) {
+                $files[] = $item->getPathname();
+            }
+        }
+
+        sort($files);
+
+        return $files;
+    }
+
+    private function windowsAclListing(string $path): string
+    {
+        $stdoutPath = tempnam(sys_get_temp_dir(), 'vertoad-acl-out-');
+        $stderrPath = tempnam(sys_get_temp_dir(), 'vertoad-acl-err-');
+        if ($stdoutPath === false || $stderrPath === false) {
+            throw new \RuntimeException('Unable to allocate Windows ACL assertion output files.');
+        }
+
+        $command = ['icacls.exe', $path];
+        try {
+            $pipes = [];
+            $process = proc_open($command, [
+                0 => ['file', 'NUL', 'r'],
+                1 => ['file', $stdoutPath, 'w'],
+                2 => ['file', $stderrPath, 'w'],
+            ], $pipes, options: ['bypass_shell' => true]);
+            if (!is_resource($process)) {
+                throw new \RuntimeException('Unable to start icacls for the Windows ACL assertion.');
+            }
+
+            $exitCode = proc_close($process);
+            $stdout = file_get_contents($stdoutPath);
+            $stderr = file_get_contents($stderrPath);
+            if ($exitCode !== 0 || $stdout === false) {
+                throw new \RuntimeException('Unable to read the Windows ACL: ' . trim((string) $stderr));
+            }
+
+            return trim($stdout);
+        } finally {
+            @unlink($stdoutPath);
+            @unlink($stderrPath);
+        }
     }
 
     private function removeDirectory(string $path): void

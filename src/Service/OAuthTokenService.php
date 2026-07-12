@@ -121,34 +121,54 @@ final readonly class OAuthTokenService
     /** @param array<string, mixed> $input */
     private function authorizationCodeToken(array $input, DateTimeImmutable $now): array
     {
+        $clientId = trim((string) ($input['client_id'] ?? ''));
         $code = trim((string) ($input['code'] ?? ''));
         $verifier = trim((string) ($input['code_verifier'] ?? ''));
         $redirectUri = trim((string) ($input['redirect_uri'] ?? ''));
-        if ($code === '' || $verifier === '' || $redirectUri === '') {
-            throw new InvalidArgumentException('Authorization code, verifier, and redirect URI are required.');
+        if ($clientId === '' || $code === '' || $verifier === '' || $redirectUri === '') {
+            throw new InvalidArgumentException('OAuth client, authorization code, verifier, and redirect URI are required.');
         }
 
-        $grant = $this->tokens->consumeAuthorizationCode(hash('sha256', $code), $now);
-        if ($grant === null) {
-            throw new RuntimeException('OAuth authorization code is invalid, expired, or already used.');
+        $client = $this->authenticatedClient($input, 'authorization_code');
+        $tokenSet = $this->clients->transactional(function () use ($client, $code, $redirectUri, $verifier, $now): ?array {
+            $grant = $this->tokens->consumeAuthorizationCode(
+                hash('sha256', $code),
+                $client->id,
+                $redirectUri,
+                $this->pkceChallenge($verifier),
+                $now,
+            );
+            if ($grant === null) {
+                return null;
+            }
+
+            return $this->issueTokenSet(
+                $client,
+                (int) $grant['user_id'],
+                $grant['organization_id'] === null ? null : (int) $grant['organization_id'],
+                (int) $grant['id'],
+                $grant['scopes'],
+                true,
+                null,
+                $now,
+            );
+        });
+        if ($tokenSet === null) {
+            throw new RuntimeException('OAuth authorization code is invalid, expired, already used, or does not match the client, redirect URI, or PKCE verifier.');
         }
 
-        if (!hash_equals((string) $grant['redirect_uri'], $redirectUri)) {
-            throw new RuntimeException('OAuth redirect URI does not match the authorization request.');
-        }
-
-        if (!hash_equals((string) $grant['code_challenge'], $this->pkceChallenge($verifier))) {
-            throw new RuntimeException('OAuth PKCE verifier does not match the authorization request.');
-        }
-
-        return $this->issueTokenSet($grant['client'], (int) $grant['user_id'], $grant['organization_id'] === null ? null : (int) $grant['organization_id'], (int) $grant['id'], $grant['scopes'], true, null, $now);
+        return $tokenSet;
     }
 
     /** @param array<string, mixed> $input */
     private function clientCredentialsToken(array $input, DateTimeImmutable $now): array
     {
         $client = $this->authenticatedClient($input, 'client_credentials');
-        $scopes = $this->constrainScopes($client, $this->parseScopes((string) ($input['scope'] ?? '')));
+        $scopes = $this->constrainScopes(
+            $client,
+            $this->parseScopes((string) ($input['scope'] ?? '')),
+            machineToken: true,
+        );
 
         return $this->issueTokenSet($client, null, $client->organizationId, null, $scopes, false, null, $now);
     }
@@ -156,23 +176,46 @@ final readonly class OAuthTokenService
     /** @param array<string, mixed> $input */
     private function refreshToken(array $input, DateTimeImmutable $now): array
     {
-        $client = $this->authenticatedClient($input, 'refresh_token');
         $plainRefresh = trim((string) ($input['refresh_token'] ?? ''));
         if ($plainRefresh === '') {
             throw new InvalidArgumentException('Refresh token is required.');
         }
 
-        $refresh = $this->tokens->findUsableRefreshToken(hash('sha256', $plainRefresh), $now);
-        if ($refresh === null) {
-            $this->tokens->markRefreshTokenReuse(hash('sha256', $plainRefresh), $now);
+        $refreshHash = hash('sha256', $plainRefresh);
+        $client = $this->authenticatedClient($input, 'refresh_token');
+        try {
+            $tokenSet = $this->clients->transactional(function () use ($client, $refreshHash, $now): ?array {
+                $refresh = $this->tokens->findUsableRefreshToken($refreshHash, $now);
+                if ($refresh === null) {
+                    return null;
+                }
+
+                if ((int) $refresh['client_id'] !== $client->id) {
+                    throw new RuntimeException('OAuth refresh token does not belong to this client.');
+                }
+
+                return $this->issueTokenSet(
+                    $client,
+                    $refresh['user_id'] === null ? null : (int) $refresh['user_id'],
+                    $refresh['organization_id'] === null ? null : (int) $refresh['organization_id'],
+                    null,
+                    $refresh['scopes'],
+                    true,
+                    (int) $refresh['id'],
+                    $now,
+                );
+            });
+        } catch (OAuthRefreshTokenRotationLostException $exception) {
+            $this->tokens->markRefreshTokenReuse($refreshHash, $now);
+            throw new RuntimeException('OAuth refresh token is invalid, expired, revoked, or already rotated.', previous: $exception);
+        }
+
+        if ($tokenSet === null) {
+            $this->tokens->markRefreshTokenReuse($refreshHash, $now);
             throw new RuntimeException('OAuth refresh token is invalid, expired, revoked, or already rotated.');
         }
 
-        if ((int) $refresh['client_id'] !== $client->id) {
-            throw new RuntimeException('OAuth refresh token does not belong to this client.');
-        }
-
-        return $this->issueTokenSet($client, $refresh['user_id'] === null ? null : (int) $refresh['user_id'], $refresh['organization_id'] === null ? null : (int) $refresh['organization_id'], null, $refresh['scopes'], true, (int) $refresh['id'], $now);
+        return $tokenSet;
     }
 
     /** @param list<string> $scopes */
@@ -207,7 +250,9 @@ final readonly class OAuthTokenService
                 $now->add(new DateInterval('PT' . $this->refreshTokenTtlSeconds . 'S')),
             );
             if ($previousRefreshTokenId !== null) {
-                $this->tokens->rotateRefreshToken($previousRefreshTokenId, $refreshTokenId, $now);
+                if (!$this->tokens->rotateRefreshToken($previousRefreshTokenId, $refreshTokenId, $now)) {
+                    throw new OAuthRefreshTokenRotationLostException('OAuth refresh token rotation lost its active token.');
+                }
             }
 
             $data['refresh_token'] = $refreshToken;
@@ -246,12 +291,16 @@ final readonly class OAuthTokenService
     }
 
     /** @param list<string> $requested */
-    private function constrainScopes(OAuthClient $client, array $requested): array
+    private function constrainScopes(OAuthClient $client, array $requested, bool $machineToken = false): array
     {
         $requested = $requested === [] ? $client->scopes : array_values(array_unique($requested));
         foreach ($requested as $scope) {
             if (!in_array($scope, $client->scopes, true)) {
                 throw new RuntimeException('OAuth scope is not allowed for this client.');
+            }
+
+            if ($machineToken && !OAuthScopeCatalog::isGrantable($scope)) {
+                throw new RuntimeException('OAuth scope is not available to Client Credentials tokens.');
             }
         }
 

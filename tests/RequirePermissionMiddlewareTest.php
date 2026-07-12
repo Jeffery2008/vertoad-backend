@@ -176,6 +176,43 @@ final class RequirePermissionMiddlewareTest extends TestCase
         self::assertSame('ops.dashboard.read.platform', $payload['required_permission'] ?? null);
     }
 
+    public function testUserBoundOauthTokenMustContainRequiredScopeBeforeMembershipCheck(): void
+    {
+        $responseFactory = new ResponseFactory();
+        $user = new AuthenticatedUser(20, 'member@example.com', false);
+        $middleware = new RequirePermissionMiddleware(
+            $responseFactory,
+            new TenantAccessService(new PermissionMiddlewareMembershipRepository([
+                '20:10' => new OrganizationMembership(10, 20, 'active', ['reporter'], ['report.read.own']),
+            ]), new PermissionMatcher()),
+            PermissionRequirement::forAuthenticatedOrganization('report.read.own'),
+        );
+        $request = (new ServerRequestFactory())
+            ->createServerRequest('GET', '/api/v1/reports/dashboard')
+            ->withAttribute(
+                RequestUserContext::ATTRIBUTE,
+                new RequestUserContext(
+                    user: $user,
+                    organizationId: 10,
+                    oauthToken: new OAuthAccessTokenContext(
+                        accessTokenId: 600,
+                        clientId: 500,
+                        clientIdentifier: 'vocl_user_report_client',
+                        organizationId: 10,
+                        user: $user,
+                        scopes: ['campaign.read.own'],
+                    ),
+                ),
+            );
+
+        $response = $middleware->process($request, new PermissionOkHandler($responseFactory));
+        $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame(403, $response->getStatusCode());
+        self::assertSame('permission_required', $payload['code'] ?? null);
+        self::assertSame('report.read.own', $payload['required_permission'] ?? null);
+    }
+
     public function testDeniesOAuthClientWhenRouteOrganizationDoesNotMatchTokenOrganization(): void
     {
         $response = $this->handleProbe(
@@ -230,6 +267,97 @@ final class RequirePermissionMiddlewareTest extends TestCase
         self::assertSame(403, $response->getStatusCode());
         self::assertSame('organization_scope_mismatch', $payload['code'] ?? null);
         self::assertSame(Permission::LedgerRead, $payload['required_permission'] ?? null);
+    }
+
+    public function testMachineTokenRequiresExactAdvertiserOpenApiScope(): void
+    {
+        $responseFactory = new ResponseFactory();
+        $tenantAccess = new TenantAccessService(new PermissionMiddlewareMembershipRepository([]), new PermissionMatcher());
+        $middleware = new RequirePermissionMiddleware(
+            $responseFactory,
+            $tenantAccess,
+            PermissionRequirement::forAuthenticatedOrganization('report.read.own'),
+        );
+
+        foreach ([
+            [['report.read.own'], 200],
+            [['*'], 403],
+            [['campaign.read.own'], 403],
+        ] as [$scopes, $expectedStatus]) {
+            $request = (new ServerRequestFactory())
+                ->createServerRequest('GET', '/api/v1/reports/dashboard')
+                ->withAttribute(
+                    RequestUserContext::ATTRIBUTE,
+                    new RequestUserContext(
+                        organizationId: 10,
+                        oauthToken: new OAuthAccessTokenContext(
+                            accessTokenId: 604,
+                            clientId: 504,
+                            clientIdentifier: 'vocl_report_client',
+                            organizationId: 10,
+                            user: null,
+                            scopes: $scopes,
+                        ),
+                    ),
+                );
+
+            $response = $middleware->process($request, new PermissionOkHandler($responseFactory));
+            self::assertSame($expectedStatus, $response->getStatusCode());
+        }
+
+        $crossOrganization = (new ServerRequestFactory())
+            ->createServerRequest('GET', '/api/v1/reports/dashboard')
+            ->withAttribute(
+                RequestUserContext::ATTRIBUTE,
+                new RequestUserContext(
+                    organizationId: 11,
+                    oauthToken: new OAuthAccessTokenContext(
+                        accessTokenId: 606,
+                        clientId: 506,
+                        clientIdentifier: 'vocl_report_client',
+                        organizationId: 10,
+                        user: null,
+                        scopes: ['report.read.own'],
+                    ),
+                ),
+            );
+        $crossOrganizationResponse = $middleware->process($crossOrganization, new PermissionOkHandler($responseFactory));
+        $crossOrganizationPayload = json_decode((string) $crossOrganizationResponse->getBody(), true, flags: JSON_THROW_ON_ERROR);
+        self::assertSame(403, $crossOrganizationResponse->getStatusCode());
+        self::assertSame('organization_scope_mismatch', $crossOrganizationPayload['code'] ?? null);
+    }
+
+    public function testMachineTokenCannotUseOrganizationManagementScopeEvenWhenLegacyTokenContainsIt(): void
+    {
+        $responseFactory = new ResponseFactory();
+        $middleware = new RequirePermissionMiddleware(
+            $responseFactory,
+            new TenantAccessService(new PermissionMiddlewareMembershipRepository([]), new PermissionMatcher()),
+            PermissionRequirement::forAuthenticatedOrganization('organizations.members.manage'),
+        );
+        $request = (new ServerRequestFactory())
+            ->createServerRequest('POST', '/api/v1/organizations/10/members')
+            ->withAttribute(
+                RequestUserContext::ATTRIBUTE,
+                new RequestUserContext(
+                    organizationId: 10,
+                    oauthToken: new OAuthAccessTokenContext(
+                        accessTokenId: 605,
+                        clientId: 505,
+                        clientIdentifier: 'vocl_legacy_management_client',
+                        organizationId: 10,
+                        user: null,
+                        scopes: ['organizations.members.manage'],
+                    ),
+                ),
+            );
+
+        $response = $middleware->process($request, new PermissionOkHandler($responseFactory));
+        $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame(403, $response->getStatusCode());
+        self::assertSame('permission_required', $payload['code'] ?? null);
+        self::assertSame('organizations.members.manage', $payload['required_permission'] ?? null);
     }
 
     public function testAllowsIntegerRouteOrganizationAttribute(): void
@@ -441,6 +569,11 @@ final class PermissionMiddlewareMembershipRepository implements \VertoAD\Reposit
     public function findActiveMembership(int $userId, int $organizationId): ?OrganizationMembership
     {
         return $this->memberships[$userId . ':' . $organizationId] ?? null;
+    }
+
+    public function listActiveOrganizationsForUser(int $userId): array
+    {
+        return [];
     }
 
     public function listForOrganization(int $organizationId): array

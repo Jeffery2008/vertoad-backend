@@ -23,6 +23,12 @@ return [
         'debug' => filter_var(getenv('APP_DEBUG') ?: false, FILTER_VALIDATE_BOOL),
         'key' => getenv('APP_KEY') ?: '',
     ],
+    'cors' => [
+        'allowed_origins' => array_values(array_filter(array_map(
+            static fn (string $origin): string => trim($origin),
+            explode(',', getenv('CORS_ALLOWED_ORIGINS') ?: (getenv('APP_URL') ?: ''))
+        ))),
+    ],
     'install' => [
         'token' => getenv('INSTALL_TOKEN') ?: '',
     ],
@@ -95,7 +101,14 @@ return [
             'secret_access_key' => getenv('S3_SECRET_ACCESS_KEY') ?: '',
             'path_style_endpoint' => filter_var(getenv('S3_PATH_STYLE_ENDPOINT') ?: true, FILTER_VALIDATE_BOOL),
             'public_base_url' => getenv('R2_PUBLIC_BASE_URL') ?: '',
+            'max_read_bytes' => (int) (getenv('ASSET_S3_MAX_READ_BYTES') ?: 262_144_000),
+            'snapshot_cache_control' => getenv('ASSET_S3_SNAPSHOT_CACHE_CONTROL') ?: 'public, max-age=31536000, immutable',
+            'server_side_encryption' => getenv('ASSET_S3_SERVER_SIDE_ENCRYPTION') ?: '',
         ],
+    ],
+    'integration' => [
+        'sdk_public_base_url' => getenv('SDK_PUBLIC_BASE_URL') ?: '',
+        'ads_public_base_url' => getenv('ADS_PUBLIC_BASE_URL') ?: '',
     ],
     'withdrawal_proofs' => [
         's3' => [
@@ -146,9 +159,16 @@ return [
         'ai_review_batch_size' => (int) (getenv('CRON_AI_REVIEW_BATCH_SIZE') ?: 50),
         'config_cache_ttl_seconds' => (int) (getenv('CRON_CONFIG_CACHE_TTL_SECONDS') ?: 300),
         'expired_token_retention_seconds' => (int) (getenv('CRON_EXPIRED_TOKEN_RETENTION_SECONDS') ?: 86400),
+        'asset_snapshot_batch_size' => (int) (getenv('CRON_ASSET_SNAPSHOT_BATCH_SIZE') ?: 25),
+        'asset_snapshot_lease_seconds' => (int) (getenv('CRON_ASSET_SNAPSHOT_LEASE_SECONDS') ?: 300),
+        'asset_snapshot_max_attempts' => (int) (getenv('CRON_ASSET_SNAPSHOT_MAX_ATTEMPTS') ?: 3),
+        'asset_snapshot_retry_backoff_seconds' => (int) (getenv('CRON_ASSET_SNAPSHOT_RETRY_BACKOFF_SECONDS') ?: 300),
+        'asset_snapshot_ffmpeg_binary' => getenv('CRON_ASSET_SNAPSHOT_FFMPEG_BINARY') ?: 'ffmpeg',
+        'asset_snapshot_ffmpeg_timeout_seconds' => (int) (getenv('CRON_ASSET_SNAPSHOT_FFMPEG_TIMEOUT_SECONDS') ?: 30),
         'jobs' => [
             'redis-events-consume',
             'ip-geo-resolve',
+            'asset-snapshot-generate',
             'aggregate-statistics',
             'archive-parquet',
             'duckdb-cold-query',

@@ -124,6 +124,7 @@ final readonly class S3ObjectStorageInspector implements ObjectStorageInspectorI
             durationSeconds: null,
             checksum: 'sha256:' . hash('sha256', $contents),
             leadingBytes: substr($contents, 0, 512),
+            body: $contents,
         );
     }
 

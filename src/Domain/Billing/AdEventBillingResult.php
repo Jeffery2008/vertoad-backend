@@ -20,8 +20,13 @@ final readonly class AdEventBillingResult
         return new self(true, $duplicate, null, $grossPoints, $publisherPoints);
     }
 
-    public static function skipped(string $reason): self
+    public static function accrued(bool $duplicate = false): self
     {
-        return new self(false, false, $reason, 0, 0);
+        return new self(true, $duplicate, 'cpm_fraction_accumulated', 0, 0);
+    }
+
+    public static function skipped(string $reason, bool $duplicate = false): self
+    {
+        return new self(false, $duplicate, $reason, 0, 0);
     }
 }

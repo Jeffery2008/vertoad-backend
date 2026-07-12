@@ -15,6 +15,7 @@ final readonly class StoredObjectInspection
         public ?float $durationSeconds,
         public ?string $checksum,
         public string $leadingBytes,
+        public ?string $body = null,
     ) {
     }
 }

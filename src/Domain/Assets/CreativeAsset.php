@@ -20,6 +20,10 @@ final readonly class CreativeAsset
         public ?float $durationSeconds,
         public ?string $checksum,
         public AssetStatus $status,
+        public AssetSnapshotStatus $snapshotStatus = AssetSnapshotStatus::Pending,
+        public ?string $snapshotPngObjectKey = null,
+        public ?string $snapshotWebpObjectKey = null,
+        public ?string $thumbnailWebpObjectKey = null,
     ) {
     }
 }

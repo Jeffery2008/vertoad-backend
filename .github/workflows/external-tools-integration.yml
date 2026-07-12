@@ -1,0 +1,67 @@
+name: External Tools Integration
+
+on:
+  push:
+    paths:
+      - .github/workflows/external-tools-integration.yml
+      - composer.json
+      - composer.lock
+      - src/Service/Archive/**
+      - src/Service/Assets/FfmpegAssetFrameExtractor.php
+      - tests/Integration/ExternalTools/**
+  pull_request:
+    paths:
+      - .github/workflows/external-tools-integration.yml
+      - composer.json
+      - composer.lock
+      - src/Service/Archive/**
+      - src/Service/Assets/FfmpegAssetFrameExtractor.php
+      - tests/Integration/ExternalTools/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: external-tools-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-binaries:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out backend
+        uses: actions/checkout@v4
+
+      - name: Configure PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4.22'
+          coverage: none
+          tools: composer:v2
+
+      - name: Install PHP dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Install FFmpeg and verified DuckDB CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg unzip
+          curl --fail --location --retry 5 --retry-all-errors \
+            --output "${RUNNER_TEMP}/duckdb.zip" \
+            https://github.com/duckdb/duckdb/releases/download/v1.5.4/duckdb_cli-linux-amd64.zip
+          echo "1f2fa724fb054b3dbe1a9cbd13de5b76997d850e7087ec762ba88db04e0180cf  ${RUNNER_TEMP}/duckdb.zip" \
+            | sha256sum --check --strict
+          mkdir -p "${RUNNER_TEMP}/duckdb"
+          unzip -q "${RUNNER_TEMP}/duckdb.zip" -d "${RUNNER_TEMP}/duckdb"
+          chmod 0755 "${RUNNER_TEMP}/duckdb/duckdb"
+
+      - name: Run real Parquet and video-frame integration gate
+        env:
+          ARCHIVE_DUCKDB_BINARY: ${{ runner.temp }}/duckdb/duckdb
+          CRON_ASSET_SNAPSHOT_FFMPEG_BINARY: /usr/bin/ffmpeg
+        run: composer test:external-tools-integration

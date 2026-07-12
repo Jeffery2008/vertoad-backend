@@ -46,7 +46,7 @@ final readonly class LazyContainerMiddleware implements MiddlewareInterface
     private function shouldResolve(ServerRequestInterface $request): bool
     {
         $path = '/' . ltrim($request->getUri()->getPath(), '/');
-        $key = strtoupper($request->getMethod()) . ':' . $path;
+        $key = strtoupper($request->getMethod() . ':' . $path);
 
         return isset($this->enabledEndpoints[$key]);
     }

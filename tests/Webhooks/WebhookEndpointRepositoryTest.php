@@ -217,6 +217,8 @@ final class WebhookEndpointRepositoryTest extends TestCase
         self::assertNull($repository->findForOrganization('', 99));
         self::assertNull($repository->findForOrganization('whe_missing', 0));
         self::assertSame([], $repository->listForOrganization(0));
+        self::assertSame([], $repository->listActiveForEvent(0, 'review.approved'));
+        self::assertSame([], $repository->listActiveForEvent(99, ' '));
 
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Webhook endpoint internal ID is required for update.');

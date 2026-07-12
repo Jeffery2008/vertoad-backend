@@ -38,7 +38,7 @@ final class OAuthTokenRouteIntegrationTest extends TestCase
     {
         $connection = $this->createConnection();
         $app = $this->createApp($connection);
-        $client = $this->storeClient($connection, ['authorization_code', 'refresh_token']);
+        $client = $this->storeClient($connection, ['authorization_code', 'refresh_token'], confidential: false);
         $verifier = 'route-verifier';
 
         $consent = $this->handleJson($app, 'POST', '/api/v1/oauth/consent?organization_id=99', [
@@ -114,6 +114,51 @@ final class OAuthTokenRouteIntegrationTest extends TestCase
         self::assertArrayNotHasKey('refresh_token', $token['body']['data']);
     }
 
+    public function testPublicClientCannotUseClientCredentialsWithoutSecret(): void
+    {
+        $connection = $this->createConnection();
+        $app = $this->createApp($connection);
+        $client = $this->storeClient(
+            $connection,
+            ['authorization_code', 'refresh_token'],
+            confidential: false,
+            identifier: 'vocl_public_route_client',
+        );
+
+        $response = $this->handleJson($app, 'POST', '/api/v1/oauth/token', [
+            'grant_type' => 'client_credentials',
+            'client_id' => $client->clientIdentifier,
+            'scope' => 'report.read.own',
+        ]);
+
+        self::assertSame(400, $response['status']);
+        self::assertSame('invalid_grant', $response['body']['error']['code']);
+        self::assertStringContainsString('not authorized for this grant', $response['body']['error']['message']);
+        self::assertSame(0, (int) $connection->fetchOne('SELECT COUNT(*) FROM oauth_access_tokens'));
+
+        $connection->insert('oauth_clients', [
+            'organization_id' => 99,
+            'owner_user_id' => 7,
+            'client_identifier' => 'vocl_legacy_public_client',
+            'name' => 'Legacy Public Client',
+            'secret_hash' => null,
+            'redirect_uris_json' => json_encode(['https://app.example.com/oauth/callback'], JSON_THROW_ON_ERROR),
+            'grant_types_json' => json_encode(['client_credentials'], JSON_THROW_ON_ERROR),
+            'scopes_json' => json_encode(['report.read.own'], JSON_THROW_ON_ERROR),
+            'is_confidential' => 0,
+            'revoked_at' => null,
+        ]);
+        $legacyResponse = $this->handleJson($app, 'POST', '/api/v1/oauth/token', [
+            'grant_type' => 'client_credentials',
+            'client_id' => 'vocl_legacy_public_client',
+            'scope' => 'report.read.own',
+        ]);
+        self::assertSame(400, $legacyResponse['status']);
+        self::assertSame('invalid_grant', $legacyResponse['body']['error']['code']);
+        self::assertStringContainsString('Public OAuth clients cannot use the client_credentials grant', $legacyResponse['body']['error']['message']);
+        self::assertSame(0, (int) $connection->fetchOne('SELECT COUNT(*) FROM oauth_access_tokens'));
+    }
+
     public function testAuthorizeRouteRejectsUnauthenticatedAndInvalidOAuthRequests(): void
     {
         $connection = $this->createConnection();
@@ -179,9 +224,107 @@ final class OAuthTokenRouteIntegrationTest extends TestCase
         self::assertSame('invalid_request', $revoke['body']['error']['code']);
     }
 
+    public function testRefreshReplayRevokesLatestRefreshAndAccessTokensThroughRoutes(): void
+    {
+        $connection = $this->createConnection();
+        $app = $this->createApp($connection);
+        $client = $this->storeClient(
+            $connection,
+            ['authorization_code', 'refresh_token'],
+            confidential: false,
+        );
+        $first = $this->issueUserTokenSet($app, $client, 'family-route-verifier');
+        $secondResponse = $this->handleJson($app, 'POST', '/api/v1/oauth/token', [
+            'grant_type' => 'refresh_token',
+            'client_id' => $client->clientIdentifier,
+            'refresh_token' => $first['refresh_token'],
+        ]);
+        self::assertSame(200, $secondResponse['status']);
+        $second = $secondResponse['body']['data'];
+        self::assertSame(
+            200,
+            $this->handleJson(
+                $app,
+                'GET',
+                '/api/v1/auth/me?organization_id=99',
+                null,
+                $second['access_token'],
+            )['status'],
+        );
+
+        $replay = $this->handleJson($app, 'POST', '/api/v1/oauth/token', [
+            'grant_type' => 'refresh_token',
+            'client_id' => $client->clientIdentifier,
+            'refresh_token' => $first['refresh_token'],
+        ]);
+        self::assertSame(400, $replay['status']);
+        self::assertSame('invalid_grant', $replay['body']['error']['code']);
+        self::assertSame(2, (int) $connection->fetchOne('SELECT COUNT(*) FROM oauth_refresh_tokens WHERE revoked_at IS NOT NULL'));
+        self::assertSame(2, (int) $connection->fetchOne('SELECT COUNT(*) FROM oauth_access_tokens WHERE revoked_at IS NOT NULL'));
+        self::assertSame(1, (int) $connection->fetchOne('SELECT COUNT(*) FROM oauth_refresh_tokens WHERE reuse_detected_at IS NOT NULL'));
+
+        $latestAccess = $this->handleJson(
+            $app,
+            'GET',
+            '/api/v1/auth/me?organization_id=99',
+            null,
+            $second['access_token'],
+        );
+        self::assertSame(401, $latestAccess['status']);
+        self::assertSame('authentication_required', $latestAccess['body']['error']['code']);
+
+        $latestRefresh = $this->handleJson($app, 'POST', '/api/v1/oauth/token', [
+            'grant_type' => 'refresh_token',
+            'client_id' => $client->clientIdentifier,
+            'refresh_token' => $second['refresh_token'],
+        ]);
+        self::assertSame(400, $latestRefresh['status']);
+        self::assertSame('invalid_grant', $latestRefresh['body']['error']['code']);
+    }
+
+    public function testRandomInvalidRefreshTokenDoesNotRevokeAValidFamily(): void
+    {
+        $connection = $this->createConnection();
+        $app = $this->createApp($connection);
+        $client = $this->storeClient(
+            $connection,
+            ['authorization_code', 'refresh_token'],
+            confidential: false,
+        );
+        $first = $this->issueUserTokenSet($app, $client, 'random-route-verifier');
+
+        $invalid = $this->handleJson($app, 'POST', '/api/v1/oauth/token', [
+            'grant_type' => 'refresh_token',
+            'client_id' => $client->clientIdentifier,
+            'refresh_token' => 'vort_random-invalid-token',
+        ]);
+        self::assertSame(400, $invalid['status']);
+        self::assertSame('invalid_grant', $invalid['body']['error']['code']);
+        self::assertSame(0, (int) $connection->fetchOne('SELECT COUNT(*) FROM oauth_refresh_tokens WHERE reuse_detected_at IS NOT NULL'));
+        self::assertSame(0, (int) $connection->fetchOne('SELECT COUNT(*) FROM oauth_refresh_tokens WHERE revoked_at IS NOT NULL'));
+        self::assertSame(0, (int) $connection->fetchOne('SELECT COUNT(*) FROM oauth_access_tokens WHERE revoked_at IS NOT NULL'));
+
+        $validRotation = $this->handleJson($app, 'POST', '/api/v1/oauth/token', [
+            'grant_type' => 'refresh_token',
+            'client_id' => $client->clientIdentifier,
+            'refresh_token' => $first['refresh_token'],
+        ]);
+        self::assertSame(200, $validRotation['status']);
+        self::assertStringStartsWith('voat_', $validRotation['body']['data']['access_token']);
+    }
+
     private function createApp(Connection $connection): \Slim\App
     {
-        $tokens = ['code', 'access', 'refresh', 'client-access'];
+        $tokens = [
+            'code',
+            'access',
+            'refresh',
+            'access-2',
+            'refresh-2',
+            'code-2',
+            'access-3',
+            'refresh-3',
+        ];
         $container = (new ContainerBuilder())->addDefinitions([
             Connection::class => $connection,
             FirstPartySessionRepositoryInterface::class => static fn (): FirstPartySessionRepositoryInterface =>
@@ -252,20 +395,59 @@ final class OAuthTokenRouteIntegrationTest extends TestCase
         return ['status' => $response->getStatusCode(), 'body' => $decoded];
     }
 
+    /** @return array<string, mixed> */
+    private function issueUserTokenSet(\Slim\App $app, OAuthClient $client, string $verifier): array
+    {
+        $consent = $this->handleJson($app, 'POST', '/api/v1/oauth/consent?organization_id=99', [
+            'client_id' => $client->clientIdentifier,
+            'scope' => 'report.read.own',
+        ], 'fixed-session');
+        self::assertSame(200, $consent['status']);
+
+        $authorize = $this->handleJson(
+            $app,
+            'GET',
+            '/api/v1/oauth/authorize?organization_id=99&client_id=' . $client->clientIdentifier
+                . '&redirect_uri=https%3A%2F%2Fapp.example.com%2Foauth%2Fcallback'
+                . '&scope=report.read.own&code_challenge=' . $this->pkceChallenge($verifier)
+                . '&code_challenge_method=S256',
+            null,
+            'fixed-session',
+        );
+        self::assertSame(200, $authorize['status']);
+
+        $token = $this->handleJson($app, 'POST', '/api/v1/oauth/token', [
+            'grant_type' => 'authorization_code',
+            'client_id' => $client->clientIdentifier,
+            'code' => $authorize['body']['data']['code'],
+            'redirect_uri' => 'https://app.example.com/oauth/callback',
+            'code_verifier' => $verifier,
+        ]);
+        self::assertSame(200, $token['status']);
+        self::assertIsArray($token['body']['data']);
+
+        return $token['body']['data'];
+    }
+
     /** @param list<string> $grantTypes */
-    private function storeClient(Connection $connection, array $grantTypes): OAuthClient
+    private function storeClient(
+        Connection $connection,
+        array $grantTypes,
+        bool $confidential = true,
+        string $identifier = 'vocl_route_client',
+    ): OAuthClient
     {
         return (new OAuthClientRepository($connection))->store(new OAuthClient(
             id: null,
             organizationId: 99,
             ownerUserId: 7,
-            clientIdentifier: 'vocl_route_client',
+            clientIdentifier: $identifier,
             name: 'Route Client',
-            secretHash: (new OAuthClientSecretHasher())->hash('plain-secret'),
+            secretHash: $confidential ? (new OAuthClientSecretHasher())->hash('plain-secret') : null,
             redirectUris: ['https://app.example.com/oauth/callback'],
             grantTypes: $grantTypes,
             scopes: ['campaign.read.own', 'report.read.own'],
-            isConfidential: true,
+            isConfidential: $confidential,
             revokedAt: null,
         ));
     }
@@ -275,6 +457,7 @@ final class OAuthTokenRouteIntegrationTest extends TestCase
         $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
         $connection->executeStatement('CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, status TEXT NOT NULL)');
         $connection->executeStatement('CREATE TABLE first_party_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, session_token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, revoked_at TEXT NULL, last_seen_at TEXT NULL)');
+        $connection->executeStatement('CREATE TABLE organizations (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL, billing_status TEXT NOT NULL)');
         $connection->executeStatement('CREATE TABLE organization_members (id INTEGER PRIMARY KEY, organization_id INTEGER NOT NULL, user_id INTEGER NOT NULL, status TEXT NOT NULL, title TEXT NULL)');
         $connection->executeStatement('CREATE TABLE roles (id INTEGER PRIMARY KEY, organization_id INTEGER NULL, slug TEXT NOT NULL, name TEXT NOT NULL)');
         $connection->executeStatement('CREATE TABLE permissions (id INTEGER PRIMARY KEY, slug TEXT NOT NULL, description TEXT NULL)');
@@ -283,10 +466,11 @@ final class OAuthTokenRouteIntegrationTest extends TestCase
         $connection->executeStatement('CREATE TABLE oauth_clients (id INTEGER PRIMARY KEY AUTOINCREMENT, organization_id INTEGER NULL, owner_user_id INTEGER NULL, client_identifier TEXT NOT NULL UNIQUE, name TEXT NOT NULL, secret_hash TEXT NULL, redirect_uris_json TEXT NOT NULL, grant_types_json TEXT NOT NULL, scopes_json TEXT NULL, is_confidential INTEGER NOT NULL DEFAULT 1, revoked_at TEXT NULL)');
         $connection->executeStatement('CREATE TABLE oauth_authorization_codes (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, user_id INTEGER NOT NULL, organization_id INTEGER NULL, code_identifier TEXT NOT NULL UNIQUE, redirect_uri TEXT NOT NULL, scopes_json TEXT NULL, code_challenge TEXT NULL, code_challenge_method TEXT NULL, expires_at TEXT NOT NULL, revoked_at TEXT NULL)');
         $connection->executeStatement('CREATE TABLE oauth_access_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, user_id INTEGER NULL, organization_id INTEGER NULL, authorization_code_id INTEGER NULL, access_token_identifier TEXT NOT NULL UNIQUE, scopes_json TEXT NULL, expires_at TEXT NOT NULL, revoked_at TEXT NULL)');
-        $connection->executeStatement('CREATE TABLE oauth_refresh_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, access_token_id INTEGER NOT NULL, client_id INTEGER NOT NULL, user_id INTEGER NULL, refresh_token_identifier TEXT NOT NULL UNIQUE, previous_refresh_token_id INTEGER NULL, rotated_to_refresh_token_id INTEGER NULL, expires_at TEXT NOT NULL, revoked_at TEXT NULL, rotated_at TEXT NULL, reuse_detected_at TEXT NULL)');
+        $connection->executeStatement('CREATE TABLE oauth_refresh_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, access_token_id INTEGER NOT NULL, client_id INTEGER NOT NULL, user_id INTEGER NULL, refresh_token_identifier TEXT NOT NULL UNIQUE, family_identifier TEXT NOT NULL, previous_refresh_token_id INTEGER NULL, rotated_to_refresh_token_id INTEGER NULL, expires_at TEXT NOT NULL, revoked_at TEXT NULL, rotated_at TEXT NULL, reuse_detected_at TEXT NULL)');
         $connection->executeStatement('CREATE TABLE oauth_user_consents (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, user_id INTEGER NOT NULL, organization_id INTEGER NULL, scopes_json TEXT NOT NULL, granted_at TEXT NOT NULL, revoked_at TEXT NULL)');
         $connection->insert('users', ['id' => 7, 'email' => 'owner@example.com', 'password_hash' => 'unused', 'display_name' => 'Owner', 'status' => 'active']);
         $connection->insert('first_party_sessions', ['user_id' => 7, 'session_token_hash' => hash('sha256', 'fixed-session'), 'expires_at' => '2099-01-01 00:00:00', 'revoked_at' => null, 'last_seen_at' => null]);
+        $connection->insert('organizations', ['id' => 99, 'name' => 'OAuth Advertiser', 'slug' => 'oauth-advertiser', 'billing_status' => 'active']);
         $connection->insert('organization_members', ['id' => 1, 'organization_id' => 99, 'user_id' => 7, 'status' => 'active', 'title' => null]);
 
         return $connection;

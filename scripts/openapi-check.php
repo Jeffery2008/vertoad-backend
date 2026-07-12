@@ -34,6 +34,7 @@ $operationErrors = array_merge(
     securityErrorsFromParsedOpenApi($parsed, $implementedSecurity),
     queryParameterErrorsFromParsedOpenApi($parsed),
     schemaStructureErrorsFromParsedOpenApi($parsed),
+    oauthContractErrorsFromParsedOpenApi($parsed),
 );
 
 if ($operationErrors !== []) {
@@ -195,6 +196,111 @@ function metadataErrorsFromParsedOpenApi(array $parsed): array
     }
 
     return $errors;
+}
+
+/**
+ * @return list<string>
+ */
+function oauthContractErrorsFromParsedOpenApi(array $parsed): array
+{
+    if (!is_array($parsed['paths']['/api/v1/oauth/token']['post'] ?? null)) {
+        return [];
+    }
+
+    $errors = [];
+    $scheme = $parsed['components']['securitySchemes']['OAuth2'] ?? null;
+    if (!is_array($scheme) || ($scheme['type'] ?? null) !== 'oauth2') {
+        return ['OpenAPI OAuth contract must define components.securitySchemes.OAuth2 with type oauth2.'];
+    }
+
+    $expectedScopes = expectedOpenApiOAuthScopes();
+    foreach (['authorizationCode', 'clientCredentials'] as $flowName) {
+        $flow = $scheme['flows'][$flowName] ?? null;
+        if (!is_array($flow)) {
+            $errors[] = "OpenAPI OAuth2 security scheme is missing {$flowName} flow.";
+            continue;
+        }
+
+        $scopes = $flow['scopes'] ?? null;
+        if (!is_array($scopes)) {
+            $errors[] = "OpenAPI OAuth2 {$flowName} flow must declare the advertiser Open API scope catalog.";
+            continue;
+        }
+
+        $documentedScopes = array_values(array_filter(array_keys($scopes), 'is_string'));
+        $missingScopes = array_values(array_diff($expectedScopes, $documentedScopes));
+        $unsupportedScopes = array_values(array_diff($documentedScopes, $expectedScopes));
+        if ($missingScopes !== []) {
+            $errors[] = "OpenAPI OAuth2 {$flowName} flow is missing catalog scopes: " . implode(', ', $missingScopes);
+        }
+        if ($unsupportedScopes !== []) {
+            $errors[] = "OpenAPI OAuth2 {$flowName} flow exposes non-catalog scopes: " . implode(', ', $unsupportedScopes);
+        }
+    }
+
+    $clientCredentials = resolveLocalRef(
+        $parsed,
+        '#/components/schemas/OAuthClientCredentialsTokenRequest',
+    );
+    if (!is_array($clientCredentials) || !in_array('client_secret', $clientCredentials['required'] ?? [], true)) {
+        $errors[] = 'OpenAPI OAuthClientCredentialsTokenRequest must require client_secret.';
+    }
+
+    $clientCreate = resolveLocalRef($parsed, '#/components/schemas/OAuthClientCreateRequest');
+    if (!is_array($clientCreate) || !publicOAuthClientSchemaForbidsClientCredentials($clientCreate)) {
+        $errors[] = 'OpenAPI OAuthClientCreateRequest must forbid client_credentials when is_confidential is false.';
+    }
+    $createScopes = is_array($clientCreate)
+        ? ($clientCreate['properties']['scopes']['items']['enum'] ?? null)
+        : null;
+    if (!is_array($createScopes)) {
+        $errors[] = 'OpenAPI OAuthClientCreateRequest must declare the advertiser Open API scope catalog enum.';
+    } else {
+        $documentedCreateScopes = array_values(array_filter($createScopes, 'is_string'));
+        $missingCreateScopes = array_values(array_diff($expectedScopes, $documentedCreateScopes));
+        $unsupportedCreateScopes = array_values(array_diff($documentedCreateScopes, $expectedScopes));
+        if ($missingCreateScopes !== []) {
+            $errors[] = 'OpenAPI OAuthClientCreateRequest is missing catalog scopes: ' . implode(', ', $missingCreateScopes);
+        }
+        if ($unsupportedCreateScopes !== []) {
+            $errors[] = 'OpenAPI OAuthClientCreateRequest exposes non-catalog scopes: ' . implode(', ', $unsupportedCreateScopes);
+        }
+    }
+
+    return $errors;
+}
+
+/** @return list<string> */
+function expectedOpenApiOAuthScopes(): array
+{
+    if (!class_exists(\VertoAD\Service\OAuthScopeCatalog::class)) {
+        $autoloadPath = dirname(__DIR__) . '/vendor/autoload.php';
+        if (is_file($autoloadPath)) {
+            require_once $autoloadPath;
+        }
+    }
+
+    return class_exists(\VertoAD\Service\OAuthScopeCatalog::class)
+        ? \VertoAD\Service\OAuthScopeCatalog::all()
+        : [];
+}
+
+/** @param array<string, mixed> $schema */
+function publicOAuthClientSchemaForbidsClientCredentials(array $schema): bool
+{
+    foreach (($schema['allOf'] ?? []) as $condition) {
+        if (!is_array($condition)) {
+            continue;
+        }
+
+        $publicClient = ($condition['if']['properties']['is_confidential']['const'] ?? null) === false;
+        $grantTypes = $condition['then']['properties']['grant_types']['items']['enum'] ?? null;
+        if ($publicClient && $grantTypes === ['authorization_code', 'refresh_token']) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 /**

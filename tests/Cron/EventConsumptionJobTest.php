@@ -525,7 +525,7 @@ SQL
             campaignId: 123,
             advertiserOrganizationId: 99,
             publisherOrganizationId: $publisherOrganizationId,
-            costPoints: $costPoints,
+            costPoints: $type === 'impression' && $costPoints !== null ? $costPoints * 1_000 : $costPoints,
             occurredAt: $occurredAt ?? new DateTimeImmutable('2026-06-08 10:00:00'),
             valid: $valid,
             reason: $valid ? null : 'fraud_rejected',

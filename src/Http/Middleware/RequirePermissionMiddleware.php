@@ -13,6 +13,7 @@ use RuntimeException;
 use Slim\Routing\RouteContext;
 use VertoAD\Http\Auth\PermissionRequirement;
 use VertoAD\Http\Auth\RequestUserContext;
+use VertoAD\Service\OAuthScopeCatalog;
 use VertoAD\Service\TenantAccessService;
 
 final readonly class RequirePermissionMiddleware implements MiddlewareInterface
@@ -35,7 +36,8 @@ final readonly class RequirePermissionMiddleware implements MiddlewareInterface
             );
         }
 
-        if ($context->oauthToken !== null && !$context->hasOAuthScope($this->requirement->permission)) {
+        $machineToken = $context->oauthToken !== null && $context->user === null;
+        if ($context->oauthToken !== null && !$machineToken && !$context->hasOAuthScope($this->requirement->permission)) {
             return $this->errorResponse(
                 403,
                 'permission_required',
@@ -108,6 +110,18 @@ final readonly class RequirePermissionMiddleware implements MiddlewareInterface
                 403,
                 'organization_scope_mismatch',
                 'The OAuth access token is not scoped to the requested organization.',
+                ['required_permission' => $this->requirement->permission],
+            );
+        }
+
+        if ($machineToken && (
+            !OAuthScopeCatalog::isGrantable($this->requirement->permission)
+            || !in_array($this->requirement->permission, $context->oauthToken?->scopes ?? [], true)
+        )) {
+            return $this->errorResponse(
+                403,
+                'permission_required',
+                'The OAuth client is not allowed to use the required scope through the advertiser Open API.',
                 ['required_permission' => $this->requirement->permission],
             );
         }

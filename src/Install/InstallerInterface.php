@@ -6,7 +6,7 @@ namespace VertoAD\Install;
 
 interface InstallerInterface
 {
-    /** @return array{installation_id: string, admin_user_id: int, organization_id: int, oauth_client_id: string, oauth_client_secret: string} */
+    /** @return array{installation_id: string, admin_user_id: int, organization_id: int, oauth_client_id: string} */
     public function install(
         InstallInput $input,
         bool $localInstallation,

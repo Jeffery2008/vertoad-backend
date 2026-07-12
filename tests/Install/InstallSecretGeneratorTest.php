@@ -7,7 +7,6 @@ namespace VertoAD\Tests\Install;
 use Defuse\Crypto\Key;
 use PHPUnit\Framework\TestCase;
 use VertoAD\Install\InstallSecretGenerator;
-use VertoAD\Service\OAuthClientSecretHasher;
 
 final class InstallSecretGeneratorTest extends TestCase
 {
@@ -20,16 +19,13 @@ final class InstallSecretGeneratorTest extends TestCase
         self::assertInstanceOf(Key::class, Key::loadFromAsciiSafeString($secrets['app_key']));
         self::assertGreaterThanOrEqual(43, strlen($secrets['oauth_encryption_key']));
         self::assertStringStartsWith('voc_', $secrets['oauth_client_id']);
-        self::assertStringStartsWith('vocs_', $secrets['oauth_client_secret']);
+        self::assertArrayNotHasKey('oauth_client_secret', $secrets);
         self::assertStringStartsWith('vcron_', $secrets['cron_api_token']);
         self::assertStringStartsWith('vwhsec_', $secrets['webhook_signing_secret']);
         self::assertCount(count($secrets), array_unique($secrets));
-        self::assertTrue((new OAuthClientSecretHasher())->verify(
-            $secrets['oauth_client_secret'],
-            (new OAuthClientSecretHasher())->hash($secrets['oauth_client_secret']),
-        ));
 
         $keyPair = $generator->generateOAuthKeyPair();
+        self::assertStringNotContainsString('ENCRYPTED', $keyPair['private_key']);
         self::assertNotFalse(openssl_pkey_get_private($keyPair['private_key']));
         self::assertNotFalse(openssl_pkey_get_public($keyPair['public_key']));
     }

@@ -41,6 +41,13 @@ final readonly class RotateOAuthClientSecretAction
             ], 404);
         }
 
+        if (!$client->isConfidential) {
+            return OAuthClientSerializers::json($response, [
+                'code' => 'oauth_client_is_public',
+                'message' => 'Public OAuth clients do not have secrets to rotate.',
+            ], 422);
+        }
+
         $secret = $this->secrets->generateSecret();
         $rotated = $this->clients->transactional(function () use ($client, $context, $request, $secret): bool {
             $rotated = $this->clients->rotateSecret($client->clientIdentifier, $this->secrets->hash($secret));

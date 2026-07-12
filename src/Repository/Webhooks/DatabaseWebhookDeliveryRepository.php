@@ -7,12 +7,14 @@ namespace VertoAD\Repository\Webhooks;
 use DateTimeImmutable;
 use DateTimeZone;
 use Doctrine\DBAL\Connection;
+use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\DBAL\ParameterType;
 use VertoAD\Domain\Webhooks\WebhookDelivery;
 use VertoAD\Domain\Webhooks\WebhookEndpoint;
+use VertoAD\Domain\Webhooks\WebhookEvent;
 use VertoAD\Http\RequestIdContext;
 
-final readonly class DatabaseWebhookDeliveryRepository implements WebhookDeliveryRepositoryInterface
+final readonly class DatabaseWebhookDeliveryRepository implements WebhookEventDeliveryRepositoryInterface
 {
     public function __construct(private Connection $connection)
     {
@@ -24,16 +26,57 @@ final readonly class DatabaseWebhookDeliveryRepository implements WebhookDeliver
             throw new \InvalidArgumentException('Webhook endpoint internal ID is required to queue a delivery.');
         }
 
-        $requestId = $this->requestIdFromPayload($payload) ?? RequestIdContext::current();
         $payloadJson = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+
+        return $this->queue(
+            endpoint: $endpoint,
+            deliveryId: 'whd_' . hash('sha256', $endpoint->endpointId . '|' . trim($eventType) . '|' . $payloadJson . '|' . bin2hex(random_bytes(16))),
+            eventType: trim($eventType),
+            payloadJson: $payloadJson,
+            requestId: $this->requestIdFromPayload($payload) ?? RequestIdContext::current(),
+            idempotent: false,
+        );
+    }
+
+    public function queueEventForEndpoint(WebhookEndpoint $endpoint, WebhookEvent $event): WebhookDelivery
+    {
+        if ($endpoint->organizationId !== $event->organizationId) {
+            throw new \InvalidArgumentException('Webhook event organization does not match the endpoint organization.');
+        }
+        if (!$endpoint->enabled() || !in_array($event->eventType, $endpoint->events, true)) {
+            throw new \InvalidArgumentException('Webhook endpoint is not active for this event type.');
+        }
+
+        return $this->queue(
+            endpoint: $endpoint,
+            deliveryId: 'whd_' . hash('sha256', $endpoint->endpointId . '|' . $event->eventId),
+            eventType: $event->eventType,
+            payloadJson: $event->payloadJson(),
+            requestId: $event->requestId,
+            idempotent: true,
+        );
+    }
+
+    private function queue(
+        WebhookEndpoint $endpoint,
+        string $deliveryId,
+        string $eventType,
+        string $payloadJson,
+        ?string $requestId,
+        bool $idempotent,
+    ): WebhookDelivery {
+        if ($endpoint->id === null) {
+            throw new \InvalidArgumentException('Webhook endpoint internal ID is required to queue a delivery.');
+        }
+
         $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
         $delivery = new WebhookDelivery(
-            delivery_id: 'whd_' . sha1($endpoint->endpointId . '|' . trim($eventType) . '|' . $payloadJson . '|' . bin2hex(random_bytes(16))),
+            delivery_id: $deliveryId,
             organization_id: $endpoint->organizationId,
             webhook_endpoint_id: $endpoint->id,
             endpoint_id: $endpoint->endpointId,
             endpoint_url: $endpoint->endpointUrl,
-            event_type: trim($eventType),
+            event_type: $eventType,
             payload_json: $payloadJson,
             request_id: $requestId,
             status: 'queued',
@@ -47,7 +90,30 @@ final readonly class DatabaseWebhookDeliveryRepository implements WebhookDeliver
             delivered_at: null,
         );
 
-        return $this->save($delivery);
+        if (!$idempotent) {
+            return $this->save($delivery);
+        }
+
+        $existing = $this->find($deliveryId);
+        if ($existing !== null) {
+            $this->assertSameQueuedEvent($existing, $delivery);
+
+            return $existing;
+        }
+
+        try {
+            $this->connection->insert('webhook_deliveries', $this->rowFromDelivery($delivery));
+        } catch (UniqueConstraintViolationException) {
+            $existing = $this->find($deliveryId);
+            if ($existing === null) {
+                throw new \RuntimeException('Webhook delivery idempotency lookup failed.');
+            }
+            $this->assertSameQueuedEvent($existing, $delivery);
+
+            return $existing;
+        }
+
+        return $delivery;
     }
 
     public function save(WebhookDelivery $delivery): WebhookDelivery
@@ -339,5 +405,18 @@ final readonly class DatabaseWebhookDeliveryRepository implements WebhookDeliver
         $requestId = trim((string) $requestId);
 
         return $requestId === '' ? null : $requestId;
+    }
+
+    private function assertSameQueuedEvent(WebhookDelivery $existing, WebhookDelivery $requested): void
+    {
+        if (
+            $existing->organization_id !== $requested->organization_id
+            || $existing->webhook_endpoint_id !== $requested->webhook_endpoint_id
+            || $existing->event_type !== $requested->event_type
+            || $existing->payload_json !== $requested->payload_json
+            || $existing->request_id !== $requested->request_id
+        ) {
+            throw new \InvalidArgumentException('Webhook delivery ID conflicts with an existing event delivery.');
+        }
     }
 }

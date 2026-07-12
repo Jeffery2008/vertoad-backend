@@ -12,6 +12,17 @@ interface OrganizationMembershipRepositoryInterface
 
     /**
      * @return list<array{
+     *     id:int,
+     *     name:string,
+     *     slug:string,
+     *     roles:list<string>,
+     *     permissions:list<string>
+     * }>
+     */
+    public function listActiveOrganizationsForUser(int $userId): array;
+
+    /**
+     * @return list<array{
      *     member_id:int,
      *     organization_id:int,
      *     user_id:int,
@@ -24,5 +35,4 @@ interface OrganizationMembershipRepositoryInterface
      * }>
      */
     public function listForOrganization(int $organizationId): array;
-
 }

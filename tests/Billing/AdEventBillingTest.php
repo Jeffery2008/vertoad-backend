@@ -290,7 +290,8 @@ final class AdEventBillingTest extends TestCase
         $connection->executeStatement(
             <<<'SQL'
 CREATE TRIGGER fail_publisher_earning_insert
-BEFORE INSERT ON publisher_earning_events
+BEFORE INSERT ON ledger_entries
+WHEN NEW.account_type = 'publisher_earnings'
 BEGIN
     SELECT RAISE(FAIL, 'publisher earning insert failed');
 END
@@ -307,6 +308,8 @@ SQL
         self::assertSame(1_000, $ledgerRepository->balanceForOrganization(99));
         self::assertSame(0, $ledgerRepository->balanceForOrganization(42, 'publisher_earnings'));
         self::assertSame(0, (int) $connection->fetchOne("SELECT COUNT(*) FROM spend_reservations WHERE status = 'committed'"));
+        self::assertSame(0, (int) $connection->fetchOne('SELECT COUNT(*) FROM cpm_billing_event_allocations'));
+        self::assertSame(0, (int) $connection->fetchOne('SELECT COUNT(*) FROM cpm_billing_accumulators'));
     }
 
     public function testCommitRejectionPreventsPublisherCredit(): void
@@ -445,7 +448,7 @@ SQL
             campaignId: $campaignId,
             adId: 'ad-1',
             viewerId: 'viewer-1',
-            costPoints: $costPoints,
+            costPoints: $type === 'impression' ? $costPoints * 1_000 : $costPoints,
             valid: $valid,
             occurredAt: new DateTimeImmutable('2026-06-08 10:00:00'),
         );

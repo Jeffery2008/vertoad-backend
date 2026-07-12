@@ -29,6 +29,21 @@ final class ProcessArchiveCommandRunnerTest extends TestCase
         self::assertSame('bad', $result->stderr);
     }
 
+    public function testDrainsLargeStdoutAndStderrWithoutPipeDeadlock(): void
+    {
+        $runner = new ProcessArchiveCommandRunner();
+        $bytes = 1024 * 1024;
+        $result = $runner->run([
+            PHP_BINARY,
+            '-r',
+            sprintf('fwrite(STDOUT, str_repeat("o", %d)); fwrite(STDERR, str_repeat("e", %d));', $bytes, $bytes),
+        ], null, 10);
+
+        self::assertSame(0, $result->exitCode);
+        self::assertSame($bytes, strlen($result->stdout));
+        self::assertSame($bytes, strlen($result->stderr));
+    }
+
     public function testRejectsInvalidCommandAndTimeout(): void
     {
         $runner = new ProcessArchiveCommandRunner();
@@ -72,20 +87,17 @@ final class ProcessArchiveCommandRunnerTest extends TestCase
         self::assertStringContainsString('Archive command timed out.', $result->stderr);
     }
 
-    public function testClosesProcessPipesWhenCommandExecutionThrows(): void
+    public function testHandlesChildClosingStdinBeforeLargeInputIsWritten(): void
     {
         $runner = new ProcessArchiveCommandRunner();
-        set_error_handler(static function (int $severity, string $message, string $file, int $line): never {
-            throw new \ErrorException($message, 0, $severity, $file, $line);
-        });
+        $result = $runner->run(
+            [PHP_BINARY, '-r', 'fclose(STDIN); fwrite(STDERR, "closed");'],
+            str_repeat('x', 1024 * 1024 * 16),
+            10,
+        );
 
-        try {
-            $this->expectException(\ErrorException::class);
-            $this->expectExceptionMessage('Broken pipe');
-
-            $runner->run([PHP_BINARY, '-r', 'exit(0);'], str_repeat('x', 1024 * 1024 * 16), 10);
-        } finally {
-            restore_error_handler();
-        }
+        self::assertSame(0, $result->exitCode);
+        self::assertSame('', $result->stdout);
+        self::assertSame('closed', $result->stderr);
     }
 }

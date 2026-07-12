@@ -10,7 +10,6 @@ use PHPUnit\Framework\TestCase;
 use VertoAD\Install\BootstrapConfigCatalog;
 use VertoAD\Install\BootstrapSeeder;
 use VertoAD\Install\InstallInput;
-use VertoAD\Service\OAuthClientSecretHasher;
 use VertoAD\Service\PermissionInventory;
 
 final class BootstrapSeederTest extends TestCase
@@ -52,8 +51,10 @@ final class BootstrapSeederTest extends TestCase
         self::assertNotNull($user['email_verified_at']);
         $client = $connection->fetchAssociative('SELECT * FROM oauth_clients');
         self::assertIsArray($client);
-        self::assertTrue((new OAuthClientSecretHasher())->verify('vocs_initial_test_secret', (string) $client['secret_hash']));
-        self::assertSame(['authorization_code', 'client_credentials', 'refresh_token'], json_decode((string) $client['grant_types_json'], true, flags: JSON_THROW_ON_ERROR));
+        self::assertNull($client['secret_hash']);
+        self::assertSame('VertoAD First-Party SPA', $client['name']);
+        self::assertSame(0, (int) $client['is_confidential']);
+        self::assertSame(['authorization_code', 'refresh_token'], json_decode((string) $client['grant_types_json'], true, flags: JSON_THROW_ON_ERROR));
         self::assertCount($permissionCount, json_decode((string) $client['scopes_json'], true, flags: JSON_THROW_ON_ERROR));
 
         $geo = $connection->fetchOne("SELECT value_json FROM system_config_versions WHERE config_key = 'serving.geo_provider'");
@@ -152,7 +153,7 @@ final class BootstrapSeederTest extends TestCase
         return $connection;
     }
 
-    /** @return array{installation_id: string, app_key: string, oauth_encryption_key: string, oauth_client_id: string, oauth_client_secret: string, cron_api_token: string, webhook_signing_secret: string} */
+    /** @return array{installation_id: string, app_key: string, oauth_encryption_key: string, oauth_client_id: string, cron_api_token: string, webhook_signing_secret: string} */
     private function secrets(): array
     {
         return [
@@ -160,7 +161,6 @@ final class BootstrapSeederTest extends TestCase
             'app_key' => 'not-used-by-seeder',
             'oauth_encryption_key' => 'not-used-by-seeder',
             'oauth_client_id' => 'voc_initial_test_client',
-            'oauth_client_secret' => 'vocs_initial_test_secret',
             'cron_api_token' => 'not-used-by-seeder',
             'webhook_signing_secret' => 'not-used-by-seeder',
         ];

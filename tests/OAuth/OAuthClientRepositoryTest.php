@@ -111,6 +111,8 @@ final class OAuthClientRepositoryTest extends TestCase
         self::assertSame(['authorization_code'], $client->grantTypes);
         self::assertSame([], $client->scopes);
         self::assertFalse($client->isConfidential);
+        self::assertFalse($repository->rotateSecret('client_123', 'hash-v2'));
+        self::assertNull($connection->fetchOne('SELECT secret_hash FROM oauth_clients'));
     }
 
     private function createSchema(\Doctrine\DBAL\Connection $connection): void

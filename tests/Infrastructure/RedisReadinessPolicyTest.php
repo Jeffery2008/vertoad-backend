@@ -67,6 +67,21 @@ final class RedisReadinessPolicyTest extends TestCase
             null,
             "This user has no permissions to run the 'config|get' command",
         ));
+        self::assertFalse($policy->interpretAclDryRun(
+            'FLUSHALL',
+            "User default has no permissions to run the 'flushall' command",
+            null,
+        ));
+        self::assertFalse($policy->interpretAclDryRun(
+            'FLUSHDB',
+            "User default has no permissions to run the 'flushdb' command",
+            null,
+        ));
+        self::assertFalse($policy->interpretAclDryRun(
+            'CONFIG',
+            "User default has no permissions to run the 'config|get' command",
+            null,
+        ));
         self::assertNull($policy->interpretAclDryRun(
             'FLUSHDB',
             null,

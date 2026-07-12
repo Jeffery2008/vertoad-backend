@@ -101,7 +101,7 @@ final class OAuthClientRepository implements OAuthClientRepositoryInterface
         }
 
         $affected = $this->connection->executeStatement(
-            'UPDATE oauth_clients SET secret_hash = ? WHERE client_identifier = ? AND revoked_at IS NULL',
+            'UPDATE oauth_clients SET secret_hash = ? WHERE client_identifier = ? AND is_confidential = 1 AND revoked_at IS NULL',
             [$secretHash, $clientIdentifier],
             [ParameterType::STRING, ParameterType::STRING],
         );

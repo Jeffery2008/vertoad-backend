@@ -52,6 +52,7 @@ final readonly class ProcessMysqlBackupRunner implements MysqlBackupRunnerInterf
             [
                 '--single-transaction', '--routines', '--triggers', '--events', '--hex-blob',
                 '--set-gtid-purged=OFF', '--result-file=' . $destinationPath,
+                '--ignore-table=' . (string) $this->database['database'] . '.operation_backup_jobs',
                 (string) $this->database['database'],
             ],
         );

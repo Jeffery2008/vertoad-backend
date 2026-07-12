@@ -105,6 +105,7 @@ final readonly class S3BackupObjectStorage implements BackupObjectStorageInterfa
             'CopySource' => $this->copySource($sourceBucket, $sourceKey),
             'ServerSideEncryption' => $this->serverSideEncryption,
         ]);
+        $this->assertServerSideEncryption($destinationObjectKey);
     }
 
     public function exists(string $objectKey): bool
@@ -153,6 +154,15 @@ final readonly class S3BackupObjectStorage implements BackupObjectStorageInterfa
             'ContentType' => $contentType,
             'ServerSideEncryption' => $this->serverSideEncryption,
         ]);
+        $this->assertServerSideEncryption($objectKey);
+    }
+
+    private function assertServerSideEncryption(string $objectKey): void
+    {
+        $actual = trim((string) ($this->head($objectKey)['ServerSideEncryption'] ?? ''));
+        if (!hash_equals($this->serverSideEncryption, $actual)) {
+            throw new RuntimeException('Backup object does not use the required server-side encryption.');
+        }
     }
 
     /** @return array<string, mixed> */

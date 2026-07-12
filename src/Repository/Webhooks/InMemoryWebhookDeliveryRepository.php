@@ -8,9 +8,10 @@ use DateTimeImmutable;
 use DateTimeZone;
 use VertoAD\Domain\Webhooks\WebhookDelivery;
 use VertoAD\Domain\Webhooks\WebhookEndpoint;
+use VertoAD\Domain\Webhooks\WebhookEvent;
 use VertoAD\Http\RequestIdContext;
 
-final class InMemoryWebhookDeliveryRepository implements WebhookDeliveryRepositoryInterface
+final class InMemoryWebhookDeliveryRepository implements WebhookEventDeliveryRepositoryInterface
 {
     /** @var array<string, WebhookDelivery> */
     private array $deliveries = [];
@@ -48,6 +49,51 @@ final class InMemoryWebhookDeliveryRepository implements WebhookDeliveryReposito
         );
 
         return $this->save($delivery);
+    }
+
+    public function queueEventForEndpoint(WebhookEndpoint $endpoint, WebhookEvent $event): WebhookDelivery
+    {
+        if ($endpoint->id === null) {
+            throw new \InvalidArgumentException('Webhook endpoint internal ID is required to queue a delivery.');
+        }
+        if ($endpoint->organizationId !== $event->organizationId) {
+            throw new \InvalidArgumentException('Webhook event organization does not match the endpoint organization.');
+        }
+        if (!$endpoint->enabled() || !in_array($event->eventType, $endpoint->events, true)) {
+            throw new \InvalidArgumentException('Webhook endpoint is not active for this event type.');
+        }
+
+        $deliveryId = 'whd_' . hash('sha256', $endpoint->endpointId . '|' . $event->eventId);
+        $existing = $this->find($deliveryId);
+        if ($existing !== null) {
+            if ($existing->payload_json !== $event->payloadJson()) {
+                throw new \InvalidArgumentException('Webhook delivery ID conflicts with an existing event delivery.');
+            }
+
+            return $existing;
+        }
+
+        $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+
+        return $this->save(new WebhookDelivery(
+            delivery_id: $deliveryId,
+            organization_id: $endpoint->organizationId,
+            webhook_endpoint_id: $endpoint->id,
+            endpoint_id: $endpoint->endpointId,
+            endpoint_url: $endpoint->endpointUrl,
+            event_type: $event->eventType,
+            payload_json: $event->payloadJson(),
+            request_id: $event->requestId,
+            status: 'queued',
+            retry_count: 0,
+            next_attempt_at: $now,
+            last_attempt_at: null,
+            last_status_code: null,
+            last_error: null,
+            signature_header: null,
+            created_at: $now,
+            delivered_at: null,
+        ));
     }
 
     public function save(WebhookDelivery $delivery): WebhookDelivery

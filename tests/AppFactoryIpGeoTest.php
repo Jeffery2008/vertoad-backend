@@ -214,7 +214,7 @@ namespace VertoAD\Tests {
 
         #[RunInSeparateProcess]
         #[PreserveGlobalState(false)]
-        public function testNativeRedisClientSetExDelegatesToPhpRedisSetex(): void
+        public function testNativeRedisClientDelegatesToPhpRedisScalarCommands(): void
         {
             if (!class_exists('Redis')) {
                 eval(<<<'PHP'
@@ -223,12 +223,21 @@ namespace {
     {
         /** @var array<string, array{seconds:int,value:string}> */
         public array $setExCalls = [];
+        /** @var list<string> */
+        public array $deleteCalls = [];
 
         public function setex(string $key, int $seconds, string $value): bool
         {
             $this->setExCalls[$key] = ['seconds' => $seconds, 'value' => $value];
 
             return true;
+        }
+
+        public function del(string $key): int
+        {
+            $this->deleteCalls[] = $key;
+
+            return 1;
         }
     }
 }
@@ -239,10 +248,12 @@ PHP);
             $client = new NativeRedisClient($redis);
 
             self::assertTrue($client->setEx('ip-geo:record', '{"ok":true}', 60));
+            self::assertSame(1, $client->delete('ip-geo:record'));
             self::assertSame(
                 ['seconds' => 60, 'value' => '{"ok":true}'],
                 $redis->setExCalls['ip-geo:record'] ?? null,
             );
+            self::assertSame(['ip-geo:record'], $redis->deleteCalls);
         }
 
         public function testServeFrameReusesRequestServingContextAttribute(): void

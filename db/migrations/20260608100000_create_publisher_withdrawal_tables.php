@@ -267,7 +267,7 @@ SQL);
 
         $this->execute(<<<'SQL'
 ALTER TABLE withdrawal_requests
-    ADD CONSTRAINT fk_withdrawal_requests_payment_proof FOREIGN KEY (payment_proof_id, id) REFERENCES withdrawal_proofs (id, withdrawal_request_id) ON DELETE RESTRICT
+    ADD CONSTRAINT fk_withdrawal_requests_payment_proof FOREIGN KEY (payment_proof_id, id, organization_id) REFERENCES withdrawal_proofs (id, withdrawal_request_id, organization_id) ON DELETE RESTRICT
 SQL);
 
         $this->execute(<<<'SQL'

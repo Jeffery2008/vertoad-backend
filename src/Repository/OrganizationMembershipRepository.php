@@ -206,9 +206,98 @@ final class OrganizationMembershipRepository implements OrganizationMembershipRe
             organizationId: (int) $member['organization_id'],
             userId: (int) $member['user_id'],
             status: (string) $member['status'],
-            roleSlugs: array_values(array_unique($roleSlugs)),
-            permissions: array_values(array_unique($permissions)),
+            roleSlugs: $this->uniqueSortedSlugs($roleSlugs),
+            permissions: $this->uniqueSortedSlugs($permissions),
         );
+    }
+
+    public function listActiveOrganizationsForUser(int $userId): array
+    {
+        if ($userId <= 0) {
+            throw new \InvalidArgumentException('user_id must be a positive integer.');
+        }
+
+        $rows = $this->connection->createQueryBuilder()
+            ->select(
+                'o.id AS organization_id',
+                'o.name AS organization_name',
+                'o.slug AS organization_slug',
+                'r.slug AS role_slug',
+                'p.slug AS permission_slug',
+            )
+            ->from('organization_members', 'om')
+            ->innerJoin('om', 'organizations', 'o', 'o.id = om.organization_id')
+            ->leftJoin(
+                'om',
+                'user_roles',
+                'ur',
+                'ur.user_id = om.user_id AND ur.organization_id = om.organization_id',
+            )
+            ->leftJoin(
+                'ur',
+                'roles',
+                'r',
+                'r.id = ur.role_id AND r.organization_id = om.organization_id',
+            )
+            ->leftJoin('r', 'role_permissions', 'rp', 'rp.role_id = r.id')
+            ->leftJoin('rp', 'permissions', 'p', 'p.id = rp.permission_id')
+            ->where('om.user_id = :user_id')
+            ->andWhere("om.status = 'active'")
+            ->andWhere("o.billing_status = 'active'")
+            ->andWhere("TRIM(o.name) <> ''")
+            ->andWhere("TRIM(o.slug) <> ''")
+            ->orderBy('o.slug', 'ASC')
+            ->addOrderBy('o.id', 'ASC')
+            ->addOrderBy('r.slug', 'ASC')
+            ->addOrderBy('p.slug', 'ASC')
+            ->setParameter('user_id', $userId)
+            ->fetchAllAssociative();
+
+        $organizations = [];
+        foreach ($rows as $row) {
+            $organizationId = (int) $row['organization_id'];
+            $organizations[$organizationId] ??= [
+                'id' => $organizationId,
+                'name' => (string) $row['organization_name'],
+                'slug' => (string) $row['organization_slug'],
+                'roles' => [],
+                'permissions' => [],
+            ];
+
+            if ($row['role_slug'] !== null) {
+                $organizations[$organizationId]['roles'][] = (string) $row['role_slug'];
+            }
+            if ($row['permission_slug'] !== null) {
+                $organizations[$organizationId]['permissions'][] = (string) $row['permission_slug'];
+            }
+        }
+
+        foreach ($organizations as $organizationId => $organization) {
+            $organizations[$organizationId]['roles'] = $this->uniqueSortedSlugs($organization['roles']);
+            $organizations[$organizationId]['permissions'] = $this->uniqueSortedSlugs($organization['permissions']);
+        }
+
+        return array_values($organizations);
+    }
+
+    /**
+     * @param list<string> $slugs
+     * @return list<string>
+     */
+    private function uniqueSortedSlugs(array $slugs): array
+    {
+        $normalized = [];
+        foreach ($slugs as $slug) {
+            $slug = trim($slug);
+            if ($slug !== '') {
+                $normalized[] = $slug;
+            }
+        }
+
+        $normalized = array_values(array_unique($normalized, SORT_STRING));
+        sort($normalized, SORT_STRING);
+
+        return $normalized;
     }
 
     public function listForOrganization(int $organizationId): array

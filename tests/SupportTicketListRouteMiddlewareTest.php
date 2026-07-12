@@ -205,6 +205,11 @@ final class SupportTicketListRouteMembershipRepository implements OrganizationMe
         return new OrganizationMembership(101, 501, 'active', ['publisher-support'], ['support.ticket.read.own']);
     }
 
+    public function listActiveOrganizationsForUser(int $userId): array
+    {
+        return [];
+    }
+
     public function listForOrganization(int $organizationId): array
     {
         return [];

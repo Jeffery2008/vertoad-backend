@@ -4,10 +4,15 @@ declare(strict_types=1);
 
 namespace VertoAD\Http\Action\Webhooks;
 
+use DateTimeImmutable;
+use DateTimeZone;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
+use VertoAD\Domain\Webhooks\WebhookEvent;
+use VertoAD\Domain\Webhooks\WebhookEventType;
 use VertoAD\Http\Action\Campaigns\CampaignRequestGuards;
 use VertoAD\Http\Auth\RequestUserContext;
+use VertoAD\Http\RequestIdContext;
 use VertoAD\Repository\Webhooks\WebhookDeliveryRepositoryInterface;
 use VertoAD\Repository\Webhooks\WebhookEndpointRepositoryInterface;
 
@@ -38,12 +43,18 @@ final readonly class TestWebhookEndpointAction
             );
         }
 
-        $delivery = $this->deliveries->queueForEndpoint($endpoint, 'webhook.test', [
-            'type' => 'webhook.test',
-            'endpoint_id' => $endpoint->endpointId,
-            'organization_id' => $endpoint->organizationId,
-            'message' => 'VertoAD webhook endpoint test delivery.',
-        ]);
+        $event = new WebhookEvent(
+            eventId: 'evt_test_' . bin2hex(random_bytes(20)),
+            eventType: WebhookEventType::WEBHOOK_TEST,
+            organizationId: $endpoint->organizationId,
+            data: [
+                'endpoint_id' => $endpoint->endpointId,
+                'message' => 'VertoAD webhook endpoint test delivery.',
+            ],
+            occurredAt: new DateTimeImmutable('now', new DateTimeZone('UTC')),
+            requestId: RequestIdContext::fromRequest($request),
+        );
+        $delivery = $this->deliveries->queueForEndpoint($endpoint, $event->eventType, $event->toArray());
 
         return WebhookEndpointSerializers::json($response, [
             'endpoint' => WebhookEndpointSerializers::endpoint($endpoint),

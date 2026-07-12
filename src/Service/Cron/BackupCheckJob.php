@@ -43,27 +43,29 @@ final readonly class BackupCheckJob implements CronJobInterface
         if (($redisHardening['password_configured'] ?? false) !== true) {
             $missing[] = 'redis_password';
         }
-        if (!is_array($dangerousCommandsDisabled) || $dangerousCommandsDisabled === []) {
+        if (!is_array($dangerousCommandsDisabled)
+            || array_diff(['FLUSHALL', 'FLUSHDB', 'CONFIG'], $dangerousCommandsDisabled) !== []) {
             $missing[] = 'redis_dangerous_command_controls';
         }
         if (($redisHardening['auth_failure_alerting_configured'] ?? false) !== true) {
             $missing[] = 'redis_auth_failure_alerting';
         }
 
-        return CronJobResult::completed(
-            $this->name(),
-            [
-                'healthy' => $missing === [],
-                'backup_status' => $status,
-                'last_backup_at' => $lastBackupAt,
-                'last_successful_backup_id' => $lastBackupId,
-                'last_restore_drill_at' => $lastDrillAt,
-                'missing_controls' => count($missing),
-            ],
-            $missing === []
-                ? 'Backup, restore drill, and Redis hardening evidence are healthy.'
-                : 'Backup check found missing or unhealthy operational evidence: ' . implode(', ', $missing) . '.',
-        );
+        $metrics = [
+            'healthy' => $missing === [],
+            'backup_status' => $status,
+            'last_backup_at' => $lastBackupAt,
+            'last_successful_backup_id' => $lastBackupId,
+            'last_restore_drill_at' => $lastDrillAt,
+            'missing_controls' => count($missing),
+        ];
+        $message = $missing === []
+            ? 'Backup, restore drill, and Redis hardening evidence are healthy.'
+            : 'Backup check found missing or unhealthy operational evidence: ' . implode(', ', $missing) . '.';
+
+        return $missing === []
+            ? CronJobResult::completed($this->name(), $metrics, $message)
+            : CronJobResult::failed($this->name(), $metrics, $message);
     }
 
     private function nullableString(mixed $value): ?string

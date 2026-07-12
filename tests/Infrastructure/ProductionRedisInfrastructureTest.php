@@ -7,11 +7,39 @@ namespace VertoAD\Tests\Infrastructure;
 use Defuse\Crypto\Key;
 use PHPUnit\Framework\TestCase;
 use VertoAD\AppFactory;
+use VertoAD\Bootstrap\EnvironmentLoader;
 use VertoAD\Infrastructure\Security\RateLimitStoreInterface;
 use VertoAD\Service\Cron\CronLockStoreInterface;
 
 final class ProductionRedisInfrastructureTest extends TestCase
 {
+    private string|false $previousEnvironmentFile;
+    private string $environmentFile;
+
+    protected function setUp(): void
+    {
+        $this->previousEnvironmentFile = getenv(EnvironmentLoader::ENV_FILE_VARIABLE);
+        $environmentFile = tempnam(sys_get_temp_dir(), 'vertoad-redis-env-');
+        if ($environmentFile === false || file_put_contents($environmentFile, '') === false) {
+            if ($environmentFile !== false) {
+                @unlink($environmentFile);
+            }
+
+            throw new \RuntimeException('Unable to initialize a temporary external environment file.');
+        }
+
+        $this->environmentFile = $environmentFile;
+        putenv(EnvironmentLoader::ENV_FILE_VARIABLE . '=' . $environmentFile);
+    }
+
+    protected function tearDown(): void
+    {
+        $this->restoreEnv([
+            EnvironmentLoader::ENV_FILE_VARIABLE => $this->previousEnvironmentFile,
+        ]);
+        @unlink($this->environmentFile);
+    }
+
     public function testProductionCronLocksDoNotFallbackWhenRedisPasswordIsMissing(): void
     {
         $previous = $this->configureProductionWithoutRedisPassword();

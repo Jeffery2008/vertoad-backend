@@ -26,10 +26,11 @@ final class CronAuthMiddleware implements MiddlewareInterface
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
         $expectedToken = (string) ($this->settings['cron']['token'] ?? '');
-        $providedToken = $request->getHeaderLine('X-Cron-Token');
-        if ($providedToken === '') {
-            $providedToken = (string) ($request->getQueryParams()['token'] ?? '');
+        if (array_key_exists('token', $request->getQueryParams())) {
+            return $this->errorResponse(401, 'unauthorized', 'Cron token is missing or invalid.');
         }
+
+        $providedToken = $request->getHeaderLine('X-Cron-Token');
 
         if ($expectedToken === '' || !hash_equals($expectedToken, $providedToken)) {
             return $this->errorResponse(401, 'unauthorized', 'Cron token is missing or invalid.');

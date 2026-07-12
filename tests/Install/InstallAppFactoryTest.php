@@ -12,6 +12,7 @@ final class InstallAppFactoryTest extends TestCase
 {
     private string|false $previousEnvironment;
     private string|false $previousInstalled;
+    private string|false $previousEnvironmentFile;
     /** @var list<string> */
     private array $temporaryDirectories = [];
 
@@ -19,15 +20,40 @@ final class InstallAppFactoryTest extends TestCase
     {
         $this->previousEnvironment = getenv('APP_ENV');
         $this->previousInstalled = getenv('APP_INSTALLED');
+        $this->previousEnvironmentFile = getenv('VERTOAD_ENV_FILE');
     }
 
     protected function tearDown(): void
     {
         $this->restoreEnvironment('APP_ENV', $this->previousEnvironment);
         $this->restoreEnvironment('APP_INSTALLED', $this->previousInstalled);
+        $this->restoreEnvironment('VERTOAD_ENV_FILE', $this->previousEnvironmentFile);
         foreach (array_reverse($this->temporaryDirectories) as $path) {
             $this->removeDirectory($path);
         }
+    }
+
+    public function testInstallerLoadsConfigurationFromAnExternalEnvironmentFile(): void
+    {
+        putenv('APP_ENV');
+        putenv('APP_INSTALLED');
+        $root = $this->temporaryAppRoot();
+        $environmentDirectory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'vertoad-install-env-' . bin2hex(random_bytes(6));
+        mkdir($environmentDirectory, 0700, true);
+        $this->temporaryDirectories[] = $environmentDirectory;
+        $environmentPath = $environmentDirectory . DIRECTORY_SEPARATOR . 'staging.env';
+        file_put_contents($environmentPath, "APP_ENV=local\nAPP_INSTALLED=false\n");
+        putenv('VERTOAD_ENV_FILE=' . $environmentPath);
+
+        $response = AppFactory::create($root)->handle((new ServerRequestFactory())->createServerRequest(
+            'GET',
+            'http://localhost/install',
+            ['REMOTE_ADDR' => '127.0.0.1'],
+        ));
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertStringContainsString('Secure installation', (string) $response->getBody());
+        self::assertFileDoesNotExist($root . DIRECTORY_SEPARATOR . '.env');
     }
 
     public function testUninstalledApplicationExposesInstallerAndFailsOtherRoutesClosed(): void

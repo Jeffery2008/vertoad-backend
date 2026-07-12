@@ -7,11 +7,11 @@ namespace VertoAD;
 use VertoAD\Domain\Billing\WithdrawalProofPolicy;
 use DI\ContainerBuilder;
 use Doctrine\DBAL\Connection;
-use Dotenv\Dotenv;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Slim\App;
 use Slim\Factory\AppFactory as SlimAppFactory;
+use VertoAD\Bootstrap\EnvironmentLoader;
 use VertoAD\Domain\Security\TurnstilePolicy;
 use VertoAD\Domain\IpGeo\IpGeoProviderPolicy;
 use VertoAD\Http\Action\Cron\CronStatusAction;
@@ -25,6 +25,7 @@ use VertoAD\Http\Error\OperationErrorHandler;
 use VertoAD\Http\Auth\BearerTokenAuthenticator;
 use VertoAD\Http\Middleware\AuthenticateRequestMiddleware;
 use VertoAD\Http\Middleware\CronAuthMiddleware;
+use VertoAD\Http\Middleware\CorsMiddleware;
 use VertoAD\Http\Middleware\CreativeTemplateWritePermissionMiddleware;
 use VertoAD\Http\Middleware\ApiEnvelopeMiddleware;
 use VertoAD\Http\Middleware\IpGeoMiddleware;
@@ -32,6 +33,7 @@ use VertoAD\Http\Middleware\LazyContainerMiddleware;
 use VertoAD\Http\Middleware\RateLimitMiddleware;
 use VertoAD\Http\Middleware\RequestIdMiddleware;
 use VertoAD\Http\Middleware\TurnstileMiddleware;
+use VertoAD\Http\Middleware\WebhookRequestIdMiddleware;
 use VertoAD\Http\RequestIdContext;
 use VertoAD\Infrastructure\Database\ConnectionFactory;
 use VertoAD\Infrastructure\OAuth\LeagueOAuthRepository;
@@ -52,8 +54,10 @@ use VertoAD\Infrastructure\Storage\ObjectStorageInspectorInterface;
 use VertoAD\Infrastructure\Storage\ObjectStorageUploadSignerInterface;
 use VertoAD\Infrastructure\Storage\PublicUrlObjectStorageInspector;
 use VertoAD\Infrastructure\Storage\S3ArchiveObjectStorage;
+use VertoAD\Infrastructure\Storage\S3AssetObjectStorage;
 use VertoAD\Infrastructure\Storage\S3BackupObjectStorage;
 use VertoAD\Infrastructure\Storage\S3ObjectStorageInspector;
+use VertoAD\Infrastructure\Storage\UnavailableAssetObjectStorage;
 use VertoAD\Infrastructure\Storage\UnavailableBackupObjectStorage;
 use VertoAD\Infrastructure\Storage\UnavailableObjectStorageInspector;
 use VertoAD\Install\BootstrapSeeder;
@@ -71,8 +75,12 @@ use VertoAD\Repository\AuditLogRepository;
 use VertoAD\Repository\AuditLogRepositoryInterface;
 use VertoAD\Repository\Assets\AssetRepository;
 use VertoAD\Repository\Assets\AssetRepositoryInterface;
+use VertoAD\Repository\Assets\AssetSnapshotJobRepository;
+use VertoAD\Repository\Assets\AssetSnapshotJobRepositoryInterface;
 use VertoAD\Repository\Attribution\AttributionEventRepositoryInterface;
 use VertoAD\Repository\Attribution\DatabaseAttributionEventRepository;
+use VertoAD\Repository\Billing\CpmBillingRepositoryInterface;
+use VertoAD\Repository\Billing\DatabaseCpmBillingRepository;
 use VertoAD\Repository\Billing\RevenueShareRepository;
 use VertoAD\Repository\Billing\WithdrawalRepository;
 use VertoAD\Repository\Campaign\CampaignRepository;
@@ -97,6 +105,7 @@ use VertoAD\Repository\Serving\InMemoryAdEventRepository;
 use VertoAD\Repository\Serving\RedisAdEventRepository;
 use VertoAD\Repository\Serving\ServingInventoryRepositoryInterface;
 use VertoAD\Repository\Cron\ServingEventBufferInterface;
+use VertoAD\Repository\Cron\ServingRequestEventBufferInterface;
 use VertoAD\Repository\FirstPartySessionRepository;
 use VertoAD\Repository\FirstPartySessionRepositoryInterface;
 use VertoAD\Repository\Fraud\DatabaseFraudRiskFeatureRepository;
@@ -148,10 +157,18 @@ use VertoAD\Repository\UserIdentityRepository;
 use VertoAD\Repository\UserIdentityRepositoryInterface;
 use VertoAD\Repository\Webhooks\DatabaseWebhookDeliveryRepository;
 use VertoAD\Repository\Webhooks\DatabaseWebhookEndpointRepository;
+use VertoAD\Repository\Webhooks\DatabaseWebhookOutboxRepository;
 use VertoAD\Repository\Webhooks\WebhookDeliveryRepositoryInterface;
 use VertoAD\Repository\Webhooks\WebhookEndpointRepositoryInterface;
+use VertoAD\Repository\Webhooks\WebhookEventDeliveryRepositoryInterface;
+use VertoAD\Repository\Webhooks\WebhookOutboxRepositoryInterface;
 use VertoAD\Service\AdSlotSetupService;
 use VertoAD\Service\Assets\AssetUploadService;
+use VertoAD\Service\Assets\AssetObjectStorageInterface;
+use VertoAD\Service\Assets\AssetPublicUrlResolver;
+use VertoAD\Service\Assets\AssetSnapshotGenerator;
+use VertoAD\Service\Assets\FabricCreativePayloadValidator;
+use VertoAD\Service\Assets\FfmpegAssetFrameExtractor;
 use VertoAD\Service\Archive\ArchiveJob;
 use VertoAD\Service\Archive\ArchiveObjectStorageInterface;
 use VertoAD\Service\Archive\ArchiveService;
@@ -165,12 +182,14 @@ use VertoAD\Service\Archive\FixtureColdQueryRunner;
 use VertoAD\Service\Cron\ArchiveParquetJob;
 use VertoAD\Service\Cron\AiReviewQueueJob;
 use VertoAD\Service\Cron\AggregateStatisticsJob;
+use VertoAD\Service\Cron\AssetSnapshotGenerationJob;
 use VertoAD\Service\Cron\BackupCheckJob;
 use VertoAD\Service\Cron\BackupCreateJob;
 use VertoAD\Service\Cron\BackupRestoreJob;
 use VertoAD\Service\Attribution\AttributionService;
 use VertoAD\Service\AuditLogService;
 use VertoAD\Service\AuthService;
+use VertoAD\Service\Billing\CpmBillingService;
 use VertoAD\Service\Billing\RevenueShareService;
 use VertoAD\Service\Billing\AdEventBillingService;
 use VertoAD\Service\Billing\WithdrawalProofService;
@@ -201,6 +220,7 @@ use VertoAD\Service\IpGeo\IpGeoProviderSelector;
 use VertoAD\Service\IpGeo\MappedHttpIpGeoProviderClient;
 use VertoAD\Service\IpGeo\MappedIpGeoResponseNormalizer;
 use VertoAD\Service\OAuthClientSecretHasher;
+use VertoAD\Service\OAuthScopeCatalog;
 use VertoAD\Service\OAuthTokenService;
 use VertoAD\Service\Operations\ConfigVersionService;
 use VertoAD\Service\Operations\Backup\BackupExecutor;
@@ -248,6 +268,7 @@ use VertoAD\Service\TenantAccessService;
 use VertoAD\Service\Webhooks\WebhookDeliveryJob;
 use VertoAD\Service\Webhooks\WebhookEndpointSecretCipher;
 use VertoAD\Service\Webhooks\WebhookEndpointSecretCipherInterface;
+use VertoAD\Service\Webhooks\WebhookOutboxDispatchService;
 use VertoAD\Service\Webhooks\WebhookSigner;
 
 final class AppFactory
@@ -256,14 +277,12 @@ final class AppFactory
     {
         $rootPath = $basePath ?? dirname(__DIR__);
 
-        if (is_file($rootPath . '/.env')) {
-            Dotenv::createUnsafeImmutable($rootPath)->safeLoad();
-        }
+        $environmentPath = EnvironmentLoader::load($rootPath);
 
         $settings = require $rootPath . '/config/settings.php';
         $installState = new InstallState($rootPath);
         if (!$installState->isInstalled()) {
-            return self::createInstallerApp($rootPath, $settings, $installState);
+            return self::createInstallerApp($rootPath, $environmentPath, $settings, $installState);
         }
 
         $container = (new ContainerBuilder())
@@ -316,6 +335,10 @@ final class AppFactory
                     BearerTokenAuthenticator $authenticator,
                 ): AuthenticateRequestMiddleware => new AuthenticateRequestMiddleware($authenticator),
                 PermissionMatcher::class => static fn (): PermissionMatcher => new PermissionMatcher(),
+                OAuthScopeCatalog::class => static fn (
+                    OrganizationMembershipRepositoryInterface $memberships,
+                    PermissionMatcher $permissions,
+                ): OAuthScopeCatalog => new OAuthScopeCatalog($memberships, $permissions),
                 TenantAccessService::class => static fn (
                     OrganizationMembershipRepositoryInterface $memberships,
                     PermissionMatcher $permissions,
@@ -351,16 +374,41 @@ final class AppFactory
                 ),
                 AssetRepositoryInterface::class => static fn (Connection $connection): AssetRepositoryInterface =>
                     new AssetRepository($connection),
+                AssetSnapshotJobRepositoryInterface::class => static fn (Connection $connection): AssetSnapshotJobRepositoryInterface =>
+                    new AssetSnapshotJobRepository($connection),
                 ObjectStorageUploadSignerInterface::class => static fn (): ObjectStorageUploadSignerInterface =>
                     self::objectStorageUploadSigner($settings),
                 ObjectStorageInspectorInterface::class => static fn (): ObjectStorageInspectorInterface =>
                     self::objectStorageInspector($settings),
+                AssetPublicUrlResolver::class => static fn (): AssetPublicUrlResolver =>
+                    self::assetPublicUrlResolver($settings),
+                AssetObjectStorageInterface::class => static fn (): AssetObjectStorageInterface =>
+                    self::assetObjectStorage($settings),
+                FabricCreativePayloadValidator::class => static fn (
+                    AssetPublicUrlResolver $publicUrls,
+                ): FabricCreativePayloadValidator => new FabricCreativePayloadValidator($publicUrls),
+                FfmpegAssetFrameExtractor::class => static fn (): FfmpegAssetFrameExtractor =>
+                    new FfmpegAssetFrameExtractor(
+                        binary: (string) ($settings['cron']['asset_snapshot_ffmpeg_binary'] ?? 'ffmpeg'),
+                        timeoutSeconds: (int) ($settings['cron']['asset_snapshot_ffmpeg_timeout_seconds'] ?? 30),
+                    ),
+                AssetSnapshotGenerator::class => static fn (
+                    FabricCreativePayloadValidator $fabricValidator,
+                    FfmpegAssetFrameExtractor $videoFrames,
+                ): AssetSnapshotGenerator => new AssetSnapshotGenerator($fabricValidator, $videoFrames),
                 AssetUploadService::class => static fn (
                     AssetRepositoryInterface $repository,
                     ObjectStorageUploadSignerInterface $signer,
                     ObjectStorageInspectorInterface $inspector,
                     SystemConfigService $configs,
-                ): AssetUploadService => new AssetUploadService($repository, $signer, $inspector, $configs->assetUploadPolicy()),
+                    FabricCreativePayloadValidator $fabricValidator,
+                ): AssetUploadService => new AssetUploadService(
+                    $repository,
+                    $signer,
+                    $inspector,
+                    $configs->assetUploadPolicy(),
+                    fabricValidator: $fabricValidator,
+                ),
                 ReviewRepositoryInterface::class => static fn (Connection $connection): ReviewRepositoryInterface =>
                     new ReviewRepository($connection),
                 CreativeReviewProviderInterface::class => static fn (
@@ -399,8 +447,10 @@ final class AppFactory
                 ): CreativeDesignService => new CreativeDesignService($templates, $designs, $audit),
                 ServingInventoryRepositoryInterface::class => static fn (Connection $connection): ServingInventoryRepositoryInterface =>
                     new DatabaseServingInventoryRepository($connection),
-                AdCandidateRepositoryInterface::class => static fn (Connection $connection): AdCandidateRepositoryInterface =>
-                    new DatabaseAdCandidateRepository($connection),
+                AdCandidateRepositoryInterface::class => static fn (
+                    Connection $connection,
+                    AssetPublicUrlResolver $publicUrls,
+                ): AdCandidateRepositoryInterface => new DatabaseAdCandidateRepository($connection, $publicUrls),
                 AdDecisionRepositoryInterface::class => static fn (Connection $connection): AdDecisionRepositoryInterface =>
                     new DatabaseAdDecisionRepository($connection),
                 DatabaseAdEventRepository::class => static fn (Connection $connection): DatabaseAdEventRepository =>
@@ -466,7 +516,8 @@ final class AppFactory
                     AdServingService $serving,
                     ClientIpResolver $ipResolver,
                     GeoResolverInterface $geoResolver,
-                ): ServeFrameAction => new ServeFrameAction($serving, $ipResolver, $geoResolver),
+                    AssetPublicUrlResolver $publicAssets,
+                ): ServeFrameAction => new ServeFrameAction($serving, $ipResolver, $geoResolver, $publicAssets),
                 ReportQueryService::class => static fn (
                     ReportAggregateRepositoryInterface $aggregates,
                 ): ReportQueryService => new ReportQueryService($aggregates),
@@ -619,16 +670,33 @@ final class AppFactory
                 WebhookSigner::class => static fn (): WebhookSigner => new WebhookSigner(
                     (string) ($settings['webhooks']['signing_secret'] ?? 'whsec_local_dev_secret'),
                 ),
-                WebhookDeliveryRepositoryInterface::class => static fn (Connection $connection): WebhookDeliveryRepositoryInterface =>
+                WebhookEventDeliveryRepositoryInterface::class => static fn (Connection $connection): WebhookEventDeliveryRepositoryInterface =>
                     new DatabaseWebhookDeliveryRepository($connection),
+                WebhookDeliveryRepositoryInterface::class => static fn (
+                    WebhookEventDeliveryRepositoryInterface $repository,
+                ): WebhookDeliveryRepositoryInterface => $repository,
                 WebhookEndpointRepositoryInterface::class => static fn (Connection $connection): WebhookEndpointRepositoryInterface =>
                     new DatabaseWebhookEndpointRepository($connection),
+                WebhookOutboxRepositoryInterface::class => static fn (Connection $connection): WebhookOutboxRepositoryInterface =>
+                    new DatabaseWebhookOutboxRepository($connection),
                 WebhookEndpointSecretCipherInterface::class => static fn (): WebhookEndpointSecretCipherInterface =>
                     new WebhookEndpointSecretCipher((string) ($settings['app']['key'] ?? '')),
+                WebhookOutboxDispatchService::class => static fn (
+                    Connection $connection,
+                    WebhookOutboxRepositoryInterface $outbox,
+                    WebhookEndpointRepositoryInterface $endpoints,
+                    WebhookEventDeliveryRepositoryInterface $deliveries,
+                ): WebhookOutboxDispatchService => new WebhookOutboxDispatchService(
+                    $connection,
+                    $outbox,
+                    $endpoints,
+                    $deliveries,
+                ),
                 WebhookDeliveryJob::class => static function (
                     WebhookDeliveryRepositoryInterface $deliveries,
                     WebhookEndpointRepositoryInterface $endpoints,
                     WebhookEndpointSecretCipherInterface $secrets,
+                    WebhookOutboxDispatchService $outboxDispatcher,
                     SystemConfigService $configs,
                 ): WebhookDeliveryJob {
                     $policy = $configs->webhookDeliveryPolicy();
@@ -641,6 +709,7 @@ final class AppFactory
                         $policy->batchSize,
                         $policy->maxRetryCount,
                         $policy->retryBaseBackoffSeconds,
+                        $outboxDispatcher,
                     );
                 },
                 RealTimeGeoLookupInterface::class => static fn (
@@ -670,6 +739,7 @@ final class AppFactory
                     AdSelectionPolicyInterface $selectionPolicy,
                     SystemConfigService $configs,
                     OperationRiskDecisionLogRepositoryInterface $riskDecisions,
+                    CpmBillingService $cpmBilling,
                 ): AdServingService => new AdServingService(
                     $inventory,
                     $candidates,
@@ -679,6 +749,10 @@ final class AppFactory
                     $selectionPolicy,
                     $configs->servingEventPolicy(),
                     $riskDecisions,
+                    fabricRendererUrl: self::integrationPublicBaseUrl('SDK_PUBLIC_BASE_URL', $settings)
+                        . '/fabric-renderer.js',
+                    serveEvents: $events instanceof ServingRequestEventBufferInterface ? $events : null,
+                    cpmChargeEstimator: $cpmBilling,
                 ),
                 AuditLogRepositoryInterface::class => static fn (Connection $connection): AuditLogRepositoryInterface =>
                     new AuditLogRepository($connection),
@@ -690,15 +764,23 @@ final class AppFactory
                     new PointsLedgerService($repository),
                 RevenueShareRepository::class => static fn (Connection $connection): RevenueShareRepository =>
                     new RevenueShareRepository($connection),
+                CpmBillingRepositoryInterface::class => static fn (Connection $connection): CpmBillingRepositoryInterface =>
+                    new DatabaseCpmBillingRepository($connection),
                 RevenueShareService::class => static fn (
                     RevenueShareRepository $repository,
                     PointsLedgerService $ledger,
                 ): RevenueShareService => new RevenueShareService($repository, $ledger),
+                CpmBillingService::class => static fn (
+                    CpmBillingRepositoryInterface $repository,
+                    CampaignBudgetService $budgets,
+                    RevenueShareService $revenueShare,
+                ): CpmBillingService => new CpmBillingService($repository, $budgets, $revenueShare),
                 AdEventBillingService::class => static fn (
                     CampaignBudgetService $budgets,
                     RevenueShareService $revenueShare,
                     Connection $connection,
-                ): AdEventBillingService => new AdEventBillingService($budgets, $revenueShare, $connection),
+                    CpmBillingService $cpmBilling,
+                ): AdEventBillingService => new AdEventBillingService($budgets, $revenueShare, $connection, $cpmBilling),
                 WithdrawalRepository::class => static fn (Connection $connection): WithdrawalRepository =>
                     new WithdrawalRepository($connection),
                 WithdrawalService::class => static fn (
@@ -830,6 +912,19 @@ final class AppFactory
                     MappedHttpIpGeoProviderClient $client,
                     IpGeoProviderPolicy $policy,
                 ): IpGeoLookupJob => new IpGeoLookupJob($repository, $selector, $client, $policy),
+                AssetSnapshotGenerationJob::class => static fn (
+                    AssetSnapshotJobRepositoryInterface $jobs,
+                    AssetObjectStorageInterface $storage,
+                    AssetSnapshotGenerator $generator,
+                ): AssetSnapshotGenerationJob => new AssetSnapshotGenerationJob(
+                    $jobs,
+                    $storage,
+                    $generator,
+                    (int) ($settings['cron']['asset_snapshot_batch_size'] ?? 25),
+                    (int) ($settings['cron']['asset_snapshot_lease_seconds'] ?? 300),
+                    (int) ($settings['cron']['asset_snapshot_max_attempts'] ?? 3),
+                    (int) ($settings['cron']['asset_snapshot_retry_backoff_seconds'] ?? 300),
+                ),
                 CronJobRegistry::class => static function (
                     EventConsumptionJob $eventConsumption,
                     WebhookDeliveryJob $webhookDelivery,
@@ -845,6 +940,7 @@ final class AppFactory
                     BackupRestoreJob $backupRestore,
                     PartitionMaintenanceJob $partitionMaintenance,
                     IpGeoLookupJob $ipGeoLookup,
+                    AssetSnapshotGenerationJob $assetSnapshotGeneration,
                 ) use ($settings): CronJobRegistry {
                     $jobs = [
                         $eventConsumption,
@@ -861,6 +957,7 @@ final class AppFactory
                         $backupRestore,
                         $partitionMaintenance,
                         $ipGeoLookup,
+                        $assetSnapshotGeneration,
                     ];
                     $registeredNames = array_fill_keys(array_map(
                         static fn (CronJobInterface $job): string => $job->name(),
@@ -955,18 +1052,30 @@ final class AppFactory
         $app->addRoutingMiddleware();
         $errorMiddleware = $app->addErrorMiddleware((bool) $settings['app']['debug'], true, true);
         $errorMiddleware->setDefaultErrorHandler($container->get(OperationErrorHandler::class));
+        $app->add(new CorsMiddleware(
+            $app->getResponseFactory(),
+            is_array($settings['cors']['allowed_origins'] ?? null)
+                ? array_values(array_map('strval', $settings['cors']['allowed_origins']))
+                : [],
+        ));
+        $app->add(new WebhookRequestIdMiddleware($container->get(Connection::class)));
         $app->add(new RequestIdMiddleware());
 
         return $app;
     }
 
     /** @param array<string, mixed> $settings */
-    private static function createInstallerApp(string $rootPath, array $settings, InstallState $state): App
+    private static function createInstallerApp(
+        string $rootPath,
+        string $environmentPath,
+        array $settings,
+        InstallState $state,
+    ): App
     {
         $container = (new ContainerBuilder())->build();
         SlimAppFactory::setContainer($container);
         $app = SlimAppFactory::create();
-        $filesystem = new InstallFilesystem($rootPath);
+        $filesystem = new InstallFilesystem($rootPath, environmentPath: $environmentPath);
         $configuredEnvironment = getenv('APP_ENV');
         $installer = new InstallerService(
             $configuredEnvironment === false ? '' : $configuredEnvironment,
@@ -1025,16 +1134,57 @@ final class AppFactory
     private static function objectStorageInspector(array $settings): ObjectStorageInspectorInterface
     {
         $config = $settings['storage']['s3'] ?? [];
-        $publicBaseUrl = is_array($config) ? trim((string) ($config['public_base_url'] ?? '')) : '';
-        if ($publicBaseUrl !== '') {
-            return new PublicUrlObjectStorageInspector($config);
-        }
+        $config = is_array($config) ? $config : [];
 
         if (self::localFallbackAllowed($settings)) {
+            if (trim((string) ($config['public_base_url'] ?? '')) !== '') {
+                return new PublicUrlObjectStorageInspector($config);
+            }
+
             return new UnavailableObjectStorageInspector();
         }
 
-        throw new \RuntimeException('R2_PUBLIC_BASE_URL is required for uploaded asset inspection.');
+        // Confirmation is authoritative and must bypass public CDN caches.
+        return new S3AssetObjectStorage($config);
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function assetPublicUrlResolver(array $settings): AssetPublicUrlResolver
+    {
+        $config = $settings['storage']['s3'] ?? [];
+        $config = is_array($config) ? $config : [];
+        $publicBaseUrl = trim((string) ($config['public_base_url'] ?? ''));
+        $allowHttp = self::localFallbackAllowed($settings);
+        if ($publicBaseUrl === '') {
+            if (!$allowHttp) {
+                throw new \RuntimeException('R2_PUBLIC_BASE_URL is required for public asset delivery.');
+            }
+
+            $endpoint = rtrim(trim((string) ($config['endpoint'] ?? '')), '/');
+            if ($endpoint === '') {
+                $endpoint = 'http://localhost:9000';
+            }
+            $bucket = trim((string) ($config['bucket'] ?? 'vertoad'));
+            $publicBaseUrl = $endpoint . '/' . rawurlencode($bucket === '' ? 'vertoad' : $bucket);
+        }
+
+        return new AssetPublicUrlResolver($publicBaseUrl, $allowHttp);
+    }
+
+    /** @param array<string, mixed> $settings */
+    private static function assetObjectStorage(array $settings): AssetObjectStorageInterface
+    {
+        $config = $settings['storage']['s3'] ?? [];
+        $config = is_array($config) ? $config : [];
+        $connectionValues = array_map(
+            static fn (string $key): string => trim((string) ($config[$key] ?? '')),
+            ['endpoint', 'access_key_id', 'secret_access_key'],
+        );
+        if (self::localFallbackAllowed($settings) && $connectionValues === ['', '', '']) {
+            return new UnavailableAssetObjectStorage();
+        }
+
+        return new S3AssetObjectStorage($config);
     }
 
     /**
@@ -1152,6 +1302,10 @@ final class AppFactory
             && trim((string) ($config['access_key_id'] ?? '')) !== ''
             && trim((string) ($config['secret_access_key'] ?? '')) !== '';
         if ($configured) {
+            if (trim((string) ($config['server_side_encryption'] ?? '')) === '') {
+                $config['server_side_encryption'] = 'AES256';
+            }
+
             return new S3BackupObjectStorage($config);
         }
         if (self::localFallbackAllowed($settings)) {
@@ -1556,7 +1710,13 @@ final class AppFactory
             default => throw new \InvalidArgumentException('Unsupported integration public base URL variable: ' . $environmentVariable),
         };
 
-        $explicit = trim((string) (getenv($environmentVariable) ?: ''));
+        $settingKey = match ($environmentVariable) {
+            'SDK_PUBLIC_BASE_URL' => 'sdk_public_base_url',
+            'ADS_PUBLIC_BASE_URL' => 'ads_public_base_url',
+        };
+        $integration = $settings['integration'] ?? [];
+        $integration = is_array($integration) ? $integration : [];
+        $explicit = trim((string) ($integration[$settingKey] ?? (getenv($environmentVariable) ?: '')));
         if ($explicit === '') {
             if (!self::localFallbackAllowed($settings)) {
                 throw new \RuntimeException($environmentVariable . ' is required outside local/testing.');

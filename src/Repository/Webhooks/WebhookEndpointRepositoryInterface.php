@@ -22,6 +22,11 @@ interface WebhookEndpointRepositoryInterface
      */
     public function listForOrganization(int $organizationId): array;
 
+    /**
+     * @return list<WebhookEndpoint>
+     */
+    public function listActiveForEvent(int $organizationId, string $eventType): array;
+
     public function rotateSecret(
         string $endpointId,
         int $organizationId,

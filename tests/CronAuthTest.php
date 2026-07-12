@@ -46,7 +46,7 @@ final class CronAuthTest extends TestCase
         self::assertContains('redis-events-consume', $payload['data']['jobs'] ?? []);
     }
 
-    public function testCronStatusAcceptsQueryTokenWhenHeaderIsMissing(): void
+    public function testCronStatusRejectsQueryTokenWhenHeaderIsMissing(): void
     {
         putenv('CRON_API_TOKEN=test-cron-token');
         putenv('CRON_API_ALLOWED_IPS=127.0.0.1');
@@ -61,8 +61,8 @@ final class CronAuthTest extends TestCase
         $response = $app->handle($request);
         $payload = json_decode((string) $response->getBody(), true);
 
-        self::assertSame(200, $response->getStatusCode());
-        self::assertSame('ok', $payload['data']['status'] ?? null);
+        self::assertSame(401, $response->getStatusCode());
+        self::assertSame('unauthorized', $payload['error']['code'] ?? null);
     }
 
     public function testCronStatusRejectsDisallowedIp(): void

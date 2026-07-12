@@ -40,7 +40,7 @@ final class PublisherWithdrawalMigrationIntegrityTest extends TestCase
             "constraint chk_withdrawal_requests_payment_status check (payment_status in ('not_started', 'pending', 'paid'))",
             'constraint chk_withdrawal_requests_conversion check (points_per_cny = 100 and amount_cny = points_amount / 100)',
             'constraint chk_withdrawal_requests_state_roles check',
-            'constraint fk_withdrawal_requests_payment_proof foreign key (payment_proof_id, id) references withdrawal_proofs (id, withdrawal_request_id) on delete restrict',
+            'constraint fk_withdrawal_requests_payment_proof foreign key (payment_proof_id, id, organization_id) references withdrawal_proofs (id, withdrawal_request_id, organization_id) on delete restrict',
             'constraint fk_withdrawal_proofs_request_organization foreign key (withdrawal_request_id, organization_id) references withdrawal_requests (id, organization_id) on delete restrict',
             "constraint chk_withdrawal_proofs_status check (status in ('pending_upload', 'verified', 'rejected'))",
             "constraint chk_withdrawal_proofs_content_type check (content_type in ('application/pdf', 'image/jpeg', 'image/png'))",

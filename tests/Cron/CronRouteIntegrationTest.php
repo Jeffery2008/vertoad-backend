@@ -9,10 +9,12 @@ use PHPUnit\Framework\TestCase;
 use Slim\Factory\AppFactory as SlimAppFactory;
 use Slim\Psr7\Factory\ServerRequestFactory;
 use Slim\Routing\RouteCollectorProxy;
+use VertoAD\Domain\Cron\CronJobResult;
 use VertoAD\Http\Action\Cron\CronRunAction;
 use VertoAD\Http\Action\Cron\CronStatusAction;
 use VertoAD\Http\Middleware\ApiEnvelopeMiddleware;
 use VertoAD\Http\Middleware\CronAuthMiddleware;
+use VertoAD\Service\Cron\CronJobInterface;
 use VertoAD\Service\Cron\CronJobRegistry;
 use VertoAD\Service\Cron\CronRunner;
 use VertoAD\Service\Cron\InMemoryCronLockStore;
@@ -70,7 +72,55 @@ final class CronRouteIntegrationTest extends TestCase
         self::assertFalse($payload['data']['acquired_lock'] ?? true);
     }
 
-    private function createApp(?InMemoryCronLockStore $locks = null): \Slim\App
+    public function testFailedCronJobReturnsNonSuccessEnvelopeWithFailureDetails(): void
+    {
+        $failedJob = new class implements CronJobInterface {
+            public function name(): string
+            {
+                return 'failing-job';
+            }
+
+            public function run(): CronJobResult
+            {
+                return CronJobResult::failed('failing-job', ['processed' => 2], 'The worker reported a failure.');
+            }
+        };
+        $app = $this->createApp(job: $failedJob);
+        $request = (new ServerRequestFactory())
+            ->createServerRequest('GET', '/api/v1/cron/jobs/failing-job/run', ['REMOTE_ADDR' => '127.0.0.1'])
+            ->withHeader('X-Cron-Token', 'test-cron-token');
+
+        $response = $app->handle($request);
+        $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame(500, $response->getStatusCode());
+        self::assertSame('cron_job_failed', $payload['error']['code'] ?? null);
+        self::assertSame('failing-job', $payload['error']['job'] ?? null);
+        self::assertSame('failed', $payload['error']['status'] ?? null);
+        self::assertSame(['processed' => 2], $payload['error']['metrics'] ?? null);
+    }
+
+    public function testQueryTokenIsRejectedEvenWhenAHeaderIsPresent(): void
+    {
+        $app = $this->createApp();
+        $request = (new ServerRequestFactory())
+            ->createServerRequest(
+                'GET',
+                '/api/v1/cron/status?token=secret-that-must-not-be-accepted',
+                ['REMOTE_ADDR' => '127.0.0.1'],
+            )
+            ->withHeader('X-Cron-Token', 'test-cron-token');
+
+        $response = $app->handle($request);
+        $body = (string) $response->getBody();
+        $payload = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame(401, $response->getStatusCode());
+        self::assertSame('unauthorized', $payload['error']['code'] ?? null);
+        self::assertStringNotContainsString('secret-that-must-not-be-accepted', $body);
+    }
+
+    private function createApp(?InMemoryCronLockStore $locks = null, ?CronJobInterface $job = null): \Slim\App
     {
         $settings = [
             'cron' => [
@@ -79,7 +129,7 @@ final class CronRouteIntegrationTest extends TestCase
                 'jobs' => ['ai-review-queue'],
             ],
         ];
-        $registry = new CronJobRegistry([new NoOpCronJob('ai-review-queue')]);
+        $registry = new CronJobRegistry([$job ?? new NoOpCronJob('ai-review-queue')]);
         $runner = new CronRunner($registry, $locks ?? new InMemoryCronLockStore(), 60);
         $container = (new ContainerBuilder())->addDefinitions([
             CronStatusAction::class => static fn (): CronStatusAction => new CronStatusAction($settings, $registry),

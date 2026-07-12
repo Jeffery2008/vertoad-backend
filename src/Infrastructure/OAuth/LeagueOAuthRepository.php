@@ -18,6 +18,7 @@ use League\OAuth2\Server\Repositories\ScopeRepositoryInterface;
 use VertoAD\Repository\OAuthClientRepositoryInterface;
 use VertoAD\Repository\OAuthTokenRepositoryInterface;
 use VertoAD\Service\OAuthClientSecretHasher;
+use VertoAD\Service\OAuthScopeCatalog;
 
 final readonly class LeagueOAuthRepository implements
     ClientRepositoryInterface,
@@ -81,6 +82,10 @@ final readonly class LeagueOAuthRepository implements
 
         foreach ($requested as $scope) {
             if (!in_array($scope, $allowed, true)) {
+                return [];
+            }
+
+            if ((string) $grantType === 'client_credentials' && !OAuthScopeCatalog::isGrantable($scope)) {
                 return [];
             }
         }

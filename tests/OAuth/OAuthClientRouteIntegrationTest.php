@@ -13,6 +13,7 @@ use Slim\Psr7\Factory\ResponseFactory;
 use Slim\Psr7\Factory\ServerRequestFactory;
 use VertoAD\Domain\Audit\AuditLogEntry;
 use VertoAD\Domain\Auth\AuthenticatedUser;
+use VertoAD\Domain\Auth\OAuthAccessTokenContext;
 use VertoAD\Domain\Auth\OAuthClient;
 use VertoAD\Http\Action\OAuth\CreateOAuthClientAction;
 use VertoAD\Http\Action\OAuth\ListOAuthClientsAction;
@@ -34,6 +35,7 @@ use VertoAD\Repository\OrganizationMembershipRepository;
 use VertoAD\Repository\OrganizationMembershipRepositoryInterface;
 use VertoAD\Service\AuditLogService;
 use VertoAD\Service\OAuthClientSecretHasher;
+use VertoAD\Service\OAuthScopeCatalog;
 use VertoAD\Service\PermissionMatcher;
 use VertoAD\Service\TenantAccessService;
 
@@ -48,8 +50,7 @@ final class OAuthClientRouteIntegrationTest extends TestCase
             'name' => 'Reporting Exporter',
             'redirect_uris' => ['https://developer.example.com/callback'],
             'grant_types' => ['authorization_code', 'client_credentials'],
-            'scopes' => ['campaign.read.own', 'report.read.own', 'sdk.oauth_client.read.own'],
-            'is_confidential' => true,
+            'scopes' => ['campaign.read.own', 'report.read.own'],
         ], ['X-Request-Id' => 'req-oauth-client-create']);
 
         self::assertSame(201, $created['status']);
@@ -89,7 +90,7 @@ final class OAuthClientRouteIntegrationTest extends TestCase
         self::assertSame(1, (int) $auditRows[0]['actor_user_id']);
         self::assertSame('OAuthClientRouteIntegrationTest/1.0', $auditRows[0]['user_agent']);
         self::assertSame('req-oauth-client-create', $auditRows[0]['request_id']);
-        self::assertStringContainsString('sdk.oauth_client.read.own', (string) $auditRows[0]['metadata_json']);
+        self::assertStringContainsString('report.read.own', (string) $auditRows[0]['metadata_json']);
         self::assertStringNotContainsString('secret-v1', (string) $auditRows[0]['metadata_json']);
         self::assertStringNotContainsString('secret-v2', (string) $auditRows[0]['metadata_json']);
         self::assertStringNotContainsString((string) $connection->fetchOne('SELECT secret_hash FROM oauth_clients'), (string) $auditRows[0]['metadata_json']);
@@ -113,6 +114,72 @@ final class OAuthClientRouteIntegrationTest extends TestCase
 
         self::assertSame(400, $response['status']);
         self::assertSame('organization_scope_required', $response['body']['error']['code']);
+    }
+
+    public function testCreateRejectsNonCatalogAndCreatorUnauthorizedScopes(): void
+    {
+        $connection = $this->createConnection();
+        $app = $this->createApp($connection);
+        $base = [
+            'name' => 'Overprivileged Client',
+            'redirect_uris' => ['https://developer.example.com/callback'],
+            'grant_types' => ['client_credentials'],
+            'is_confidential' => true,
+        ];
+
+        $managementScope = $this->handleJson($app, 'POST', '/api/v1/oauth/clients?organization_id=99', $base + [
+            'scopes' => ['organizations.members.manage'],
+        ]);
+        self::assertSame(422, $managementScope['status']);
+        self::assertSame('invalid_oauth_client', $managementScope['body']['error']['code']);
+        self::assertStringContainsString('not available through the advertiser Open API', $managementScope['body']['error']['message']);
+
+        $missingCreatorPermission = $this->handleJson($app, 'POST', '/api/v1/oauth/clients?organization_id=99', $base + [
+            'scopes' => ['campaign.write.own'],
+        ]);
+        self::assertSame(422, $missingCreatorPermission['status']);
+        self::assertSame('invalid_oauth_client', $missingCreatorPermission['body']['error']['code']);
+        self::assertStringContainsString("exceeds the creator's permissions", $missingCreatorPermission['body']['error']['message']);
+        self::assertSame(0, (int) $connection->fetchOne('SELECT COUNT(*) FROM oauth_clients'));
+        self::assertSame(0, (int) $connection->fetchOne('SELECT COUNT(*) FROM audit_logs'));
+    }
+
+    public function testPublicPkceClientHasNoSecretAndCannotUseClientCredentialsOrRotateSecret(): void
+    {
+        $connection = $this->createConnection();
+        $app = $this->createApp($connection);
+        $created = $this->handleJson($app, 'POST', '/api/v1/oauth/clients?organization_id=99', [
+            'name' => 'Public PKCE Client',
+            'redirect_uris' => ['https://developer.example.com/callback'],
+            'grant_types' => ['authorization_code', 'refresh_token'],
+            'scopes' => ['report.read.own'],
+            'is_confidential' => false,
+        ]);
+
+        self::assertSame(201, $created['status']);
+        self::assertFalse($created['body']['data']['client']['is_confidential']);
+        self::assertArrayNotHasKey('client_secret', $created['body']['data']);
+        self::assertNull($connection->fetchOne('SELECT secret_hash FROM oauth_clients'));
+
+        $clientCredentials = $this->handleJson($app, 'POST', '/api/v1/oauth/clients?organization_id=99', [
+            'name' => 'Unsafe Public Client',
+            'redirect_uris' => ['https://developer.example.com/callback'],
+            'grant_types' => ['authorization_code', 'client_credentials'],
+            'scopes' => ['report.read.own'],
+            'is_confidential' => false,
+        ]);
+        self::assertSame(422, $clientCredentials['status']);
+        self::assertStringContainsString('cannot use the client_credentials grant', $clientCredentials['body']['error']['message']);
+
+        $rotate = $this->handleJson(
+            $app,
+            'POST',
+            '/api/v1/oauth/clients/' . $created['body']['data']['client']['client_id'] . '/rotate-secret?organization_id=99',
+            [],
+        );
+        self::assertSame(422, $rotate['status']);
+        self::assertSame('oauth_client_is_public', $rotate['body']['error']['code']);
+        self::assertNull($connection->fetchOne('SELECT secret_hash FROM oauth_clients'));
     }
 
     public function testOAuthClientActionsReturnEnvelopeErrorsForInvalidRequests(): void
@@ -167,6 +234,15 @@ final class OAuthClientRouteIntegrationTest extends TestCase
         self::assertSame(422, $badScopes['status']);
         self::assertSame('invalid_oauth_client', $badScopes['body']['error']['code']);
 
+        $badConfidentialFlag = $this->handleJson($app, 'POST', '/api/v1/oauth/clients?organization_id=99', [
+            'name' => 'Bad Confidential Flag',
+            'redirect_uris' => ['https://developer.example.com/callback'],
+            'grant_types' => ['authorization_code'],
+            'is_confidential' => 'false',
+        ]);
+        self::assertSame(422, $badConfidentialFlag['status']);
+        self::assertSame('invalid_oauth_client', $badConfidentialFlag['body']['error']['code']);
+
         $missingClient = $this->handleJson(
             $app,
             'POST',
@@ -196,6 +272,7 @@ final class OAuthClientRouteIntegrationTest extends TestCase
         $create = (new CreateOAuthClientAction(
             $repository,
             $secrets,
+            new OAuthScopeCatalog(new OrganizationMembershipRepository($connection), new PermissionMatcher()),
             new AuditLogService(new CapturingOAuthClientAuditRepository()),
             new ClientIpResolver(),
         ))(
@@ -207,6 +284,29 @@ final class OAuthClientRouteIntegrationTest extends TestCase
             $responseFactory->createResponse(),
         );
         self::assertSame(400, $create->getStatusCode());
+
+        $machineRequest = $request->withAttribute(
+            RequestUserContext::ATTRIBUTE,
+            new RequestUserContext(
+                organizationId: 99,
+                oauthToken: new OAuthAccessTokenContext(1, 1, 'machine-client', 99, null, ['sdk.oauth_client.write.own']),
+            ),
+        );
+        $machineCreate = (new CreateOAuthClientAction(
+            $repository,
+            $secrets,
+            new OAuthScopeCatalog(new OrganizationMembershipRepository($connection), new PermissionMatcher()),
+            new AuditLogService(new CapturingOAuthClientAuditRepository()),
+            new ClientIpResolver(),
+        ))(
+            $machineRequest->withParsedBody([
+                'name' => 'Machine Created Client',
+                'redirect_uris' => ['https://developer.example.com/callback'],
+                'grant_types' => ['authorization_code'],
+            ]),
+            $responseFactory->createResponse(),
+        );
+        self::assertSame(401, $machineCreate->getStatusCode());
 
         $rotate = (new RotateOAuthClientSecretAction(
             $repository,
@@ -312,9 +412,15 @@ final class OAuthClientRouteIntegrationTest extends TestCase
             ): AuthenticateRequestMiddleware => new AuthenticateRequestMiddleware($authenticator),
             OrganizationMembershipRepositoryInterface::class => static fn (): OrganizationMembershipRepositoryInterface =>
                 new OrganizationMembershipRepository($connection),
+            PermissionMatcher::class => static fn (): PermissionMatcher => new PermissionMatcher(),
             TenantAccessService::class => static fn (
                 OrganizationMembershipRepositoryInterface $memberships,
-            ): TenantAccessService => new TenantAccessService($memberships, new PermissionMatcher()),
+                PermissionMatcher $permissions,
+            ): TenantAccessService => new TenantAccessService($memberships, $permissions),
+            OAuthScopeCatalog::class => static fn (
+                OrganizationMembershipRepositoryInterface $memberships,
+                PermissionMatcher $permissions,
+            ): OAuthScopeCatalog => new OAuthScopeCatalog($memberships, $permissions),
             OAuthClientRepositoryInterface::class => static fn (): OAuthClientRepositoryInterface =>
                 new OAuthClientRepository($connection),
             OAuthClientSecretHasher::class => static fn (): OAuthClientSecretHasher =>
@@ -502,9 +608,21 @@ final class OAuthClientRouteIntegrationTest extends TestCase
             'slug' => 'sdk.oauth_client.rotate_secret.own',
             'description' => 'Rotate own OAuth client secrets',
         ]);
+        $connection->insert('permissions', [
+            'id' => 4,
+            'slug' => 'campaign.read.own',
+            'description' => 'Read own campaigns',
+        ]);
+        $connection->insert('permissions', [
+            'id' => 5,
+            'slug' => 'report.read.own',
+            'description' => 'Read own reports',
+        ]);
         $connection->insert('role_permissions', ['role_id' => 1, 'permission_id' => 1]);
         $connection->insert('role_permissions', ['role_id' => 1, 'permission_id' => 2]);
         $connection->insert('role_permissions', ['role_id' => 1, 'permission_id' => 3]);
+        $connection->insert('role_permissions', ['role_id' => 1, 'permission_id' => 4]);
+        $connection->insert('role_permissions', ['role_id' => 1, 'permission_id' => 5]);
         $connection->insert('user_roles', ['user_id' => 1, 'role_id' => 1, 'organization_id' => 99]);
 
         return $connection;

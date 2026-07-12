@@ -4,37 +4,52 @@ declare(strict_types=1);
 
 namespace VertoAD\Repository\Operations;
 
+use Closure;
 use DateTimeImmutable;
 use DateTimeZone;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
+use InvalidArgumentException;
 use RuntimeException;
 use VertoAD\Domain\Operations\BackupJob;
 
 final readonly class DatabaseBackupJobRepository implements BackupJobRepositoryInterface
 {
-    public function __construct(private Connection $connection)
-    {
+    private const CLAIM_RETRIES = 5;
+
+    /**
+     * @param Closure():string|null $leaseOwnerGenerator
+     * @param Closure():DateTimeImmutable|null $clock
+     */
+    public function __construct(
+        private Connection $connection,
+        private int $leaseDurationSeconds = 1800,
+        private ?Closure $leaseOwnerGenerator = null,
+        private ?Closure $clock = null,
+    ) {
+        if ($this->leaseDurationSeconds <= 0) {
+            throw new InvalidArgumentException('Backup job lease duration must be positive.');
+        }
     }
 
     public function save(BackupJob $job): BackupJob
     {
-        $row = $this->row($job);
         try {
-            if ($this->find($job->jobId) === null) {
-                $this->connection->insert('operation_backup_jobs', $row);
-            } else {
-                $this->connection->update('operation_backup_jobs', $row, ['job_id' => $job->jobId]);
+            $current = $this->find($job->jobId);
+            if (!$current instanceof BackupJob) {
+                $this->connection->insert('operation_backup_jobs', $this->row($job));
+
+                return $job;
             }
+
+            return $this->saveWithLease($current, $job);
         } catch (UniqueConstraintViolationException $exception) {
-            if ($job->jobType === 'restore' && in_array($job->status, ['queued', 'running'], true)) {
+            if ($this->isActiveRestoreConflict($job, $exception)) {
                 throw new RuntimeException('restore_already_queued', previous: $exception);
             }
 
             throw $exception;
         }
-
-        return $job;
     }
 
     public function find(string $jobId): ?BackupJob
@@ -74,14 +89,23 @@ final readonly class DatabaseBackupJobRepository implements BackupJobRepositoryI
 
     public function claimNext(string $jobType, DateTimeImmutable $startedAt): ?BackupJob
     {
-        for ($attempt = 0; $attempt < 5; ++$attempt) {
+        $claimedAt = $this->formatDate($startedAt);
+        for ($attempt = 0; $attempt < self::CLAIM_RETRIES; ++$attempt) {
             $jobId = $this->connection->createQueryBuilder()
                 ->select('job_id')
                 ->from('operation_backup_jobs')
                 ->where('job_type = :job_type')
-                ->andWhere('status = :status')
+                ->andWhere(<<<'SQL'
+(status = :queued_status OR (
+    status = :running_status
+    AND lease_expires_at IS NOT NULL
+    AND lease_expires_at <= :claimed_at
+))
+SQL)
                 ->setParameter('job_type', $jobType)
-                ->setParameter('status', 'queued')
+                ->setParameter('queued_status', 'queued')
+                ->setParameter('running_status', 'running')
+                ->setParameter('claimed_at', $claimedAt)
                 ->orderBy('created_at', 'ASC')
                 ->addOrderBy('job_id', 'ASC')
                 ->setMaxResults(1)
@@ -90,14 +114,36 @@ final readonly class DatabaseBackupJobRepository implements BackupJobRepositoryI
                 return null;
             }
 
-            $affected = $this->connection->update('operation_backup_jobs', [
-                'status' => 'running',
-                'started_at' => $this->formatDate($startedAt),
-                'error_message' => null,
-            ], [
-                'job_id' => (string) $jobId,
-                'status' => 'queued',
-            ]);
+            $leaseOwner = $this->newLeaseOwner();
+            $leaseExpiresAt = $startedAt->modify('+' . $this->leaseDurationSeconds . ' seconds');
+            $affected = $this->connection->createQueryBuilder()
+                ->update('operation_backup_jobs')
+                ->set('status', ':new_status')
+                ->set('started_at', 'COALESCE(started_at, :started_at)')
+                ->set('completed_at', ':completed_at')
+                ->set('lease_owner', ':lease_owner')
+                ->set('lease_expires_at', ':lease_expires_at')
+                ->set('attempt_count', 'attempt_count + 1')
+                ->set('heartbeat_at', ':heartbeat_at')
+                ->where('job_id = :job_id')
+                ->andWhere(<<<'SQL'
+(status = :queued_status OR (
+    status = :running_status
+    AND lease_expires_at IS NOT NULL
+    AND lease_expires_at <= :claimed_at
+))
+SQL)
+                ->setParameter('new_status', 'running')
+                ->setParameter('started_at', $claimedAt)
+                ->setParameter('completed_at', null)
+                ->setParameter('lease_owner', $leaseOwner)
+                ->setParameter('lease_expires_at', $this->formatDate($leaseExpiresAt))
+                ->setParameter('heartbeat_at', $claimedAt)
+                ->setParameter('job_id', (string) $jobId)
+                ->setParameter('queued_status', 'queued')
+                ->setParameter('running_status', 'running')
+                ->setParameter('claimed_at', $claimedAt)
+                ->executeStatement();
             if ($affected === 1) {
                 return $this->find((string) $jobId);
             }
@@ -123,6 +169,94 @@ final readonly class DatabaseBackupJobRepository implements BackupJobRepositoryI
         return $row === false ? null : $this->hydrate($row);
     }
 
+    private function saveWithLease(BackupJob $current, BackupJob $next): BackupJob
+    {
+        $this->assertImmutableMetadata($current, $next);
+        if (
+            $current->status !== 'running'
+            || $next->leaseOwner === null
+            || $next->leaseOwner === ''
+            || $next->attemptCount <= 0
+            || $next->heartbeatAt === null
+            || $next->leaseExpiresAt === null
+            || !in_array($next->status, ['running', 'completed', 'failed'], true)
+        ) {
+            throw new RuntimeException('backup_job_lease_lost');
+        }
+
+        $transitionAt = $next->status === 'running' ? $next->heartbeatAt : $next->completedAt;
+        if (
+            !$transitionAt instanceof DateTimeImmutable
+            || $transitionAt < $next->heartbeatAt
+            || $transitionAt > $next->leaseExpiresAt
+        ) {
+            throw new RuntimeException('backup_job_lease_lost');
+        }
+
+        $values = $this->executionRow($next);
+        $query = $this->connection->createQueryBuilder()->update('operation_backup_jobs');
+        foreach (array_keys($values) as $column) {
+            $query->set($column, ':' . $column)->setParameter($column, $values[$column]);
+        }
+        $affected = $query
+            ->where('job_id = :expected_job_id')
+            ->andWhere('status = :expected_status')
+            ->andWhere('lease_owner = :expected_lease_owner')
+            ->andWhere('attempt_count = :expected_attempt_count')
+            ->andWhere('lease_expires_at > :repository_now')
+            ->setParameter('expected_job_id', $next->jobId)
+            ->setParameter('expected_status', 'running')
+            ->setParameter('expected_lease_owner', $next->leaseOwner)
+            ->setParameter('expected_attempt_count', $next->attemptCount)
+            ->setParameter('repository_now', $this->formatDate($this->now()))
+            ->executeStatement();
+        if ($affected !== 1) {
+            throw new RuntimeException('backup_job_lease_lost');
+        }
+
+        return $this->find($next->jobId) ?? throw new RuntimeException('backup_job_not_found_after_save');
+    }
+
+    private function assertImmutableMetadata(BackupJob $current, BackupJob $next): void
+    {
+        if (
+            $current->jobType !== $next->jobType
+            || $current->sourceBackupId !== $next->sourceBackupId
+            || $current->requestedByUserId !== $next->requestedByUserId
+            || $current->requestId !== $next->requestId
+            || $current->environment !== $next->environment
+            || $current->reason !== $next->reason
+            || $this->formatDate($current->createdAt) !== $this->formatDate($next->createdAt)
+        ) {
+            throw new RuntimeException('backup_job_immutable_metadata_mismatch');
+        }
+    }
+
+    private function isActiveRestoreConflict(
+        BackupJob $job,
+        UniqueConstraintViolationException $exception,
+    ): bool {
+        if ($job->jobType !== 'restore' || !in_array($job->status, ['queued', 'running'], true)) {
+            return false;
+        }
+        $message = strtolower($exception->getMessage());
+        return str_contains($message, 'uq_operation_backup_jobs_active_restore')
+            || str_contains($message, 'operation_backup_jobs.active_restore_slot');
+    }
+
+    private function newLeaseOwner(): string
+    {
+        $owner = $this->leaseOwnerGenerator === null
+            ? bin2hex(random_bytes(32))
+            : ($this->leaseOwnerGenerator)();
+        $owner = trim($owner);
+        if (!preg_match('/^[A-Za-z0-9._:-]{1,128}$/', $owner)) {
+            throw new RuntimeException('Backup job lease owner generator returned an invalid identifier.');
+        }
+
+        return $owner;
+    }
+
     /** @return list<string> */
     private function columns(): array
     {
@@ -130,7 +264,8 @@ final readonly class DatabaseBackupJobRepository implements BackupJobRepositoryI
             'job_id', 'job_type', 'source_backup_id', 'status', 'requested_by_user_id', 'request_id',
             'environment', 'reason', 'manifest_object_key', 'manifest_sha256', 'mysql_object_key', 'mysql_sha256',
             'config_object_key', 'evidence_object_key', 'object_count', 'byte_count', 'error_message',
-            'created_at', 'started_at', 'completed_at',
+            'created_at', 'started_at', 'completed_at', 'lease_owner', 'lease_expires_at', 'attempt_count',
+            'heartbeat_at',
         ];
     }
 
@@ -158,7 +293,25 @@ final readonly class DatabaseBackupJobRepository implements BackupJobRepositoryI
             'created_at' => $this->formatDate($job->createdAt),
             'started_at' => $job->startedAt === null ? null : $this->formatDate($job->startedAt),
             'completed_at' => $job->completedAt === null ? null : $this->formatDate($job->completedAt),
+            'lease_owner' => $job->leaseOwner,
+            'lease_expires_at' => $job->leaseExpiresAt === null ? null : $this->formatDate($job->leaseExpiresAt),
+            'attempt_count' => $job->attemptCount,
+            'heartbeat_at' => $job->heartbeatAt === null ? null : $this->formatDate($job->heartbeatAt),
         ];
+    }
+
+    /** @return array<string, int|string|null> */
+    private function executionRow(BackupJob $job): array
+    {
+        $row = $this->row($job);
+        foreach ([
+            'job_id', 'job_type', 'source_backup_id', 'requested_by_user_id', 'request_id',
+            'environment', 'reason', 'created_at',
+        ] as $immutable) {
+            unset($row[$immutable]);
+        }
+
+        return $row;
     }
 
     /** @param array<string, mixed> $row */
@@ -185,6 +338,10 @@ final readonly class DatabaseBackupJobRepository implements BackupJobRepositoryI
             createdAt: $this->date((string) $row['created_at']),
             startedAt: $row['started_at'] === null ? null : $this->date((string) $row['started_at']),
             completedAt: $row['completed_at'] === null ? null : $this->date((string) $row['completed_at']),
+            leaseOwner: $row['lease_owner'] === null ? null : (string) $row['lease_owner'],
+            leaseExpiresAt: $row['lease_expires_at'] === null ? null : $this->date((string) $row['lease_expires_at']),
+            attemptCount: (int) $row['attempt_count'],
+            heartbeatAt: $row['heartbeat_at'] === null ? null : $this->date((string) $row['heartbeat_at']),
         );
     }
 
@@ -196,5 +353,10 @@ final readonly class DatabaseBackupJobRepository implements BackupJobRepositoryI
     private function formatDate(DateTimeImmutable $date): string
     {
         return $date->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+    }
+
+    private function now(): DateTimeImmutable
+    {
+        return $this->clock === null ? new DateTimeImmutable() : ($this->clock)();
     }
 }

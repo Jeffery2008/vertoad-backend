@@ -14,6 +14,7 @@ use VertoAD\Repository\Serving\DatabaseServingInventoryRepository;
 use VertoAD\Repository\Serving\EmptyAdCandidateRepository;
 use VertoAD\Repository\Serving\InMemoryAdDecisionRepository;
 use VertoAD\Repository\Serving\InMemoryAdEventRepository;
+use VertoAD\Service\Assets\AssetPublicUrlResolver;
 use VertoAD\Tests\Campaigns\CampaignSchema;
 
 final class ServingRepositoryTest extends TestCase
@@ -37,7 +38,7 @@ final class ServingRepositoryTest extends TestCase
         $this->insertCandidateFixture($connection, campaignId: 100, assetId: 200, bidPoints: 90, pricingModel: 'cpm');
         $this->insertCandidateFixture($connection, campaignId: 101, assetId: 201, bidPoints: 150, pricingModel: 'cpc');
 
-        $candidates = (new DatabaseAdCandidateRepository($connection))
+        $candidates = $this->candidateRepository($connection)
             ->eligibleCandidatesForSlot(10, 20, ['width' => 300, 'height' => 250]);
 
         self::assertCount(2, $candidates);
@@ -48,10 +49,20 @@ final class ServingRepositoryTest extends TestCase
         self::assertSame(100, $candidates[1]->campaignId);
         self::assertSame(90, $candidates[1]->impressionCostPoints);
         self::assertSame(0, $candidates[1]->clickCostPoints);
-        self::assertStringContainsString('data-vertoad-asset="organizations/99/assets/creative-201.png"', $candidates[0]->creativeHtml);
+        self::assertStringContainsString(
+            'data-vertoad-asset="https://assets.example.test/organizations/99/assets/snapshots/201.webp"',
+            $candidates[0]->creativeHtml,
+        );
         self::assertSame('image', $candidates[0]->assetType);
         self::assertSame('organizations/99/assets/creative-201.png', $candidates[0]->assetObjectKey);
         self::assertSame('image/png', $candidates[0]->assetContentType);
+        self::assertSame('organizations/99/assets/snapshots/201.png', $candidates[0]->snapshotPngObjectKey);
+        self::assertSame('organizations/99/assets/snapshots/201.webp', $candidates[0]->snapshotWebpObjectKey);
+        self::assertSame('organizations/99/assets/snapshots/201.thumb.webp', $candidates[0]->thumbnailWebpObjectKey);
+        self::assertSame('https://assets.example.test/organizations/99/assets/creative-201.png', $candidates[0]->assetUrl);
+        self::assertSame('https://assets.example.test/organizations/99/assets/snapshots/201.png', $candidates[0]->snapshotPngUrl);
+        self::assertSame('https://assets.example.test/organizations/99/assets/snapshots/201.webp', $candidates[0]->snapshotWebpUrl);
+        self::assertSame('https://assets.example.test/organizations/99/assets/snapshots/201.thumb.webp', $candidates[0]->thumbnailWebpUrl);
     }
 
     public function testDatabaseCandidateRepositoryHydratesServingQualityCtrAndCaps(): void
@@ -88,7 +99,7 @@ final class ServingRepositoryTest extends TestCase
             'updated_at' => '2026-06-08 12:00:00',
         ]);
 
-        $candidates = (new DatabaseAdCandidateRepository($connection))
+        $candidates = $this->candidateRepository($connection)
             ->eligibleCandidatesForSlot(10, 20, ['width' => 300, 'height' => 250]);
 
         self::assertCount(1, $candidates);
@@ -123,7 +134,7 @@ final class ServingRepositoryTest extends TestCase
             ],
         );
 
-        $candidates = (new DatabaseAdCandidateRepository($connection))
+        $candidates = $this->candidateRepository($connection)
             ->eligibleCandidatesForSlot(10, 20, ['width' => 300, 'height' => 250]);
 
         self::assertCount(1, $candidates);
@@ -138,7 +149,7 @@ final class ServingRepositoryTest extends TestCase
         $connection = $this->createCampaignConnection();
         $this->insertCandidateFixture($connection, campaignId: 100, assetId: 200, aiRiskScore: null);
 
-        $candidates = (new DatabaseAdCandidateRepository($connection))
+        $candidates = $this->candidateRepository($connection)
             ->eligibleCandidatesForSlot(10, 20, ['width' => 300, 'height' => 250]);
 
         self::assertCount(1, $candidates);
@@ -162,8 +173,9 @@ final class ServingRepositoryTest extends TestCase
         $this->insertCandidateFixture($connection, campaignId: 108, assetId: 208, targeting: ['site_ids' => [10], 'slot_ids' => [99]]);
         $this->insertCandidateFixture($connection, campaignId: 109, assetId: 209, landingUrl: '');
         $this->insertCandidateFixture($connection, campaignId: 110, assetId: 210, finalDecision: null);
+        $this->insertCandidateFixture($connection, campaignId: 111, assetId: 211, snapshotStatus: 'pending');
 
-        $candidates = (new DatabaseAdCandidateRepository($connection))
+        $candidates = $this->candidateRepository($connection)
             ->eligibleCandidatesForSlot(10, 20, ['width' => 300, 'height' => 250]);
 
         self::assertCount(1, $candidates);
@@ -179,7 +191,7 @@ final class ServingRepositoryTest extends TestCase
         $this->insertCandidateFixture($connection, campaignId: 103, assetId: 203, targetingJson: 'null');
         $this->insertCandidateFixture($connection, campaignId: 104, assetId: 204, targetingJson: '[]');
 
-        $candidates = (new DatabaseAdCandidateRepository($connection))
+        $candidates = $this->candidateRepository($connection)
             ->eligibleCandidatesForSlot(10, 20, null);
 
         self::assertCount(1, $candidates);
@@ -196,7 +208,7 @@ final class ServingRepositoryTest extends TestCase
             startsAt: '2026-06-08 10:00:00',
             endsAt: '2026-06-08 12:00:00',
         );
-        $repository = new DatabaseAdCandidateRepository($connection);
+        $repository = $this->candidateRepository($connection);
 
         self::assertSame([], $repository->eligibleCandidatesForSlot(
             10,
@@ -472,6 +484,7 @@ final class ServingRepositoryTest extends TestCase
         ?array $targeting = ['site_ids' => [10], 'slot_ids' => [20]],
         ?string $targetingJson = null,
         ?float $aiRiskScore = 0.01,
+        string $snapshotStatus = 'ready',
     ): void {
         $connection->insert('asset_upload_intents', [
             'id' => $assetId,
@@ -499,6 +512,11 @@ final class ServingRepositoryTest extends TestCase
             'duration_seconds' => null,
             'checksum' => 'sha256:' . $assetId,
             'status' => $assetStatus,
+            'snapshot_status' => $snapshotStatus,
+            'snapshot_png_object_key' => 'organizations/99/assets/snapshots/' . $assetId . '.png',
+            'snapshot_webp_object_key' => 'organizations/99/assets/snapshots/' . $assetId . '.webp',
+            'thumbnail_webp_object_key' => 'organizations/99/assets/snapshots/' . $assetId . '.thumb.webp',
+            'snapshot_completed_at' => $snapshotStatus === 'ready' ? '2026-06-08 09:59:00' : null,
         ]);
         $connection->insert('creative_reviews', [
             'asset_id' => $assetId,
@@ -529,6 +547,14 @@ final class ServingRepositoryTest extends TestCase
             'ends_at' => $endsAt,
             'targeting_json' => $targetingJson ?? json_encode($targeting ?? [], JSON_THROW_ON_ERROR),
         ]);
+    }
+
+    private function candidateRepository(Connection $connection): DatabaseAdCandidateRepository
+    {
+        return new DatabaseAdCandidateRepository(
+            $connection,
+            new AssetPublicUrlResolver('https://assets.example.test'),
+        );
     }
 
     private function inMemoryDecision(string $decisionId, string $requestId, string $ipAddress, DateTimeImmutable $decidedAt): AdDecision

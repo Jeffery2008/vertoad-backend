@@ -32,6 +32,57 @@ final class OAuthClientDomainTest extends TestCase
         self::assertFalse($client->isRevoked());
     }
 
+    public function testPublicClientSupportsPkceAndRefreshWithoutSecret(): void
+    {
+        $client = new OAuthClient(
+            id: 1,
+            organizationId: 10,
+            ownerUserId: 20,
+            clientIdentifier: 'public_client',
+            name: 'Public Client',
+            secretHash: null,
+            redirectUris: ['https://app.example.com/callback'],
+            grantTypes: ['authorization_code', 'refresh_token'],
+            scopes: ['report.read.own'],
+            isConfidential: false,
+            revokedAt: null,
+        );
+
+        self::assertFalse($client->isConfidential);
+        self::assertNull($client->secretHash);
+        self::assertSame(['authorization_code', 'refresh_token'], $client->grantTypes);
+    }
+
+    public function testEnforcesSecretAndClientCredentialsConfidentialityInvariants(): void
+    {
+        $invalidClients = [
+            'Confidential OAuth clients require a secret hash.' => [true, null, ['authorization_code']],
+            'Public OAuth clients must not have a client secret.' => [false, 'hashed-secret', ['authorization_code']],
+            'Public OAuth clients cannot use the client_credentials grant.' => [false, null, ['authorization_code', 'client_credentials']],
+        ];
+
+        foreach ($invalidClients as $expectedMessage => [$confidential, $secretHash, $grantTypes]) {
+            try {
+                new OAuthClient(
+                    id: null,
+                    organizationId: 10,
+                    ownerUserId: 20,
+                    clientIdentifier: 'invalid_client',
+                    name: 'Invalid Client',
+                    secretHash: $secretHash,
+                    redirectUris: ['https://app.example.com/callback'],
+                    grantTypes: $grantTypes,
+                    scopes: ['report.read.own'],
+                    isConfidential: $confidential,
+                    revokedAt: null,
+                );
+                self::fail('Expected OAuth client confidentiality invariant to be enforced.');
+            } catch (\InvalidArgumentException $exception) {
+                self::assertSame($expectedMessage, $exception->getMessage());
+            }
+        }
+    }
+
     public function testRejectsUnsafeRedirectUrisAndInvalidScopes(): void
     {
         foreach ([

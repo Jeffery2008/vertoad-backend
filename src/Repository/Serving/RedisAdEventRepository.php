@@ -12,12 +12,43 @@ use VertoAD\Infrastructure\Redis\NativeRedisClient;
 use VertoAD\Infrastructure\Redis\RedisClientFactory;
 use VertoAD\Infrastructure\Redis\RedisClientInterface;
 use VertoAD\Repository\Cron\ServingEventBufferInterface;
+use VertoAD\Repository\Cron\ServingRequestEventBufferInterface;
 
-final readonly class RedisAdEventRepository implements AdEventRepositoryInterface, ServingEventBufferInterface
+final readonly class RedisAdEventRepository implements AdEventRepositoryInterface, ServingEventBufferInterface, ServingRequestEventBufferInterface
 {
     private const DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 300;
     private const DEFAULT_EVENT_RETENTION_SECONDS = 604800;
     private const DEFAULT_MAX_FAILURES = 3;
+    private const ATOMIC_RECORD_SCRIPT = <<<'LUA'
+local created = redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2], 'NX')
+if created then
+    redis.call('ZADD', KEYS[2], ARGV[3], KEYS[1])
+    return {'created'}
+end
+
+if redis.call('EXISTS', KEYS[5]) == 1 then
+    return {'acknowledged'}
+end
+if redis.call('ZSCORE', KEYS[2], KEYS[1]) then
+    return {'queued'}
+end
+if redis.call('ZSCORE', KEYS[3], KEYS[1]) then
+    return {'processing'}
+end
+if redis.call('ZSCORE', KEYS[4], KEYS[1]) then
+    return {'dead-letter'}
+end
+
+redis.call('ZADD', KEYS[2], ARGV[3], KEYS[1])
+return {'recovered'}
+LUA;
+    private const ACKNOWLEDGE_SCRIPT = <<<'LUA'
+redis.call('ZREM', KEYS[1], ARGV[2])
+redis.call('ZREM', KEYS[2], ARGV[2])
+redis.call('DEL', KEYS[3])
+redis.call('SETEX', KEYS[4], ARGV[1], '1')
+return {'acknowledged'}
+LUA;
     private RedisClientInterface $client;
 
     public function __construct(
@@ -106,6 +137,19 @@ final readonly class RedisAdEventRepository implements AdEventRepositoryInterfac
     public function recordVideoEvent(AdDecision $decision, string $eventType, string $eventId, DateTimeImmutable $occurredAt, ?string $requestId = null): void
     {
         $this->record($this->event($eventType, $decision, $eventId, $occurredAt, true, null, null, null, $requestId));
+    }
+
+    public function recordServe(AdDecision $decision): void
+    {
+        $this->record($this->event(
+            'serve',
+            $decision,
+            $decision->decisionId,
+            $decision->decidedAt,
+            true,
+            $decision->reason,
+            requestId: $decision->requestId,
+        ));
     }
 
     public function searchEvents(array $filters): array
@@ -203,8 +247,16 @@ LUA,
     public function acknowledge(AdEvent $event): void
     {
         $key = $this->eventKey($event->eventType, $event->eventId);
-        $this->client->zRem($this->processingKey(), $key);
-        $this->client->delete($this->failureKey($key));
+        $this->client->eval(
+            self::ACKNOWLEDGE_SCRIPT,
+            [
+                $this->processingKey(),
+                $this->pendingKey(),
+                $this->failureKey($key),
+                $this->acknowledgedKey($key),
+            ],
+            [(string) $this->eventRetentionSeconds, $key],
+        );
     }
 
     public function fail(AdEvent $event, \Throwable $reason): void
@@ -227,12 +279,29 @@ LUA,
     private function record(AdEvent $event): void
     {
         $key = $this->eventKey($event->eventType, $event->eventId);
-        $created = $this->client->setNxEx($key, $this->serialize($event), $this->eventRetentionSeconds);
-        if (!$created) {
+        $result = $this->client->eval(
+            self::ATOMIC_RECORD_SCRIPT,
+            [
+                $key,
+                $this->pendingKey(),
+                $this->processingKey(),
+                $this->deadLetterKey(),
+                $this->acknowledgedKey($key),
+            ],
+            [
+                $this->serialize($event),
+                (string) $this->eventRetentionSeconds,
+                (string) $event->occurredAt->getTimestamp(),
+            ],
+        );
+        $status = $result[0] ?? null;
+        if ($status === 'acknowledged' || $status === 'queued' || $status === 'processing' || $status === 'dead-letter') {
             return;
         }
+        if ($status !== 'created' && $status !== 'recovered') {
+            throw new \RuntimeException('Redis serving event enqueue returned an invalid status.');
+        }
 
-        $this->client->zAdd($this->pendingKey(), $event->occurredAt->getTimestamp(), $key);
         $this->indexAll($event);
         $this->indexAllByValue($event->eventType, fn (string $value): string => $this->eventTypeIndex($value), $event);
         $this->indexNullable($event->requestId, fn (string $value): string => $this->requestIdIndex($value), $event);
@@ -411,6 +480,11 @@ LUA,
     private function failureKey(string $eventKey): string
     {
         return $eventKey . ':failures';
+    }
+
+    private function acknowledgedKey(string $eventKey): string
+    {
+        return $eventKey . ':acknowledged';
     }
 
     private function validImpressionIndex(string $decisionId, string $viewerId): string

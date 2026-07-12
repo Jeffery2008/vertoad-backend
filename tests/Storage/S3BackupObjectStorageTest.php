@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VertoAD\Tests\Storage;
 
 use Aws\Command;
+use Aws\CommandInterface;
 use Aws\Exception\AwsException;
 use Aws\MockHandler;
 use Aws\Result;
@@ -36,12 +37,30 @@ final class S3BackupObjectStorageTest extends TestCase
 
     public function testWritesReadsCopiesAndMeasuresEncryptedObjects(): void
     {
+        $putFile = null;
+        $putString = null;
+        $copy = null;
         $mock = new MockHandler();
-        $mock->append(new Result([]));
-        $mock->append(new Result([]));
+        $mock->append(static function (CommandInterface $command) use (&$putFile): Result {
+            $putFile = $command;
+
+            return new Result([]);
+        });
+        $mock->append(new Result(['ServerSideEncryption' => 'AES256']));
+        $mock->append(static function (CommandInterface $command) use (&$putString): Result {
+            $putString = $command;
+
+            return new Result([]);
+        });
+        $mock->append(new Result(['ServerSideEncryption' => 'AES256']));
         $mock->append(new Result(['Body' => 'downloaded-file']));
         $mock->append(new Result(['Body' => 'downloaded-string']));
-        $mock->append(new Result([]));
+        $mock->append(static function (CommandInterface $command) use (&$copy): Result {
+            $copy = $command;
+
+            return new Result([]);
+        });
+        $mock->append(new Result(['ServerSideEncryption' => 'AES256']));
         $mock->append(new Result(['ContentLength' => 17]));
         $mock->append(new Result(['ContentLength' => 17]));
         $mock->append(new Result(['Body' => Utils::streamFor('hash-me')]));
@@ -50,12 +69,10 @@ final class S3BackupObjectStorageTest extends TestCase
         file_put_contents($source, 'select 1;');
 
         $storage->putFile('backups/db.sql', $source, 'application/sql');
-        $putFile = $mock->getLastCommand();
         self::assertSame('AES256', $putFile?->offsetGet('ServerSideEncryption'));
         self::assertSame('backup-bucket', $putFile?->offsetGet('Bucket'));
 
         $storage->putString('s3://other-bucket/backups/config.json', '{}', 'application/json');
-        $putString = $mock->getLastCommand();
         self::assertSame('other-bucket', $putString?->offsetGet('Bucket'));
         self::assertSame('backups/config.json', $putString?->offsetGet('Key'));
 
@@ -65,12 +82,48 @@ final class S3BackupObjectStorageTest extends TestCase
         self::assertSame('downloaded-string', $storage->readString('backups/config.json'));
 
         $storage->copy('s3://source-bucket/assets/image one.png', 'backups/copy.png');
-        $copy = $mock->getLastCommand();
         self::assertSame('source-bucket/assets/image%20one.png', $copy?->offsetGet('CopySource'));
         self::assertSame('AES256', $copy?->offsetGet('ServerSideEncryption'));
         self::assertTrue($storage->exists('backups/copy.png'));
         self::assertSame(17, $storage->size('backups/copy.png'));
         self::assertSame(hash('sha256', 'hash-me'), $storage->sha256('backups/copy.png'));
+        self::assertCount(0, $mock);
+    }
+
+    public function testRejectsProviderThatIgnoresOrChangesRequestedServerSideEncryption(): void
+    {
+        foreach ([null, 'aws:kms'] as $actualEncryption) {
+            $put = null;
+            $mock = new MockHandler();
+            $mock->append(static function (CommandInterface $command) use (&$put): Result {
+                $put = $command;
+
+                return new Result([]);
+            });
+            $head = [];
+            if ($actualEncryption !== null) {
+                $head['ServerSideEncryption'] = $actualEncryption;
+            }
+            $mock->append(new Result($head));
+
+            try {
+                $this->storage($mock)->putString('backups/tampered.json', '{}', 'application/json');
+                self::fail('Expected missing or mismatched provider-side encryption to fail completion.');
+            } catch (RuntimeException $exception) {
+                self::assertSame(
+                    'Backup object does not use the required server-side encryption.',
+                    $exception->getMessage(),
+                );
+            }
+            self::assertSame('AES256', $put?->offsetGet('ServerSideEncryption'));
+            self::assertSame('HeadObject', $mock->getLastCommand()?->getName());
+        }
+
+        $kms = new MockHandler();
+        $kms->append(new Result([]));
+        $kms->append(new Result(['ServerSideEncryption' => 'aws:kms']));
+        $this->storage($kms, 'aws:kms')->putString('backups/kms.json', '{}', 'application/json');
+        self::assertSame('HeadObject', $kms->getLastCommand()?->getName());
     }
 
     public function testExistsReturnsFalseOnlyForNotFoundAndRethrowsOtherFailures(): void
@@ -156,7 +209,7 @@ final class S3BackupObjectStorageTest extends TestCase
         $this->storage($mock)->sha256('backup.sql');
     }
 
-    private function storage(MockHandler $mock): S3BackupObjectStorage
+    private function storage(MockHandler $mock, string $encryption = 'AES256'): S3BackupObjectStorage
     {
         $client = new S3Client([
             'version' => 'latest',
@@ -173,6 +226,7 @@ final class S3BackupObjectStorageTest extends TestCase
             'access_key_id' => 'access-key',
             'secret_access_key' => 'secret-key',
             'path_style_endpoint' => true,
+            'server_side_encryption' => $encryption,
         ], $client);
     }
 }

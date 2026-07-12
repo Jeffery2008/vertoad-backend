@@ -10,6 +10,7 @@ use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
 use Slim\Psr7\Factory\ServerRequestFactory;
 use VertoAD\AppFactory;
+use VertoAD\Bootstrap\EnvironmentLoader;
 use VertoAD\Domain\Assets\AssetType;
 use VertoAD\Repository\AuditLogRepositoryInterface;
 use VertoAD\Repository\AdSlotRepositoryInterface;
@@ -68,6 +69,7 @@ use VertoAD\Service\Archive\DeterministicArchiveWriter;
 use VertoAD\Service\Archive\DuckDbCliArchiveWriter;
 use VertoAD\Service\Archive\DuckDbCliColdQueryRunner;
 use VertoAD\Service\Archive\FixtureColdQueryRunner;
+use VertoAD\Service\Assets\AssetPublicUrlResolver;
 use VertoAD\Service\Assets\AssetUploadService;
 use VertoAD\Service\Attribution\AttributionService;
 use VertoAD\Service\AuditLogService;
@@ -76,6 +78,7 @@ use VertoAD\Service\CampaignBudgetService;
 use VertoAD\Service\Cron\AiReviewQueueJob;
 use VertoAD\Service\Cron\AggregateStatisticsJob;
 use VertoAD\Service\Cron\ArchiveParquetJob;
+use VertoAD\Service\Cron\AssetSnapshotGenerationJob;
 use VertoAD\Service\Cron\BackupCheckJob;
 use VertoAD\Service\Cron\BackupCreateJob;
 use VertoAD\Service\Cron\BackupRestoreJob;
@@ -93,6 +96,7 @@ use VertoAD\Service\Cron\PartitionMaintenanceJob;
 use VertoAD\Service\PasswordHasher;
 use VertoAD\Service\Cron\RedisCronLockStore;
 use VertoAD\Service\PermissionMatcher;
+use VertoAD\Service\OAuthScopeCatalog;
 use VertoAD\Service\PointsLedgerService;
 use VertoAD\Service\PublisherSiteVerificationService;
 use VertoAD\Service\RechargeKeyPlaintextCipherInterface;
@@ -135,12 +139,49 @@ use VertoAD\Infrastructure\Storage\DeterministicPresignedUploadSigner;
 use VertoAD\Infrastructure\Storage\ObjectStorageInspectorInterface;
 use VertoAD\Infrastructure\Storage\ObjectStorageUploadSignerInterface;
 use VertoAD\Infrastructure\Storage\S3ArchiveObjectStorage;
+use VertoAD\Infrastructure\Storage\S3AssetObjectStorage;
 use VertoAD\Infrastructure\Storage\S3BackupObjectStorage;
+use VertoAD\Infrastructure\Storage\UnavailableAssetObjectStorage;
 use VertoAD\Infrastructure\Storage\UnavailableBackupObjectStorage;
 use VertoAD\Infrastructure\Storage\UnavailableObjectStorageInspector;
 
 final class AppContainerTest extends TestCase
 {
+    public function testAssetObjectStorageFactoryUsesExplicitLocalFallbackAndProductionS3(): void
+    {
+        $factory = new \ReflectionMethod(AppFactory::class, 'assetObjectStorage');
+
+        self::assertInstanceOf(UnavailableAssetObjectStorage::class, $factory->invoke(null, [
+            'app' => ['env' => 'local'],
+            'storage' => ['s3' => []],
+        ]));
+        self::assertInstanceOf(S3AssetObjectStorage::class, $factory->invoke(null, [
+            'app' => ['env' => 'production'],
+            'storage' => ['s3' => [
+                'endpoint' => 'https://r2.example.test',
+                'region' => 'auto',
+                'bucket' => 'creative-assets',
+                'access_key_id' => 'access-key',
+                'secret_access_key' => 'secret-key',
+            ]],
+        ]));
+
+        foreach ([
+            ['app' => ['env' => 'production'], 'storage' => ['s3' => []]],
+            ['app' => ['env' => 'local'], 'storage' => ['s3' => ['endpoint' => 'http://localhost:9000']]],
+        ] as $settings) {
+            try {
+                $factory->invoke(null, $settings);
+                self::fail('Incomplete configured asset storage must fail closed.');
+            } catch (\InvalidArgumentException $exception) {
+                self::assertSame(
+                    'Configured S3 endpoint, bucket, and credentials are required for asset storage.',
+                    $exception->getMessage(),
+                );
+            }
+        }
+    }
+
     public function testBackupFactoriesEnforceProductionConfigurationAndLocalFallbacks(): void
     {
         $storageFactory = new \ReflectionMethod(AppFactory::class, 'backupObjectStorage');
@@ -155,6 +196,16 @@ final class AppContainerTest extends TestCase
             UnavailableBackupObjectStorage::class,
             $sourceStorageFactory->invoke(null, [], $local, 'Primary asset/archive'),
         );
+        $encryptedSource = $sourceStorageFactory->invoke(null, [
+            'endpoint' => 'https://primary.example.test',
+            'region' => 'auto',
+            'bucket' => 'primary-bucket',
+            'access_key_id' => 'access-key',
+            'secret_access_key' => 'secret-key',
+            'server_side_encryption' => '',
+        ], $local, 'Primary asset/archive');
+        self::assertInstanceOf(S3BackupObjectStorage::class, $encryptedSource);
+        self::assertSame('AES256', $this->privateStringProperty($encryptedSource, 'serverSideEncryption'));
         self::assertSame('not a valid endpoint', $endpointNormalizer->invoke(null, 'NOT A VALID ENDPOINT'));
         self::assertInstanceOf(UnavailableMysqlBackupRunner::class, $mysqlFactory->invoke(null, [
             'app' => ['env' => 'testing'],
@@ -282,6 +333,7 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(BearerTokenAuthenticator::class, $container->get(BearerTokenAuthenticator::class));
             self::assertInstanceOf(AuthenticateRequestMiddleware::class, $container->get(AuthenticateRequestMiddleware::class));
             self::assertInstanceOf(PermissionMatcher::class, $container->get(PermissionMatcher::class));
+            self::assertInstanceOf(OAuthScopeCatalog::class, $container->get(OAuthScopeCatalog::class));
             self::assertInstanceOf(TenantAccessService::class, $container->get(TenantAccessService::class));
             self::assertInstanceOf(PublisherSiteRepositoryInterface::class, $container->get(PublisherSiteRepositoryInterface::class));
             self::assertInstanceOf(PublisherSiteVerificationAttemptRepositoryInterface::class, $container->get(PublisherSiteVerificationAttemptRepositoryInterface::class));
@@ -392,6 +444,7 @@ final class AppContainerTest extends TestCase
             self::assertInstanceOf(BackupRestoreJob::class, $container->get(CronJobRegistry::class)->get('backup-restore'));
             self::assertInstanceOf(PartitionMaintenanceJob::class, $container->get(CronJobRegistry::class)->get('partition-maintenance'));
             self::assertInstanceOf(IpGeoLookupJob::class, $container->get(CronJobRegistry::class)->get('ip-geo-resolve'));
+            self::assertInstanceOf(AssetSnapshotGenerationJob::class, $container->get(CronJobRegistry::class)->get('asset-snapshot-generate'));
             self::assertInstanceOf(CronRunner::class, $container->get(CronRunner::class));
         } finally {
             if ($previousAppKey === false) {
@@ -419,6 +472,7 @@ final class AppContainerTest extends TestCase
 
     public function testProductionContainerRequiresRedisForServingEventBuffer(): void
     {
+        $restoreEnvironmentFile = $this->useTemporaryExternalEnvironmentFile();
         $previousAppKey = getenv('APP_KEY');
         $previousAppEnv = getenv('APP_ENV');
         $previousRedisPassword = getenv('REDIS_PASSWORD');
@@ -456,11 +510,13 @@ final class AppContainerTest extends TestCase
             } else {
                 putenv('REDIS_DRIVER=' . $previousRedisDriver);
             }
+            $restoreEnvironmentFile();
         }
     }
 
     public function testProductionContainerRequiresRedisForServingFrequencyCaps(): void
     {
+        $restoreEnvironmentFile = $this->useTemporaryExternalEnvironmentFile();
         $previousAppKey = getenv('APP_KEY');
         $previousAppEnv = getenv('APP_ENV');
         $previousRedisPassword = getenv('REDIS_PASSWORD');
@@ -498,12 +554,14 @@ final class AppContainerTest extends TestCase
             } else {
                 putenv('REDIS_DRIVER=' . $previousRedisDriver);
             }
+            $restoreEnvironmentFile();
         }
     }
 
     public function testContainerUsesRedisServingEventBufferWhenConfigured(): void
     {
         $this->defineFakeRedisIfMissing();
+        $restoreEnvironmentFile = $this->useTemporaryExternalEnvironmentFile();
 
         $previousAppKey = getenv('APP_KEY');
         $previousAppEnv = getenv('APP_ENV');
@@ -545,6 +603,7 @@ final class AppContainerTest extends TestCase
             } else {
                 putenv('REDIS_DRIVER=' . $previousRedisDriver);
             }
+            $restoreEnvironmentFile();
         }
     }
 
@@ -572,32 +631,42 @@ final class AppContainerTest extends TestCase
             self::markTestSkipped('The Redis extension is available in this process.');
         }
 
-        putenv('APP_KEY=' . Key::createNewRandomKey()->saveToAsciiSafeString());
-        putenv('APP_ENV=prod');
-        putenv('REDIS_PASSWORD=secret');
-        putenv('REDIS_DRIVER=phpredis');
+        $restoreEnvironmentFile = $this->useTemporaryExternalEnvironmentFile();
+        try {
+            putenv('APP_KEY=' . Key::createNewRandomKey()->saveToAsciiSafeString());
+            putenv('APP_ENV=prod');
+            putenv('REDIS_PASSWORD=secret');
+            putenv('REDIS_DRIVER=phpredis');
 
-        $container = AppFactory::create()->getContainer();
+            $container = AppFactory::create()->getContainer();
 
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('The Redis extension is required for phpredis connections.');
+            $this->expectException(\RuntimeException::class);
+            $this->expectExceptionMessage('The Redis extension is required for phpredis connections.');
 
-        $container?->get(AdEventRepositoryInterface::class);
+            $container?->get(AdEventRepositoryInterface::class);
+        } finally {
+            $restoreEnvironmentFile();
+        }
     }
 
     #[RunInSeparateProcess]
     public function testProductionConfigCacheRefreshRequiresRedisPassword(): void
     {
-        putenv('APP_KEY=' . Key::createNewRandomKey()->saveToAsciiSafeString());
-        putenv('APP_ENV=prod');
-        putenv('REDIS_PASSWORD=');
+        $restoreEnvironmentFile = $this->useTemporaryExternalEnvironmentFile();
+        try {
+            putenv('APP_KEY=' . Key::createNewRandomKey()->saveToAsciiSafeString());
+            putenv('APP_ENV=prod');
+            putenv('REDIS_PASSWORD=');
 
-        $container = AppFactory::create()->getContainer();
+            $container = AppFactory::create()->getContainer();
 
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('REDIS_PASSWORD is required for config cache refresh.');
+            $this->expectException(\RuntimeException::class);
+            $this->expectExceptionMessage('REDIS_PASSWORD is required for config cache refresh.');
 
-        $container?->get(ConfigCacheRefreshJob::class);
+            $container?->get(ConfigCacheRefreshJob::class);
+        } finally {
+            $restoreEnvironmentFile();
+        }
     }
 
     public function testAggregateStatisticsLookbackMustBePositive(): void
@@ -817,6 +886,10 @@ PHP);
                 'debug' => false,
                 'key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
             ],
+            'integration' => [
+                'sdk_public_base_url' => 'https://sdk.example.test',
+                'ads_public_base_url' => 'https://ads.example.test',
+            ],
             'database' => [
                 'driver' => 'pdo_sqlite',
                 'path' => $databasePath,
@@ -930,6 +1003,10 @@ PHP);
             self::assertSame(0.75, $eventPolicy->minVisibleRatio);
             self::assertSame(1500, $eventPolicy->minVisibleMs);
             self::assertSame(45, $eventPolicy->repeatClickWindowSeconds);
+            self::assertSame(
+                'https://sdk.example.test/fabric-renderer.js',
+                $this->privateStringProperty($serving, 'fabricRendererUrl'),
+            );
             self::assertInstanceOf(AssetUploadService::class, $assetUploads);
             $assetPolicy = $this->privateObjectProperty($assetUploads, 'policy');
             self::assertSame(120, $assetPolicy->uploadIntentTtlSeconds);
@@ -2203,7 +2280,7 @@ PHP);
         }
     }
 
-    public function testProductionAssetUploadServiceRequiresObjectInspectionPublicBaseUrl(): void
+    public function testProductionAssetUploadInspectionUsesPrivateS3WhilePublicDeliveryRequiresBaseUrl(): void
     {
         $databasePath = sys_get_temp_dir() . '/vertoad-object-inspector-missing-' . bin2hex(random_bytes(4)) . '.sqlite';
         $basePath = $this->temporaryAppBasePathWithSettings([
@@ -2248,11 +2325,16 @@ PHP);
 
             $container = AppFactory::create($basePath)->getContainer();
 
+            self::assertInstanceOf(
+                S3AssetObjectStorage::class,
+                $container?->get(ObjectStorageInspectorInterface::class),
+            );
+
             try {
-                $container?->get(AssetUploadService::class);
-                self::fail('Production asset upload confirmation must require object inspection.');
+                $container?->get(AssetPublicUrlResolver::class);
+                self::fail('Production public asset delivery must require an explicit public base URL.');
             } catch (\RuntimeException $exception) {
-                self::assertSame('R2_PUBLIC_BASE_URL is required for uploaded asset inspection.', $exception->getMessage());
+                self::assertSame('R2_PUBLIC_BASE_URL is required for public asset delivery.', $exception->getMessage());
             }
         } finally {
             $this->removeTemporaryAppBasePath($basePath);
@@ -3250,6 +3332,31 @@ PHP);
                 'POST:/api/v1/oauth/consent',
             ],
         ];
+    }
+
+    /** @return \Closure(): void */
+    private function useTemporaryExternalEnvironmentFile(): \Closure
+    {
+        $previous = getenv(EnvironmentLoader::ENV_FILE_VARIABLE);
+        $path = tempnam(sys_get_temp_dir(), 'vertoad-app-env-');
+        if ($path === false) {
+            throw new \RuntimeException('Unable to create a temporary external environment file.');
+        }
+        if (file_put_contents($path, '') === false) {
+            @unlink($path);
+            throw new \RuntimeException('Unable to initialize the temporary external environment file.');
+        }
+
+        putenv(EnvironmentLoader::ENV_FILE_VARIABLE . '=' . $path);
+
+        return static function () use ($path, $previous): void {
+            if ($previous === false) {
+                putenv(EnvironmentLoader::ENV_FILE_VARIABLE);
+            } else {
+                putenv(EnvironmentLoader::ENV_FILE_VARIABLE . '=' . $previous);
+            }
+            @unlink($path);
+        };
     }
 
     private function defineFakeRedisIfMissing(): void

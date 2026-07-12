@@ -10,10 +10,14 @@ use InvalidArgumentException;
 use JsonException;
 use VertoAD\Domain\Campaign\CampaignTargeting;
 use VertoAD\Domain\Serving\AdCandidate;
+use VertoAD\Service\Assets\AssetPublicUrlResolver;
 
 final readonly class DatabaseAdCandidateRepository implements AdCandidateRepositoryInterface
 {
-    public function __construct(private Connection $connection)
+    public function __construct(
+        private Connection $connection,
+        private AssetPublicUrlResolver $publicUrls,
+    )
     {
     }
 
@@ -40,6 +44,9 @@ final readonly class DatabaseAdCandidateRepository implements AdCandidateReposit
                 'a.type AS asset_type',
                 'a.object_key',
                 'a.content_type',
+                'a.snapshot_png_object_key',
+                'a.snapshot_webp_object_key',
+                'a.thumbnail_webp_object_key',
                 'a.width',
                 'a.height',
                 'r.ai_risk_score',
@@ -57,12 +64,17 @@ final readonly class DatabaseAdCandidateRepository implements AdCandidateReposit
             ->leftJoin('c', 'campaign_serving_frequency_caps', 'fc', 'fc.campaign_id = c.id AND fc.organization_id = c.organization_id')
             ->where('c.status = :campaign_status')
             ->andWhere("a.status IN ('pending_review', 'confirmed')")
+            ->andWhere('a.snapshot_status = :snapshot_status')
+            ->andWhere('a.snapshot_png_object_key IS NOT NULL')
+            ->andWhere('a.snapshot_webp_object_key IS NOT NULL')
+            ->andWhere('a.thumbnail_webp_object_key IS NOT NULL')
             ->andWhere('r.status = :review_status')
             ->andWhere('r.final_decision = :final_decision')
             ->andWhere('c.landing_url <> :empty_landing_url')
             ->andWhere('(c.starts_at IS NULL OR c.starts_at <= :now)')
             ->andWhere('(c.ends_at IS NULL OR c.ends_at >= :now)')
             ->setParameter('campaign_status', 'active')
+            ->setParameter('snapshot_status', 'ready')
             ->setParameter('review_status', 'approved')
             ->setParameter('final_decision', 'approved')
             ->setParameter('empty_landing_url', '')
@@ -77,6 +89,9 @@ final readonly class DatabaseAdCandidateRepository implements AdCandidateReposit
             ->addGroupBy('a.type')
             ->addGroupBy('a.object_key')
             ->addGroupBy('a.content_type')
+            ->addGroupBy('a.snapshot_png_object_key')
+            ->addGroupBy('a.snapshot_webp_object_key')
+            ->addGroupBy('a.thumbnail_webp_object_key')
             ->addGroupBy('a.width')
             ->addGroupBy('a.height')
             ->addGroupBy('r.ai_risk_score')
@@ -118,6 +133,13 @@ final readonly class DatabaseAdCandidateRepository implements AdCandidateReposit
                 assetType: (string) $row['asset_type'],
                 assetObjectKey: (string) $row['object_key'],
                 assetContentType: (string) $row['content_type'],
+                snapshotPngObjectKey: (string) $row['snapshot_png_object_key'],
+                snapshotWebpObjectKey: (string) $row['snapshot_webp_object_key'],
+                thumbnailWebpObjectKey: (string) $row['thumbnail_webp_object_key'],
+                assetUrl: $this->publicUrls->urlFor((string) $row['object_key']),
+                snapshotPngUrl: $this->publicUrls->urlFor((string) $row['snapshot_png_object_key']),
+                snapshotWebpUrl: $this->publicUrls->urlFor((string) $row['snapshot_webp_object_key']),
+                thumbnailWebpUrl: $this->publicUrls->urlFor((string) $row['thumbnail_webp_object_key']),
                 qualityScore: $this->qualityScore($row['ai_risk_score']),
                 historicalCtrPerMille: $this->historicalCtrPerMille((int) $row['historical_impressions'], (int) $row['historical_clicks']),
                 hourlyFrequencyCap: $row['hourly_impression_cap'] === null ? null : (int) $row['hourly_impression_cap'],
@@ -154,10 +176,14 @@ final readonly class DatabaseAdCandidateRepository implements AdCandidateReposit
     /** @param array<string, mixed> $row */
     private function creativeHtml(array $row): string
     {
-        $objectKey = htmlspecialchars((string) $row['object_key'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $assetUrl = htmlspecialchars(
+            $this->publicUrls->urlFor((string) $row['snapshot_webp_object_key']),
+            ENT_QUOTES | ENT_SUBSTITUTE,
+            'UTF-8',
+        );
         $type = htmlspecialchars((string) $row['asset_type'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 
-        return '<div data-vertoad-asset="' . $objectKey . '" data-vertoad-asset-type="' . $type . '"></div>';
+        return '<div data-vertoad-asset="' . $assetUrl . '" data-vertoad-asset-type="' . $type . '"></div>';
     }
 
     private function qualityScore(mixed $aiRiskScore): int

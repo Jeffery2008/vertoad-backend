@@ -266,6 +266,11 @@ final class CreativeTemplatePermissionMembershipRepository implements Organizati
         return $this->memberships[$userId . ':' . $organizationId] ?? null;
     }
 
+    public function listActiveOrganizationsForUser(int $userId): array
+    {
+        return [];
+    }
+
     public function listForOrganization(int $organizationId): array
     {
         return [];

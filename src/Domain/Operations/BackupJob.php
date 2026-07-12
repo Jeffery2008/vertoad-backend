@@ -29,6 +29,10 @@ final readonly class BackupJob
         public DateTimeImmutable $createdAt,
         public ?DateTimeImmutable $startedAt,
         public ?DateTimeImmutable $completedAt,
+        public ?string $leaseOwner = null,
+        public ?DateTimeImmutable $leaseExpiresAt = null,
+        public int $attemptCount = 0,
+        public ?DateTimeImmutable $heartbeatAt = null,
     ) {
     }
 }

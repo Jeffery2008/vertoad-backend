@@ -15,12 +15,14 @@ use VertoAD\Infrastructure\Security\ClientIpResolver;
 use VertoAD\Repository\OAuthClientRepositoryInterface;
 use VertoAD\Service\AuditLogService;
 use VertoAD\Service\OAuthClientSecretHasher;
+use VertoAD\Service\OAuthScopeCatalog;
 
 final readonly class CreateOAuthClientAction
 {
     public function __construct(
         private OAuthClientRepositoryInterface $clients,
         private OAuthClientSecretHasher $secrets,
+        private OAuthScopeCatalog $scopeCatalog,
         private AuditLogService $audit,
         private ClientIpResolver $ipResolver,
     ) {
@@ -40,20 +42,29 @@ final readonly class CreateOAuthClientAction
             return $this->error($response, 422, 'invalid_request', 'JSON object payload is required.');
         }
 
+        $creator = $context->user;
+
         try {
-            $secret = $this->secrets->generateSecret();
-            $client = $this->clients->transactional(function () use ($context, $organizationId, $payload, $request, $secret): OAuthClient {
+            $name = self::stringField($payload, 'name');
+            $redirectUris = self::stringListField($payload, 'redirect_uris');
+            $grantTypes = self::stringListField($payload, 'grant_types');
+            $scopes = self::stringListField($payload, 'scopes', required: false);
+            $isConfidential = self::booleanField($payload, 'is_confidential', true);
+            $this->scopeCatalog->assertCreatorMayGrant($creator, $organizationId, $scopes);
+            $secret = $isConfidential ? $this->secrets->generateSecret() : null;
+
+            $client = $this->clients->transactional(function () use ($context, $organizationId, $request, $secret, $name, $redirectUris, $grantTypes, $scopes, $isConfidential): OAuthClient {
                 $client = $this->clients->store(new OAuthClient(
                     id: null,
                     organizationId: $organizationId,
                     ownerUserId: $context->user?->id,
                     clientIdentifier: $this->generateClientIdentifier(),
-                    name: self::stringField($payload, 'name'),
-                    secretHash: $this->secrets->hash($secret),
-                    redirectUris: self::stringListField($payload, 'redirect_uris'),
-                    grantTypes: self::stringListField($payload, 'grant_types'),
-                    scopes: self::stringListField($payload, 'scopes', required: false),
-                    isConfidential: (bool) ($payload['is_confidential'] ?? true),
+                    name: $name,
+                    secretHash: $secret === null ? null : $this->secrets->hash($secret),
+                    redirectUris: $redirectUris,
+                    grantTypes: $grantTypes,
+                    scopes: $scopes,
+                    isConfidential: $isConfidential,
                     revokedAt: null,
                 ));
 
@@ -75,10 +86,14 @@ final readonly class CreateOAuthClientAction
             return $this->error($response, 422, 'invalid_oauth_client', $exception->getMessage());
         }
 
-        return OAuthClientSerializers::json($response, [
+        $data = [
             'client' => OAuthClientSerializers::client($client),
-            'client_secret' => $secret,
-        ], 201);
+        ];
+        if ($secret !== null) {
+            $data['client_secret'] = $secret;
+        }
+
+        return OAuthClientSerializers::json($response, $data, 201);
     }
 
     private function error(ResponseInterface $response, int $status, string $code, string $message): ResponseInterface
@@ -108,10 +123,34 @@ final readonly class CreateOAuthClientAction
             throw new InvalidArgumentException(sprintf('%s must be an array of strings.', $key));
         }
 
-        $strings = array_values(array_filter($value, static fn (mixed $item): bool => is_string($item)));
-        if ($required && $strings === []) { throw new InvalidArgumentException(sprintf('%s requires at least one string.', $key)); }
+        $strings = [];
+        foreach ($value as $item) {
+            if (!is_string($item)) {
+                throw new InvalidArgumentException(sprintf('%s must be an array of strings.', $key));
+            }
+
+            $strings[] = $item;
+        }
+
+        if ($required && $strings === []) {
+            throw new InvalidArgumentException(sprintf('%s requires at least one string.', $key));
+        }
 
         return $strings;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private static function booleanField(array $payload, string $key, bool $default): bool
+    {
+        if (!array_key_exists($key, $payload)) {
+            return $default;
+        }
+
+        if (!is_bool($payload[$key])) {
+            throw new InvalidArgumentException(sprintf('%s must be a boolean.', $key));
+        }
+
+        return $payload[$key];
     }
 
     private function generateClientIdentifier(): string

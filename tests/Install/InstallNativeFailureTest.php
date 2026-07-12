@@ -51,7 +51,7 @@ namespace VertoAD\Tests\Install;
             $filesystem = new InstallFilesystem($root, readFile: static fn (): false => false);
 
             try {
-                $filesystem->commitInstallation([], ['private_key' => 'private', 'public_key' => 'public'], [], static fn (): null => null);
+                $filesystem->commitInstallation(['INSTALL_TOKEN' => ''], ['private_key' => 'private', 'public_key' => 'public'], [], static fn (): null => null);
                 self::fail('Expected snapshot read failure.');
             } catch (\RuntimeException $exception) {
                 self::assertStringContainsString('Unable to snapshot installer file', $exception->getMessage());
@@ -87,7 +87,7 @@ namespace VertoAD\Tests\Install;
             );
             try {
                 $filesystem->commitInstallation(
-                    ['APP_ENV' => 'production'],
+                    ['APP_ENV' => 'production', 'INSTALL_TOKEN' => ''],
                     ['private_key' => 'private', 'public_key' => 'public'],
                     ['state' => 'installed'],
                     static fn (): never => throw new \RuntimeException('commit failed'),

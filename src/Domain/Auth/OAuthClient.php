@@ -91,6 +91,18 @@ final readonly class OAuthClient
             }
         }
 
+        if ($isConfidential && $secretHash === null) {
+            throw new InvalidArgumentException('Confidential OAuth clients require a secret hash.');
+        }
+
+        if (!$isConfidential && $secretHash !== null) {
+            throw new InvalidArgumentException('Public OAuth clients must not have a client secret.');
+        }
+
+        if (!$isConfidential && in_array('client_credentials', $grantTypes, true)) {
+            throw new InvalidArgumentException('Public OAuth clients cannot use the client_credentials grant.');
+        }
+
         foreach ($scopes as $scope) {
             if (preg_match('/^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)+$/', $scope) !== 1) {
                 throw new InvalidArgumentException('OAuth client scope must use dot-separated permission code format.');

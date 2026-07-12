@@ -7,14 +7,13 @@ namespace VertoAD\Install;
 use DateTimeImmutable;
 use DateTimeZone;
 use Doctrine\DBAL\Connection;
-use VertoAD\Service\OAuthClientSecretHasher;
 use VertoAD\Service\PasswordHasher;
 use VertoAD\Service\PermissionInventory;
 
 final readonly class BootstrapSeeder
 {
     /**
-     * @param array{installation_id: string, app_key: string, oauth_encryption_key: string, oauth_client_id: string, oauth_client_secret: string, cron_api_token: string, webhook_signing_secret: string} $secrets
+     * @param array{installation_id: string, app_key: string, oauth_encryption_key: string, oauth_client_id: string, cron_api_token: string, webhook_signing_secret: string} $secrets
      * @return array{installation_id: string, admin_user_id: int, organization_id: int, oauth_client_id: string}
      */
     public function seed(
@@ -84,12 +83,12 @@ final readonly class BootstrapSeeder
                 'organization_id' => $organizationId,
                 'owner_user_id' => $userId,
                 'client_identifier' => $secrets['oauth_client_id'],
-                'name' => 'VertoAD Initial Client',
-                'secret_hash' => (new OAuthClientSecretHasher())->hash($secrets['oauth_client_secret']),
+                'name' => 'VertoAD First-Party SPA',
+                'secret_hash' => null,
                 'redirect_uris_json' => $this->json([$input->oauthRedirectUri]),
-                'grant_types_json' => $this->json(['authorization_code', 'client_credentials', 'refresh_token']),
+                'grant_types_json' => $this->json(['authorization_code', 'refresh_token']),
                 'scopes_json' => $this->json($permissionCodes),
-                'is_confidential' => 1,
+                'is_confidential' => 0,
             ]);
             $oauthClientDatabaseId = $this->lastInsertId($connection, 'OAuth client');
 

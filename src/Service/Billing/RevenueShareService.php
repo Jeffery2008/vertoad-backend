@@ -7,6 +7,8 @@ namespace VertoAD\Service\Billing;
 use DateTimeImmutable;
 use InvalidArgumentException;
 use VertoAD\Domain\Billing\PublisherEarningEvent;
+use VertoAD\Domain\Billing\RevenueShareRule;
+use VertoAD\Domain\Ledger\PointsLedgerEntry;
 use VertoAD\Repository\Billing\RevenueShareRepository;
 use VertoAD\Service\PointsLedgerService;
 
@@ -41,6 +43,70 @@ final class RevenueShareService
         return $this->publisherPoints($grossPoints, $rule->shareRatioBps) > 0
             ? null
             : self::ZERO_PUBLISHER_EARNING;
+    }
+
+    public function findRuleForAdEvent(
+        int $publisherOrganizationId,
+        int $siteId,
+        int $adSlotId,
+    ): ?RevenueShareRule {
+        return $this->repository->findBestRule($publisherOrganizationId, $siteId, $adSlotId);
+    }
+
+    /**
+     * @param array<string, mixed> $metadata
+     */
+    public function creditForCpmAllocation(
+        string $eventId,
+        int $publisherOrganizationId,
+        int $siteId,
+        int $adSlotId,
+        int $advertiserOrganizationId,
+        int $campaignId,
+        int $grossPoints,
+        int $publisherPoints,
+        RevenueShareRule $rule,
+        DateTimeImmutable $earnedAt,
+        array $metadata = [],
+    ): ?PointsLedgerEntry {
+        $eventId = $this->normalizeEventId($eventId);
+        if ($grossPoints < 0) {
+            throw new InvalidArgumentException('CPM gross points cannot be negative.');
+        }
+        if ($publisherPoints < 0) {
+            throw new InvalidArgumentException('CPM publisher points cannot be negative.');
+        }
+        if ($publisherPoints === 0) {
+            return null;
+        }
+
+        $platformPoints = $grossPoints - $publisherPoints;
+        return $this->ledger->credit(
+            organizationId: $publisherOrganizationId,
+            accountType: 'publisher_earnings',
+            accountId: null,
+            pointsAmount: $publisherPoints,
+            idempotencyKey: 'publisher-earning:' . $eventId,
+            referenceType: 'ad_event',
+            referenceId: null,
+            memo: 'Publisher earning for CPM allocation ' . $eventId,
+            metadata: array_merge($metadata, [
+                'ad_slot_id' => $adSlotId,
+                'advertiser_organization_id' => $advertiserOrganizationId,
+                'billing_model' => 'cpm',
+                'campaign_id' => $campaignId,
+                'event_id' => $eventId,
+                'gross_points' => $grossPoints,
+                'platform_points_delta' => $platformPoints,
+                'publisher_points' => $publisherPoints,
+                'publisher_earned_at' => $earnedAt->format(DATE_ATOM),
+                'trigger_revenue_share_rule_id' => $rule->id,
+                'trigger_revenue_share_rule_scope' => $rule->scope,
+                'trigger_revenue_share_rule_version' => $rule->version,
+                'trigger_share_ratio_bps' => $rule->shareRatioBps,
+                'site_id' => $siteId,
+            ]),
+        );
     }
 
     public function creditForAdEvent(
@@ -126,6 +192,10 @@ final class RevenueShareService
 
     private function publisherPoints(int $grossPoints, int $ratio): int
     {
-        return intdiv($grossPoints * $ratio, 10000);
+        $quotient = intdiv($grossPoints, 10_000);
+        $remainder = $grossPoints % 10_000;
+
+        return ($quotient * $ratio) + intdiv($remainder * $ratio, 10_000);
     }
+
 }

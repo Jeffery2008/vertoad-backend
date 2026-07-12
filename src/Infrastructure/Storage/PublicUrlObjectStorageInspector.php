@@ -60,6 +60,15 @@ final readonly class PublicUrlObjectStorageInspector implements ObjectStorageIns
 
         $contentType = $this->contentType($result->headers);
         $byteSize = $this->byteSize($result);
+        if ($result->statusCode === 206) {
+            $byteSize = $this->completePartialResponseSize($result);
+        }
+        if ($byteSize <= 0 || $byteSize > $this->maxInspectBytes) {
+            throw new RuntimeException('Object storage object exceeds the configured inspection byte limit.');
+        }
+        if (strlen($result->body) !== $byteSize) {
+            throw new RuntimeException('Object storage object length changed during inspection.');
+        }
         [$width, $height, $durationSeconds] = $this->geometry($contentType, $result->body, $objectKey);
 
         return new StoredObjectInspection(
@@ -71,6 +80,7 @@ final readonly class PublicUrlObjectStorageInspector implements ObjectStorageIns
             durationSeconds: $durationSeconds,
             checksum: 'sha256:' . hash('sha256', $result->body),
             leadingBytes: substr($result->body, 0, 512),
+            body: $result->body,
         );
     }
 
@@ -98,6 +108,23 @@ final readonly class PublicUrlObjectStorageInspector implements ObjectStorageIns
         }
 
         return strlen($result->body);
+    }
+
+    private function completePartialResponseSize(StoredObjectFetchResult $result): int
+    {
+        $contentRange = $this->header($result->headers, 'content-range');
+        if ($contentRange === null || preg_match('/^bytes\s+(\d+)-(\d+)\/(\d+)$/i', $contentRange, $matches) !== 1) {
+            throw new RuntimeException('Object storage object length changed during inspection.');
+        }
+
+        $start = (int) $matches[1];
+        $end = (int) $matches[2];
+        $total = (int) $matches[3];
+        if ($start !== 0 || $end < $start || $end - $start + 1 !== strlen($result->body) || $end + 1 !== $total) {
+            throw new RuntimeException('Object storage object length changed during inspection.');
+        }
+
+        return $total;
     }
 
     /**
@@ -181,12 +208,20 @@ final readonly class PublicUrlObjectStorageInspector implements ObjectStorageIns
                 'header' => 'Range: bytes=0-' . ($this->maxInspectBytes - 1),
             ],
         ]);
-        $body = @file_get_contents($url, false, $context);
-        if ($body === false) {
+        $stream = @fopen($url, 'rb', false, $context);
+        if ($stream === false) {
             return null;
         }
 
-        return new StoredObjectFetchResult($this->httpStatus($http_response_header ?? []), $this->headers($http_response_header ?? []), $body);
+        try {
+            $contents = stream_get_contents($stream, $this->maxInspectBytes + 1);
+            $body = is_string($contents) ? $contents : '';
+            $headers = isset($http_response_header) && is_array($http_response_header) ? $http_response_header : [];
+        } finally {
+            fclose($stream);
+        }
+
+        return new StoredObjectFetchResult($this->httpStatus($headers), $this->headers($headers), $body);
     }
 
     /**

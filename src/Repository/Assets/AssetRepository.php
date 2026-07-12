@@ -7,6 +7,7 @@ namespace VertoAD\Repository\Assets;
 use DateTimeImmutable;
 use Doctrine\DBAL\Connection;
 use VertoAD\Domain\Assets\AssetStatus;
+use VertoAD\Domain\Assets\AssetSnapshotStatus;
 use VertoAD\Domain\Assets\AssetType;
 use VertoAD\Domain\Assets\AssetUploadIntent;
 use VertoAD\Domain\Assets\CreativeAsset;
@@ -83,6 +84,7 @@ final class AssetRepository implements AssetRepositoryInterface
                 'duration_seconds' => $asset->durationSeconds,
                 'checksum' => $asset->checksum,
                 'status' => $asset->status->value,
+                'snapshot_status' => $asset->snapshotStatus->value,
             ]);
             $assetId = (int) $this->connection->lastInsertId();
             $this->connection->insert('asset_snapshot_jobs', [
@@ -111,8 +113,28 @@ final class AssetRepository implements AssetRepositoryInterface
                 durationSeconds: $asset->durationSeconds,
                 checksum: $asset->checksum,
                 status: $asset->status,
+                snapshotStatus: $asset->snapshotStatus,
+                snapshotPngObjectKey: $asset->snapshotPngObjectKey,
+                snapshotWebpObjectKey: $asset->snapshotWebpObjectKey,
+                thumbnailWebpObjectKey: $asset->thumbnailWebpObjectKey,
             );
         });
+    }
+
+    public function findAssetByUploadIntent(int $uploadIntentId, int $organizationId, int $uploaderUserId): ?CreativeAsset
+    {
+        $row = $this->connection->createQueryBuilder()
+            ->select('*')
+            ->from('creative_assets')
+            ->where('upload_intent_id = :upload_intent_id')
+            ->andWhere('organization_id = :organization_id')
+            ->andWhere('uploader_user_id = :uploader_user_id')
+            ->setParameter('upload_intent_id', $uploadIntentId)
+            ->setParameter('organization_id', $organizationId)
+            ->setParameter('uploader_user_id', $uploaderUserId)
+            ->fetchAssociative();
+
+        return $row === false ? null : $this->hydrateAsset($row);
     }
 
     /**
@@ -131,6 +153,30 @@ final class AssetRepository implements AssetRepositoryInterface
             byteSize: (int) $row['byte_size'],
             status: AssetStatus::from((string) $row['status']),
             expiresAt: new DateTimeImmutable((string) $row['expires_at']),
+        );
+    }
+
+    /** @param array<string, mixed> $row */
+    private function hydrateAsset(array $row): CreativeAsset
+    {
+        return new CreativeAsset(
+            id: (int) $row['id'],
+            uploadIntentId: (int) $row['upload_intent_id'],
+            organizationId: (int) $row['organization_id'],
+            uploaderUserId: (int) $row['uploader_user_id'],
+            type: AssetType::from((string) $row['type']),
+            objectKey: (string) $row['object_key'],
+            contentType: (string) $row['content_type'],
+            byteSize: (int) $row['byte_size'],
+            width: (int) $row['width'],
+            height: (int) $row['height'],
+            durationSeconds: $row['duration_seconds'] === null ? null : (float) $row['duration_seconds'],
+            checksum: $row['checksum'] === null ? null : (string) $row['checksum'],
+            status: AssetStatus::from((string) $row['status']),
+            snapshotStatus: AssetSnapshotStatus::from((string) $row['snapshot_status']),
+            snapshotPngObjectKey: $row['snapshot_png_object_key'] === null ? null : (string) $row['snapshot_png_object_key'],
+            snapshotWebpObjectKey: $row['snapshot_webp_object_key'] === null ? null : (string) $row['snapshot_webp_object_key'],
+            thumbnailWebpObjectKey: $row['thumbnail_webp_object_key'] === null ? null : (string) $row['thumbnail_webp_object_key'],
         );
     }
 

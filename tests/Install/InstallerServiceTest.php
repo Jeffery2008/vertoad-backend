@@ -15,7 +15,6 @@ use VertoAD\Install\InstallerService;
 use VertoAD\Install\InstallSecretGenerator;
 use VertoAD\Install\InstallState;
 use VertoAD\Install\MigrationRunnerInterface;
-use VertoAD\Service\OAuthClientSecretHasher;
 
 final class InstallerServiceTest extends TestCase
 {
@@ -59,7 +58,7 @@ final class InstallerServiceTest extends TestCase
         self::assertSame(1, $result['organization_id']);
         self::assertSame($result['oauth_client_id'], $migrations->settings === [] ? null : $result['oauth_client_id']);
         self::assertStringStartsWith('voc_', $result['oauth_client_id']);
-        self::assertStringStartsWith('vocs_', $result['oauth_client_secret']);
+        self::assertArrayNotHasKey('oauth_client_secret', $result);
         self::assertSame('pdo_mysql', $migrations->settings['driver']);
         self::assertSame('Db$Password-2026', $migrations->settings['password']);
 
@@ -74,6 +73,7 @@ final class InstallerServiceTest extends TestCase
         self::assertStringContainsString('OAUTH_PUBLIC_KEY_PATH="storage/oauth/public.key"', $environment);
         self::assertStringNotContainsString(str_replace('\\', '/', $root) . '/storage/oauth', str_replace('\\', '/', $environment));
         self::assertStringContainsString('INSTALL_TOKEN=""', $environment);
+        self::assertStringNotContainsString('OAUTH_PRIVATE_KEY_PASSPHRASE', $environment);
         self::assertStringContainsString('CUSTOM_KEEP=yes', $environment);
         self::assertStringNotContainsString('OAUTH_CLIENT_SECRET', $environment);
         self::assertFileExists($root . '/storage/install.lock');
@@ -86,9 +86,11 @@ final class InstallerServiceTest extends TestCase
 
         $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'path' => $databasePath]);
         self::assertSame(1, (int) $connection->fetchOne('SELECT COUNT(*) FROM app_installations'));
-        $hash = $connection->fetchOne('SELECT secret_hash FROM oauth_clients');
-        self::assertIsString($hash);
-        self::assertTrue((new OAuthClientSecretHasher())->verify($result['oauth_client_secret'], $hash));
+        $client = $connection->fetchAssociative('SELECT secret_hash, grant_types_json, is_confidential FROM oauth_clients');
+        self::assertIsArray($client);
+        self::assertNull($client['secret_hash']);
+        self::assertSame(0, (int) $client['is_confidential']);
+        self::assertSame(['authorization_code', 'refresh_token'], json_decode((string) $client['grant_types_json'], true, flags: JSON_THROW_ON_ERROR));
         self::assertSame('install-service-success', $connection->fetchOne('SELECT request_id FROM app_installations'));
         self::assertSame('Installer Service Test/1.0', $connection->fetchOne("SELECT user_agent FROM audit_logs WHERE action = 'installation.completed'"));
         $connection->close();

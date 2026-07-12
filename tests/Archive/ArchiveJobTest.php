@@ -41,8 +41,9 @@ final class ArchiveJobTest extends TestCase
             'event_type=impression/date=2026-06-08/hour=10',
             'event_type=impression/date=2026-06-08/hour=11',
         ], array_map(static fn (array $partition): string => $partition['partition'], $manifest->partitions));
-        self::assertSame(
-            's3://vertoad-archive/raw-events/event_type=click/date=2026-06-08/hour=10/part-20260608T101500Z-20260608T110500Z.parquet',
+        self::assertMatchesRegularExpression(
+            '~^s3://vertoad-archive/raw-events/event_type=click/date=2026-06-08/hour=10/'
+            . 'part-20260608T101500Z-20260608T110500Z-[a-f0-9]{16}\.parquet$~',
             $manifest->partitions[0]['object_key'],
         );
         self::assertSame(1, $manifest->partitions[0]['row_count']);
@@ -59,6 +60,36 @@ final class ArchiveJobTest extends TestCase
 
         self::assertSame(0, $repeat->metrics['events_archived'] ?? null);
         self::assertSame([], $repository->pendingEvents());
+    }
+
+    public function testManifestAndObjectIdentitiesAreStableForRetriesAndUniqueAcrossEqualShapeBatches(): void
+    {
+        $firstEvents = [
+            new ArchiveEvent('click', 'click-a', new DateTimeImmutable('2026-06-08T10:01:00+00:00'), ['cost_points' => 10]),
+            new ArchiveEvent('impression', 'impression-a', new DateTimeImmutable('2026-06-08T10:02:00+00:00'), ['cost_points' => 0]),
+        ];
+        $secondEvents = [
+            new ArchiveEvent('click', 'click-b', new DateTimeImmutable('2026-06-08T10:11:00+00:00'), ['cost_points' => 10]),
+            new ArchiveEvent('impression', 'impression-b', new DateTimeImmutable('2026-06-08T10:12:00+00:00'), ['cost_points' => 0]),
+        ];
+
+        $firstRepository = new InMemoryArchiveRepository($firstEvents);
+        $firstResult = (new ArchiveJob($firstRepository, 'archive', new DeterministicArchiveWriter()))->run();
+        $retryRepository = new InMemoryArchiveRepository(array_reverse($firstEvents));
+        $retryResult = (new ArchiveJob($retryRepository, 'archive', new DeterministicArchiveWriter()))->run();
+        $secondRepository = new InMemoryArchiveRepository($secondEvents);
+        $secondResult = (new ArchiveJob($secondRepository, 'archive', new DeterministicArchiveWriter()))->run();
+
+        self::assertSame($firstResult->metrics['manifest_id'], $retryResult->metrics['manifest_id']);
+        self::assertNotSame($firstResult->metrics['manifest_id'], $secondResult->metrics['manifest_id']);
+        self::assertSame(
+            $firstRepository->manifests()[0]->partitions,
+            $retryRepository->manifests()[0]->partitions,
+        );
+        self::assertNotSame(
+            array_column($firstRepository->manifests()[0]->partitions, 'object_key'),
+            array_column($secondRepository->manifests()[0]->partitions, 'object_key'),
+        );
     }
 
     public function testArchiveJobDoesNotMarkEventsArchivedWhenWriterFails(): void

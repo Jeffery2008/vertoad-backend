@@ -64,7 +64,12 @@ tags:
   - name: AuditLogs
     description: Platform audit trail search with super-admin-only raw context visibility.
   - name: Webhooks
-    description: Webhook delivery status, retry, and signing metadata.
+    description: |
+      Organization-scoped, at-least-once business event delivery for review results,
+      point changes, campaign status, conversions, withdrawals, and API clients.
+      Each POST body is a versioned `WebhookEventEnvelope`. Consumers must deduplicate
+      by its stable `id`. `X-VertoAD-Signature` uses `t=<unix>,v1=<hex>` where `v1`
+      is HMAC-SHA256 over `<unix>.<raw request body>` with the endpoint signing secret.
   - name: Support
     description: Support ticket queues, linked context, internal notes, and status updates.
   - name: FeatureFlags
@@ -241,7 +246,7 @@ paths:
         - Auth
       operationId: getCurrentUser
       summary: Return the authenticated user context.
-      description: Returns user metadata plus the active organization membership and permission codes when an organization scope is present.
+      description: Returns user metadata, the selected organization id and active membership when an organization scope is present, and every selectable organization for which the current user has an active membership and the organization is active. The selected organization id is preserved even when its membership is null. Selectable organizations are ordered by slug and then id; organizations belonging only to other users, invited or disabled memberships, and inactive organizations are never returned. Repository or database failures are returned as centralized operation errors and are never represented as an empty organizations array.
       security:
         - BearerAuth: []
       parameters:
@@ -274,6 +279,12 @@ paths:
                         $ref: "#/components/schemas/MeData"
         "401":
           $ref: "#/components/responses/Error"
+        "500":
+          description: The organization membership context could not be loaded because of an internal repository or database failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthMeOperationErrorEnvelope"
         default:
           $ref: "#/components/responses/Error"
   /api/v1/organizations/{organization_id}/members:
@@ -1457,7 +1468,7 @@ paths:
         - Assets
       operationId: createAssetUploadIntent
       summary: Create a presigned creative asset upload intent.
-      description: Creates a scoped signed object-storage upload intent according to the current `assets.upload_policy` system configuration version. Allowed content types, byte limits, extensions, dimensions, video duration, magic signatures, and intent TTL are policy-controlled and are not hard-coded in this contract. Production and staging use S3-compatible SigV4 presigned PUT URLs for R2/S3; local and test environments may use the deterministic signer.
+      description: Creates a scoped staging-only object-storage upload intent according to the current `assets.upload_policy` system configuration version. Allowed content types, byte limits, extensions, dimensions, video duration, magic signatures, and intent TTL are policy-controlled and are not hard-coded in this contract. Production and staging use S3-compatible SigV4 presigned PUT URLs for R2/S3; local and test environments may use the deterministic signer. The signed PUT may be retried or overwritten only in the staging namespace until expiry; clients must treat the returned key as opaque and must never use it as a delivered asset URL.
       security:
         - BearerAuth: []
       parameters:
@@ -1499,7 +1510,7 @@ paths:
         - Assets
       operationId: confirmAssetUpload
       summary: Confirm and validate an uploaded creative asset.
-      description: Validates the uploaded object by reading object storage metadata and bytes, then applying the current `assets.upload_policy` system configuration version for magic bytes, dimensions, and video duration before creating a pending-review asset and snapshot job marker.
+      description: Validates the uploaded staging object by reading object storage metadata and bytes, then applies the current `assets.upload_policy` system configuration version for magic bytes, dimensions, and video duration. In production and staging the backend writes the exact inspected byte snapshot with private credentials to a server-generated final key containing an unguessable token and the authoritative SHA-256 digest. The finalizer rejects any key whose digest differs from the bytes, uses an unconditional private `PutObject`, reads the final object back for authoritative SHA-256 verification, atomically creates a pending-review asset and durable snapshot job referencing only that final key, and removes staging. It does not rely on S3 conditional PUT or copy again from the mutable staging key; an identical-key retry can only rewrite identical bytes. A retry verifies the persisted final object and can recover it only from staging bytes matching the committed checksum; concurrent confirmations use distinct per-content keys, and a loser deletes only its own uncommitted final object without overwriting the winner. It returns the public source URL immediately; PNG, WebP, and thumbnail URLs remain null until `asset-snapshot-generate` completes asynchronously.
       security:
         - BearerAuth: []
       parameters:
@@ -1534,6 +1545,8 @@ paths:
         "404":
           $ref: "#/components/responses/Error"
         "422":
+          $ref: "#/components/responses/Error"
+        "503":
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
@@ -2977,7 +2990,7 @@ paths:
         - OAuth
       operationId: createOAuthClient
       summary: Create an OAuth client for an organization.
-      description: Creates a developer OAuth client and returns the plaintext client secret exactly once.
+      description: Creates a developer OAuth client after intersecting requested scopes with the advertiser Open API scope catalog and the creating member's permissions in the target organization. Confidential clients receive a plaintext secret exactly once. Public clients are restricted to Authorization Code + PKCE/refresh grants and receive no secret.
       security:
         - BearerAuth: []
       x-permissions:
@@ -3006,7 +3019,7 @@ paths:
                   - type: object
                     properties:
                       data:
-                        $ref: "#/components/schemas/OAuthClientSecretData"
+                        $ref: "#/components/schemas/OAuthClientCreateData"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -3023,7 +3036,7 @@ paths:
         - OAuth
       operationId: rotateOAuthClientSecret
       summary: Rotate an OAuth client secret.
-      description: Replaces the stored secret hash and returns the new plaintext client secret exactly once.
+      description: Replaces the stored secret hash and returns the new plaintext client secret exactly once. Public clients have no secret and return 422.
       security:
         - BearerAuth: []
       x-permissions:
@@ -3060,6 +3073,8 @@ paths:
         "403":
           $ref: "#/components/responses/Error"
         "404":
+          $ref: "#/components/responses/Error"
+        "422":
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
@@ -3104,7 +3119,7 @@ paths:
         - Webhooks
       operationId: createWebhookEndpoint
       summary: Create a webhook endpoint for an advertiser organization.
-      description: Creates an HTTPS webhook endpoint and returns the plaintext signing secret exactly once.
+      description: Creates an HTTPS webhook endpoint with event subscriptions and returns the plaintext signing secret exactly once.
       security:
         - BearerAuth: []
       parameters:
@@ -3250,7 +3265,7 @@ paths:
         - Webhooks
       operationId: testWebhookEndpoint
       summary: Queue a test webhook delivery.
-      description: Queues a synthetic `webhook.test` delivery for the endpoint and returns the queued delivery metadata.
+      description: Queues a synthetic `webhook.test` event using the same versioned envelope and signing path as business deliveries, regardless of the endpoint's subscriptions, and returns the queued delivery metadata.
       security:
         - BearerAuth: []
       parameters:
@@ -3294,7 +3309,7 @@ paths:
         - Webhooks
       operationId: listOwnWebhookDeliveries
       summary: List webhook deliveries for an advertiser organization.
-      description: Returns delivery status and retry metadata scoped to the authenticated organization.
+      description: Returns delivery status and retry metadata scoped to the authenticated organization. Delivery is at least once; consumers use the event envelope `id` as their idempotency key.
       security:
         - BearerAuth: []
       parameters:
@@ -3461,7 +3476,7 @@ paths:
         - OAuth
       operationId: exchangeOAuthToken
       summary: Exchange OAuth grants for access tokens.
-      description: Supports authorization_code with S256 PKCE, client_credentials, and refresh_token grants. Refresh-token exchange rotates the refresh token and rejects reuse.
+      description: Supports authorization_code with S256 PKCE, client_credentials, and refresh_token grants. Public Authorization Code clients omit a secret; confidential Authorization Code clients authenticate before the code is atomically consumed. Client Credentials is available only to confidential clients, always requires a valid client_secret, and may issue only exact advertiser Open API catalog scopes. Refresh-token exchange uses an atomic rotation claim, rolls back losing concurrent attempts, and rejects reuse.
       security: []
       requestBody:
         required: true
@@ -4777,18 +4792,11 @@ paths:
       description: Returns configured backend maintenance jobs and lock provider details.
       security:
         - CronTokenHeader: []
-        - CronTokenQuery: []
       parameters:
         - name: X-Cron-Token
           in: header
-          required: false
-          description: Shared secret configured for the protected Cron API. Prefer this header over the query parameter.
-          schema:
-            type: string
-        - name: token
-          in: query
-          required: false
-          description: Query-string fallback for the cron shared secret.
+          required: true
+          description: Shared secret for the protected Cron API. URL and query-string credentials are rejected and must never be used because request URLs can enter access logs.
           schema:
             type: string
       responses:
@@ -4812,6 +4820,7 @@ paths:
                       jobs:
                         - redis-events-consume
                         - ip-geo-resolve
+                        - asset-snapshot-generate
                         - aggregate-statistics
                         - archive-parquet
                         - duckdb-cold-query
@@ -4840,10 +4849,9 @@ paths:
         - Cron
       operationId: runCronJob
       summary: Run a protected cron job.
-      description: Runs one registered background job behind its distributed lock window.
+      description: Runs one registered background job behind its distributed lock window. `webhook-retry` first leases transactional outbox events and atomically fans them out to matching endpoints, then sends queued or failed deliveries using the configured retry policy. Completed and lock-skipped runs return HTTP 200, unknown jobs return HTTP 404, and a job result with status failed returns HTTP 500 so external schedulers can detect execution failure.
       security:
         - CronTokenHeader: []
-        - CronTokenQuery: []
       parameters:
         - name: job_name
           in: path
@@ -4853,14 +4861,8 @@ paths:
             minLength: 1
         - name: X-Cron-Token
           in: header
-          required: false
-          description: Shared secret configured for the protected Cron API. Prefer this header over the query parameter.
-          schema:
-            type: string
-        - name: token
-          in: query
-          required: false
-          description: Query-string fallback for the cron shared secret.
+          required: true
+          description: Shared secret for the protected Cron API. URL and query-string credentials are rejected and must never be used because request URLs can enter access logs.
           schema:
             type: string
       responses:
@@ -4891,6 +4893,18 @@ paths:
                     error: null
                     meta: {}
                     request_id: req_0123456789abcdef
+                lockHeld:
+                  summary: Another scheduler invocation already holds the job lock.
+                  value:
+                    data:
+                      job: redis-events-consume
+                      status: locked
+                      acquired_lock: false
+                      metrics: {}
+                      message: Job lock is already held.
+                    error: null
+                    meta: {}
+                    request_id: req_0123456789abcdef
                 ipGeoResolve:
                   summary: IP geo queue resolution updated the canonical store.
                   value:
@@ -4906,10 +4920,75 @@ paths:
                     error: null
                     meta: {}
                     request_id: req_0123456789abcdef
-                partitionMaintenanceFailure:
-                  summary: Partition maintenance found rows in p_future and protected the table.
+                assetSnapshotGenerate:
+                  summary: Durable creative snapshot jobs generated review and serving artifacts.
                   value:
                     data:
+                      job: asset-snapshot-generate
+                      status: completed
+                      acquired_lock: true
+                      metrics:
+                        leased: 25
+                        completed: 23
+                        retried: 1
+                        dead: 1
+                      message: Asset snapshot generation processed the available durable jobs.
+                    error: null
+                    meta: {}
+                    request_id: req_0123456789abcdef
+                webhookRetry:
+                  summary: Transactional webhook outbox fan-out and HTTP delivery retry.
+                  value:
+                    data:
+                      job: webhook-retry
+                      status: completed
+                      acquired_lock: true
+                      metrics:
+                        outbox_claimed: 8
+                        outbox_dispatched: 8
+                        outbox_failed: 0
+                        outbox_lease_lost: 0
+                        queued_deliveries: 12
+                        processed: 12
+                        delivered: 11
+                        failed: 1
+                        exhausted: 0
+                      message: Webhook retry batch completed.
+                    error: null
+                    meta: {}
+                    request_id: req_0123456789abcdef
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          description: The requested Cron job name is not registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+              examples:
+                unknownJob:
+                  value:
+                    data: null
+                    error:
+                      code: cron_job_not_found
+                      message: Cron job is not registered.
+                    meta: {}
+                    request_id: req_0123456789abcdef
+        "500":
+          description: The job acquired its lock but returned a failed result. External schedulers must treat this response as an execution failure and apply their retry or alert policy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CronJobFailureEnvelope"
+              examples:
+                partitionMaintenanceFailure:
+                  value:
+                    data: null
+                    error:
+                      code: cron_job_failed
+                      message: p_future contains rows for raw_events; partition maintenance was protected.
                       job: partition-maintenance
                       status: failed
                       acquired_lock: true
@@ -4919,16 +4998,8 @@ paths:
                         protected_tables: 1
                         protected_table: raw_events
                         future_rows: 4
-                      message: p_future contains rows for raw_events; partition maintenance was protected.
-                    error: null
                     meta: {}
                     request_id: req_0123456789abcdef
-        "401":
-          $ref: "#/components/responses/Error"
-        "403":
-          $ref: "#/components/responses/Error"
-        "404":
-          $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
 components:
@@ -4938,16 +5009,45 @@ components:
       scheme: bearer
       bearerFormat: opaque
       description: First-party bearer token or OAuth2 access token.
+    OAuth2:
+      type: oauth2
+      description: OAuth2 access for advertiser Open API integrations. Public clients use Authorization Code with S256 PKCE; Client Credentials requires a confidential client and valid secret.
+      flows:
+        authorizationCode:
+          authorizationUrl: https://api.vertoad.example/api/v1/oauth/authorize
+          tokenUrl: https://api.vertoad.example/api/v1/oauth/token
+          refreshUrl: https://api.vertoad.example/api/v1/oauth/token
+          scopes:
+            attribution.conversion.write.own: Record server-side conversions for the bound advertiser organization.
+            campaign.read.own: Read campaigns in the bound advertiser organization.
+            campaign.write.own: Create and update campaigns in the bound advertiser organization.
+            creative.design.read.own: Read creative designs and versions in the bound advertiser organization.
+            creative.design.write.own: Create creative designs and versions in the bound advertiser organization.
+            creative.read.own: Read creatives in the bound advertiser organization.
+            creative.template.read.own: Read platform and organization creative templates.
+            creative.template.write.own: Create and update organization creative templates.
+            creative.write.own: Create and update creatives in the bound advertiser organization.
+            report.export.own: Export reports for the bound advertiser organization.
+            report.read.own: Read reports for the bound advertiser organization.
+        clientCredentials:
+          tokenUrl: https://api.vertoad.example/api/v1/oauth/token
+          scopes:
+            attribution.conversion.write.own: Record server-side conversions for the bound advertiser organization.
+            campaign.read.own: Read campaigns in the bound advertiser organization.
+            campaign.write.own: Create and update campaigns in the bound advertiser organization.
+            creative.design.read.own: Read creative designs and versions in the bound advertiser organization.
+            creative.design.write.own: Create creative designs and versions in the bound advertiser organization.
+            creative.read.own: Read creatives in the bound advertiser organization.
+            creative.template.read.own: Read platform and organization creative templates.
+            creative.template.write.own: Create and update organization creative templates.
+            creative.write.own: Create and update creatives in the bound advertiser organization.
+            report.export.own: Export reports for the bound advertiser organization.
+            report.read.own: Read reports for the bound advertiser organization.
     CronTokenHeader:
       type: apiKey
       in: header
       name: X-Cron-Token
-      description: Shared secret for protected cron endpoints.
-    CronTokenQuery:
-      type: apiKey
-      in: query
-      name: token
-      description: Query-string fallback for protected cron endpoints.
+      description: The only accepted shared-secret transport for protected Cron endpoints. Never place this credential in a URL or query string.
   responses:
     Error:
       description: Error response.
@@ -5570,6 +5670,7 @@ components:
         bid_points:
           type: integer
           minimum: 1
+          description: For CPM campaigns, integer platform points quoted per 1000 valid impressions; for CPC campaigns, integer platform points charged per valid click.
         landing_url:
           type: string
           format: uri
@@ -5737,12 +5838,86 @@ components:
           type: integer
           minimum: 1
       additionalProperties: false
+    AuthMeOperationErrorEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/EnvelopeBase"
+        - type: object
+          properties:
+            data:
+              type: "null"
+            error:
+              type: object
+              required:
+                - code
+                - message
+                - operation_error_id
+              properties:
+                code:
+                  type: string
+                  const: operation_error
+                message:
+                  type: string
+                  minLength: 1
+                operation_error_id:
+                  type: string
+                  pattern: "^operr_[0-9a-f]{40}$"
+              additionalProperties: false
+            meta:
+              type: object
+              required:
+                - api_version
+              properties:
+                api_version:
+                  type: string
+                  const: v1
+              additionalProperties: false
+    CurrentUserOrganization:
+      type: object
+      description: An active organization for which the authenticated user has an active membership and which the user may select in the first-party SPA. Super-admin status alone does not add organizations to this membership-scoped list.
+      required:
+        - id
+        - name
+        - slug
+        - roles
+        - permissions
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: '\S'
+        slug:
+          type: string
+          minLength: 1
+          maxLength: 120
+          pattern: '\S'
+        roles:
+          type: array
+          description: Unique non-empty role slugs sorted in ascending lexical order.
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            pattern: '\S'
+        permissions:
+          type: array
+          description: Unique non-empty effective permission codes sorted in ascending lexical order.
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            pattern: '\S'
+      additionalProperties: false
     MeData:
       type: object
       required:
         - user
         - organization_id
         - membership
+        - organizations
       properties:
         user:
           type: object
@@ -5765,25 +5940,38 @@ components:
             - integer
             - "null"
           minimum: 1
+          description: Client-selected organization id, preserved even when no active selected membership exists; it does not confirm that the organization exists or is accessible.
         membership:
           type:
             - object
             - "null"
+          description: Active membership for the selected organization, or null when no organization is selected or the selected membership is not active. Super-admin status alone does not synthesize an organization membership.
           required:
             - roles
             - permissions
           properties:
             roles:
               type: array
+              description: Unique non-empty selected-membership role slugs sorted in ascending lexical order.
+              uniqueItems: true
               items:
                 type: string
                 minLength: 1
+                pattern: '\S'
             permissions:
               type: array
+              description: Unique non-empty selected-membership permission codes sorted in ascending lexical order.
+              uniqueItems: true
               items:
                 type: string
                 minLength: 1
+                pattern: '\S'
           additionalProperties: false
+        organizations:
+          type: array
+          description: Membership-scoped selectable active organizations ordered by slug and then id. The array is empty when the user has no active organization memberships. Super-admin status alone does not expand the list or reveal organizations without an active membership.
+          items:
+            $ref: "#/components/schemas/CurrentUserOrganization"
       additionalProperties: false
     OrganizationMemberListData:
       type: object
@@ -6759,6 +6947,7 @@ components:
         object_key:
           type: string
           minLength: 1
+          description: Server-generated staging key used only for the presigned PUT and confirmation request. Treat as opaque; it is not the final delivered asset key.
         content_type:
           type: string
           minLength: 1
@@ -6777,7 +6966,7 @@ components:
       additionalProperties: false
     AssetConfirmRequest:
       type: object
-      description: Upload confirmation metadata. Clients identify the upload intent and object; the backend reads object storage for authoritative content type, byte size, magic bytes, dimensions, and video duration before applying the active `assets.upload_policy` version.
+      description: Upload confirmation metadata. Clients identify the upload intent and staging object; the backend reads object storage for authoritative content type, byte size, magic bytes, dimensions, and video duration before applying the active `assets.upload_policy` version. The response uses a different server-generated final object key in production and staging.
       required:
         - upload_intent_id
         - object_key
@@ -6790,6 +6979,7 @@ components:
         object_key:
           type: string
           minLength: 1
+          description: The staging key returned by the upload-intent response. Do not use it for delivery or construct URLs from it.
         content_type:
           type: string
           minLength: 1
@@ -6811,6 +7001,7 @@ components:
         - uploader_user_id
         - type
         - object_key
+        - source_url
         - content_type
         - byte_size
         - width
@@ -6818,6 +7009,10 @@ components:
         - duration_seconds
         - checksum
         - status
+        - snapshot_status
+        - snapshot_png_url
+        - snapshot_webp_url
+        - thumbnail_webp_url
       properties:
         id:
           type: integer
@@ -6836,6 +7031,11 @@ components:
         object_key:
           type: string
           minLength: 1
+          description: Immutable server-side final object key created after staging validation. Its leaf contains an unguessable token and the authoritative SHA-256 digest, so the same key cannot represent different validated bytes. Consumers render assets from the public URL fields, never by constructing a URL from this key.
+        source_url:
+          type: string
+          format: uri
+          description: Absolute public URL of the confirmed source object. Production and staging use HTTPS; local/testing may use an explicit localhost HTTP origin.
         content_type:
           type: string
           minLength: 1
@@ -6862,6 +7062,31 @@ components:
           type: string
           enum:
             - pending_review
+        snapshot_status:
+          type: string
+          description: Durable asynchronous snapshot processing state. Only ready assets are eligible for production serving.
+          enum:
+            - pending
+            - ready
+            - failed
+        snapshot_png_url:
+          type:
+            - string
+            - "null"
+          format: uri
+          description: Absolute public PNG review snapshot URL, or null until snapshot generation succeeds.
+        snapshot_webp_url:
+          type:
+            - string
+            - "null"
+          format: uri
+          description: Absolute public WebP serving fallback URL, or null until snapshot generation succeeds.
+        thumbnail_webp_url:
+          type:
+            - string
+            - "null"
+          format: uri
+          description: Absolute public WebP thumbnail URL, or null until snapshot generation succeeds.
       additionalProperties: false
     CreativeTemplateCreateRequest:
       type: object
@@ -7399,6 +7624,7 @@ components:
             - no_eligible_ad
             - unverified_inventory
             - unsafe_landing_url
+            - unsafe_asset_url
             - budget_insufficient_balance
             - budget_total_cap
             - budget_daily_cap
@@ -7566,6 +7792,7 @@ components:
       additionalProperties: false
     OAuthClientCreateRequest:
       type: object
+      description: Requested scopes must be in the advertiser Open API catalog and within the creating member's current permissions. Public clients cannot request client_credentials.
       required:
         - name
         - redirect_uris
@@ -7593,11 +7820,39 @@ components:
           type: array
           items:
             type: string
-            minLength: 1
+            enum:
+              - attribution.conversion.write.own
+              - campaign.read.own
+              - campaign.write.own
+              - creative.design.read.own
+              - creative.design.write.own
+              - creative.read.own
+              - creative.template.read.own
+              - creative.template.write.own
+              - creative.write.own
+              - report.export.own
+              - report.read.own
         is_confidential:
           type: boolean
           default: true
       additionalProperties: false
+      allOf:
+        - if:
+            required:
+              - is_confidential
+            properties:
+              is_confidential:
+                const: false
+          then:
+            properties:
+              grant_types:
+                type: array
+                minItems: 1
+                items:
+                  type: string
+                  enum:
+                    - authorization_code
+                    - refresh_token
     OAuthClient:
       type: object
       required:
@@ -7665,6 +7920,18 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/OAuthClient"
+      additionalProperties: false
+    OAuthClientCreateData:
+      type: object
+      required:
+        - client
+      properties:
+        client:
+          $ref: "#/components/schemas/OAuthClient"
+        client_secret:
+          type: string
+          minLength: 1
+          description: Plaintext secret returned exactly once for confidential clients; omitted for public clients.
       additionalProperties: false
     OAuthClientSecretData:
       type: object
@@ -7760,6 +8027,10 @@ components:
         client_id:
           type: string
           minLength: 1
+        client_secret:
+          type: string
+          minLength: 1
+          description: Required only when the authorization-code client is confidential; omitted by public PKCE clients such as the first-party SPA.
         code:
           type: string
           minLength: 1
@@ -7775,6 +8046,7 @@ components:
       required:
         - grant_type
         - client_id
+        - client_secret
       properties:
         grant_type:
           type: string
@@ -7785,6 +8057,7 @@ components:
         client_secret:
           type: string
           minLength: 1
+          description: Required confidential-client secret. Public clients cannot use Client Credentials.
         scope:
           type: string
       additionalProperties: false
@@ -9921,6 +10194,23 @@ components:
               - POST:/api/v1/ads/track
               - GET:/api/v1/ads/click
       additionalProperties: false
+    WebhookEventType:
+      type: string
+      pattern: "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
+      description: |
+        Event subscription name. Business events emitted by this API are
+        `review.approved`, `review.rejected`, `billing.points_changed`,
+        `campaign.status_changed`, `conversion.received`,
+        `withdrawal.status_changed`, `api_client.created`, and
+        `api_client.secret_rotated`. `webhook.test` is emitted only by the test
+        endpoint. Other documented platform event names remain forward-compatible.
+      examples:
+        - review.approved
+        - billing.points_changed
+        - campaign.status_changed
+        - conversion.received
+        - withdrawal.status_changed
+        - api_client.created
     WebhookEndpointCreateRequest:
       type: object
       required:
@@ -9939,8 +10229,7 @@ components:
           type: array
           minItems: 1
           items:
-            type: string
-            pattern: "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
+            $ref: "#/components/schemas/WebhookEventType"
         enabled:
           type: boolean
           default: true
@@ -9960,8 +10249,7 @@ components:
           type: array
           minItems: 1
           items:
-            type: string
-            pattern: "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
+            $ref: "#/components/schemas/WebhookEventType"
         enabled:
           type: boolean
       additionalProperties: false
@@ -10006,7 +10294,7 @@ components:
           type: array
           minItems: 1
           items:
-            type: string
+            $ref: "#/components/schemas/WebhookEventType"
         status:
           type: string
           enum:
@@ -10105,11 +10393,11 @@ components:
           type: string
           format: uri
         event_type:
-          type: string
-          minLength: 1
+          $ref: "#/components/schemas/WebhookEventType"
         payload_json:
           type: string
           minLength: 1
+          description: Exact signed JSON request body serialized as a `WebhookEventEnvelope`.
         request_id:
           type:
             - string
@@ -10153,6 +10441,264 @@ components:
             - string
             - "null"
           format: date-time
+      additionalProperties: false
+    WebhookEventEnvelope:
+      type: object
+      description: Exact JSON body POSTed to a webhook endpoint. The raw bytes of this object are covered by `X-VertoAD-Signature`.
+      required:
+        - id
+        - type
+        - api_version
+        - created_at
+        - organization_id
+        - request_id
+        - data
+      properties:
+        id:
+          type: string
+          minLength: 1
+          maxLength: 160
+          description: Stable event idempotency key. Retries and recovery fan-out preserve this value.
+        type:
+          $ref: "#/components/schemas/WebhookEventType"
+        api_version:
+          type: string
+          const: "2026-07-12"
+        created_at:
+          type: string
+          format: date-time
+          description: UTC time at which the durable business fact occurred.
+        organization_id:
+          type: integer
+          minimum: 1
+        request_id:
+          type:
+            - string
+            - "null"
+          maxLength: 160
+          description: Originating API or Cron request id when available.
+        data:
+          oneOf:
+            - $ref: "#/components/schemas/WebhookReviewResultData"
+            - $ref: "#/components/schemas/WebhookPointsChangedData"
+            - $ref: "#/components/schemas/WebhookCampaignStatusData"
+            - $ref: "#/components/schemas/WebhookConversionReceivedData"
+            - $ref: "#/components/schemas/WebhookWithdrawalStatusData"
+            - $ref: "#/components/schemas/WebhookApiClientData"
+            - $ref: "#/components/schemas/WebhookTestData"
+      additionalProperties: false
+    WebhookReviewResultData:
+      type: object
+      required:
+        - review_id
+        - asset_id
+        - decision
+        - reason
+        - from_status
+        - to_status
+        - decided_by_user_id
+      properties:
+        review_id:
+          type: integer
+          minimum: 1
+        asset_id:
+          type: integer
+          minimum: 1
+        decision:
+          type: string
+          enum: [approved, rejected]
+        reason:
+          type: [string, "null"]
+        from_status:
+          type: string
+        to_status:
+          type: string
+          enum: [approved, rejected]
+        decided_by_user_id:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    WebhookPointsChangedData:
+      type: object
+      required:
+        - ledger_entry_id
+        - account_type
+        - account_id
+        - points_amount
+        - direction
+        - delta_points
+        - balance_after_points
+        - reference_type
+        - reference_id
+        - memo
+        - metadata
+      properties:
+        ledger_entry_id:
+          type: integer
+          minimum: 1
+        account_type:
+          type: string
+          enum: [advertiser_balance, publisher_earnings]
+        account_id:
+          type: [integer, "null"]
+          minimum: 1
+        points_amount:
+          type: integer
+          minimum: 1
+        direction:
+          type: string
+          enum: [credit, debit]
+        delta_points:
+          type: integer
+          description: Signed point delta; credits are positive and debits are negative.
+        balance_after_points:
+          type: [integer, "null"]
+        reference_type:
+          type: [string, "null"]
+        reference_id:
+          type: [integer, "null"]
+        memo:
+          type: [string, "null"]
+        metadata:
+          type: [object, "null"]
+          additionalProperties: true
+      additionalProperties: false
+    WebhookCampaignStatusData:
+      type: object
+      required:
+        - campaign_id
+        - previous_status
+        - status
+        - pause_reason
+      properties:
+        campaign_id:
+          type: integer
+          minimum: 1
+        previous_status:
+          type: [string, "null"]
+          enum: [draft, active, paused, archived, null]
+        status:
+          type: string
+          enum: [draft, active, paused, archived]
+        pause_reason:
+          type: [string, "null"]
+      additionalProperties: false
+    WebhookConversionReceivedData:
+      type: object
+      required:
+        - conversion_id
+        - source_event_id
+        - source
+        - conversion_name
+        - value_points
+        - attributed
+        - click_event_id
+        - decision_id
+        - campaign_id
+        - occurred_at
+      properties:
+        conversion_id:
+          type: string
+        source_event_id:
+          type: string
+        source:
+          type: string
+          enum: [server_api, browser_pixel]
+        conversion_name:
+          type: string
+        value_points:
+          type: integer
+          minimum: 0
+        attributed:
+          type: boolean
+        click_event_id:
+          type: [string, "null"]
+        decision_id:
+          type: [string, "null"]
+        campaign_id:
+          type: [integer, "null"]
+          minimum: 1
+        occurred_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    WebhookWithdrawalStatusData:
+      type: object
+      required:
+        - withdrawal_request_id
+        - action
+        - previous_review_status
+        - review_status
+        - previous_payment_status
+        - payment_status
+        - proof_id
+        - actor_user_id
+      properties:
+        withdrawal_request_id:
+          type: integer
+          minimum: 1
+        action:
+          type: string
+          enum: [requested, approved, paid, rejected, revoked, resubmitted]
+        previous_review_status:
+          type: [string, "null"]
+        review_status:
+          type: string
+          enum: [pending, approved, rejected, revoked]
+        previous_payment_status:
+          type: [string, "null"]
+        payment_status:
+          type: string
+          enum: [not_started, pending, paid]
+        proof_id:
+          type: [integer, "null"]
+          minimum: 1
+        actor_user_id:
+          type: [integer, "null"]
+          minimum: 1
+      additionalProperties: false
+    WebhookApiClientData:
+      type: object
+      required:
+        - oauth_client_id
+        - client_id
+        - name
+        - is_confidential
+        - grant_types
+        - scopes
+        - changed_by_user_id
+      properties:
+        oauth_client_id:
+          type: integer
+          minimum: 1
+        client_id:
+          type: string
+        name:
+          type: string
+        is_confidential:
+          type: boolean
+        grant_types:
+          type: array
+          items:
+            type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        changed_by_user_id:
+          type: [integer, "null"]
+          minimum: 1
+      additionalProperties: false
+    WebhookTestData:
+      type: object
+      required:
+        - endpoint_id
+        - message
+      properties:
+        endpoint_id:
+          type: string
+        message:
+          type: string
       additionalProperties: false
     SupportLinkedEntity:
       type: object
@@ -10808,9 +11354,7 @@ components:
           type: string
           enum:
             - completed
-            - failed
             - locked
-            - not_found
         acquired_lock:
           type: boolean
         metrics:
@@ -10825,6 +11369,49 @@ components:
           type:
             - string
             - "null"
+      additionalProperties: false
+    CronJobFailureEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/EnvelopeBase"
+        - type: object
+          properties:
+            data:
+              type: "null"
+            error:
+              $ref: "#/components/schemas/CronJobFailureError"
+    CronJobFailureError:
+      type: object
+      required:
+        - code
+        - message
+        - job
+        - status
+        - acquired_lock
+        - metrics
+      properties:
+        code:
+          type: string
+          const: cron_job_failed
+        message:
+          type: string
+          minLength: 1
+        job:
+          type: string
+          minLength: 1
+        status:
+          type: string
+          const: failed
+        acquired_lock:
+          type: boolean
+          const: true
+        metrics:
+          type: object
+          additionalProperties:
+            oneOf:
+              - type: integer
+              - type: string
+              - type: boolean
+              - type: "null"
       additionalProperties: false
     PermissionMetadata:
       type: object

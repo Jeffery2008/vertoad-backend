@@ -3,6 +3,8 @@
 declare(strict_types=1);
 
 namespace {
+    require_once dirname(__DIR__) . '/Support/FakeRedisExtension.php';
+
     if (!class_exists('Redis')) {
         final class Redis
         {
@@ -16,6 +18,9 @@ namespace {
             public array $ttl = [];
             /** @var array<string, array<string, float>> */
             public array $zsets = [];
+            /** @var list<array{script: string, args: list<mixed>, numKeys: int}> */
+            public array $evalCalls = [];
+            public bool $failNextAtomicRecordAfterSet = false;
             /** @var list<array{host: string, port: int, timeout: float}> */
             public array $connections = [];
             public ?string $password = null;
@@ -73,11 +78,14 @@ namespace {
 
             public function del(string $key): int
             {
-                if (!isset($this->keys[$key])) {
+                if (!isset($this->keys[$key])
+                    && !array_key_exists($key, $this->values)
+                    && !array_key_exists($key, $this->counts)
+                    && !array_key_exists($key, $this->zsets)) {
                     return 0;
                 }
 
-                unset($this->keys[$key], $this->values[$key], $this->ttl[$key]);
+                unset($this->keys[$key], $this->values[$key], $this->ttl[$key], $this->counts[$key], $this->zsets[$key]);
 
                 return 1;
             }
@@ -136,6 +144,12 @@ namespace {
 
             public function eval(string $script, array $args, int $numKeys): array
             {
+                $this->evalCalls[] = [
+                    'script' => $script,
+                    'args' => $args,
+                    'numKeys' => $numKeys,
+                ];
+
                 if (str_contains($script, "redis.call('GET', KEYS[1])") && $numKeys === 1) {
                     $key = (string) $args[0];
                     $expectedValue = (string) ($args[1] ?? '');
@@ -146,6 +160,24 @@ namespace {
                     }
 
                     return [0];
+                }
+
+                if (str_contains($script, "local created = redis.call('SET', KEYS[1]")) {
+                    return $this->atomicRecord($args, $numKeys);
+                }
+
+                if (str_contains($script, "redis.call('SETEX', KEYS[4]")) {
+                    if ($numKeys !== 4) {
+                        throw new \RuntimeException('The fake acknowledge script received an invalid key count.');
+                    }
+
+                    $this->zRem((string) $args[0], (string) $args[5]);
+                    $this->zRem((string) $args[1], (string) $args[5]);
+                    $this->del((string) $args[2]);
+                    $this->keys[(string) $args[3]] = (int) $args[4];
+                    $this->values[(string) $args[3]] = '1';
+
+                    return ['acknowledged'];
                 }
 
                 $pending = $args[0];
@@ -170,6 +202,58 @@ namespace {
                 return $claimed;
             }
 
+            /** @param list<mixed> $args */
+            private function atomicRecord(array $args, int $numKeys): array
+            {
+                if ($numKeys !== 5) {
+                    throw new \RuntimeException('The fake record script received an invalid key count.');
+                }
+
+                $eventKey = (string) $args[0];
+                $pending = (string) $args[1];
+                $processing = (string) $args[2];
+                $deadLetter = (string) $args[3];
+                $acknowledged = (string) $args[4];
+                $payload = (string) $args[5];
+                $retention = (int) $args[6];
+                $score = (float) $args[7];
+
+                if (!isset($this->keys[$eventKey])) {
+                    $this->keys[$eventKey] = $retention;
+                    $this->values[$eventKey] = $payload;
+                    if ($this->failNextAtomicRecordAfterSet) {
+                        $this->failNextAtomicRecordAfterSet = false;
+                        throw new \RuntimeException('Injected pending ZADD failure.');
+                    }
+
+                    $this->zAdd($pending, $score, $eventKey);
+
+                    return ['created'];
+                }
+
+                if (isset($this->keys[$acknowledged])) {
+                    return ['acknowledged'];
+                }
+                if ($this->zsetHas($pending, $eventKey)) {
+                    return ['queued'];
+                }
+                if ($this->zsetHas($processing, $eventKey)) {
+                    return ['processing'];
+                }
+                if ($this->zsetHas($deadLetter, $eventKey)) {
+                    return ['dead-letter'];
+                }
+
+                $this->zAdd($pending, $score, $eventKey);
+
+                return ['recovered'];
+            }
+
+            private function zsetHas(string $key, string $member): bool
+            {
+                return array_key_exists($member, $this->zsets[$key] ?? []);
+            }
+
             private function sortedZset(string $key): array
             {
                 $members = $this->zsets[$key] ?? [];
@@ -185,6 +269,7 @@ namespace VertoAD\Tests\Serving {
     use DateTimeImmutable;
     use PHPUnit\Framework\TestCase;
     use VertoAD\Domain\Serving\AdDecision;
+    use VertoAD\Infrastructure\Redis\InMemoryRedisClient;
     use VertoAD\Repository\Serving\RedisAdEventRepository;
 
     final class RedisAdEventRepositoryTest extends TestCase
@@ -199,6 +284,7 @@ namespace VertoAD\Tests\Serving {
             self::assertFalse($repository->hasRecentValidClick($decision->decisionId, $decision->viewerId, new DateTimeImmutable('2026-06-08T10:00:30Z'), 30));
             self::assertNull($repository->findEvent('click', 'missing'));
 
+            $repository->recordServe($decision);
             $repository->recordImpression($decision, 'imp-1', 0.75, 1500, new DateTimeImmutable('2026-06-08T10:00:00Z'));
             $repository->recordImpression($decision, 'imp-1', 0.90, 2500, new DateTimeImmutable('2026-06-08T10:00:01Z'));
             $repository->recordClick($decision, 'clk-1', new DateTimeImmutable('2026-06-08T10:00:20Z'));
@@ -206,6 +292,7 @@ namespace VertoAD\Tests\Serving {
             $repository->recordVideoEvent($decision, 'video_start', 'video-start-1', new DateTimeImmutable('2026-06-08T10:00:30Z'), 'req-video-redis');
 
             self::assertTrue($repository->hasEvent('impression', 'imp-1'));
+            self::assertTrue($repository->hasEvent('serve', $decision->decisionId));
             self::assertTrue($repository->hasEvent('video_start', 'video-start-1'));
             self::assertTrue($repository->hasValidImpression($decision->decisionId, $decision->viewerId));
             self::assertTrue($repository->hasRecentValidClick($decision->decisionId, $decision->viewerId, new DateTimeImmutable('2026-06-08T10:00:30Z'), 30));
@@ -220,9 +307,84 @@ namespace VertoAD\Tests\Serving {
             self::assertNull($video->visibleRatio);
             self::assertNull($video->visibleMs);
             self::assertSame('req-video-redis', $video->requestId);
+            $serve = $repository->findEvent('serve', $decision->decisionId);
+            self::assertNotNull($serve);
+            self::assertSame(0, $serve->costPoints);
+            self::assertEquals($decision->decidedAt, $serve->occurredAt);
 
             $leased = $repository->lease(10);
-            self::assertSame(['imp-1', 'clk-1', 'clk-invalid', 'video-start-1'], array_map(static fn ($event): string => $event->eventId, $leased));
+            self::assertSame(
+                ['decision-1', 'imp-1', 'clk-1', 'clk-invalid', 'video-start-1'],
+                array_map(static fn ($event): string => $event->eventId, $leased),
+            );
+        }
+
+        public function testRetriesPayloadOrphanAfterInjectedAtomicQueueWriteFailure(): void
+        {
+            $redis = new \Redis();
+            $redis->failNextAtomicRecordAfterSet = true;
+            $repository = new RedisAdEventRepository($redis, 'vertoad:test:', 60, 3600);
+            $occurredAt = new DateTimeImmutable('2026-06-08T10:00:20Z');
+            $eventKey = 'vertoad:test:serving-events:event:' . hash('sha256', 'click:orphan-retry');
+            $pendingKey = 'vertoad:test:serving-events:pending';
+
+            $failed = false;
+            try {
+                $repository->recordClick($this->decision(), 'orphan-retry', $occurredAt);
+            } catch (\RuntimeException $exception) {
+                $failed = true;
+                self::assertSame('Injected pending ZADD failure.', $exception->getMessage());
+            }
+
+            self::assertTrue($failed);
+            self::assertTrue($repository->hasEvent('click', 'orphan-retry'));
+            self::assertSame([], $redis->zsets[$pendingKey] ?? []);
+            self::assertSame(3600, $redis->keys[$eventKey] ?? null);
+            self::assertCount(1, $redis->evalCalls);
+            self::assertSame(5, $redis->evalCalls[0]['numKeys']);
+            self::assertSame($eventKey, $redis->evalCalls[0]['args'][0]);
+            self::assertStringContainsString("redis.call('SET', KEYS[1]", $redis->evalCalls[0]['script']);
+
+            $repository->recordClick($this->decision(), 'orphan-retry', $occurredAt);
+
+            self::assertArrayHasKey($eventKey, $redis->zsets[$pendingKey] ?? []);
+            self::assertSame((float) $occurredAt->getTimestamp(), $redis->zsets[$pendingKey][$eventKey]);
+            self::assertSame('orphan-retry', $repository->lease(1)[0]->eventId);
+        }
+
+        public function testDuplicateRecordRepairsOnlyOrphansAndDoesNotReplayAcknowledgedEvents(): void
+        {
+            $redis = new \Redis();
+            $repository = new RedisAdEventRepository($redis, 'vertoad:test:', 60, 3600);
+            $occurredAt = new DateTimeImmutable('2026-06-08T10:00:20Z');
+            $eventKey = 'vertoad:test:serving-events:event:' . hash('sha256', 'click:duplicate-state');
+            $pendingKey = 'vertoad:test:serving-events:pending';
+            $processingKey = 'vertoad:test:serving-events:processing';
+
+            $repository->recordClick($this->decision(), 'duplicate-state', $occurredAt);
+            $originalScore = $redis->zsets[$pendingKey][$eventKey];
+            unset($redis->zsets[$pendingKey][$eventKey]);
+
+            $repository->recordClick($this->decision(), 'duplicate-state', $occurredAt);
+            self::assertSame([$eventKey => $originalScore], $redis->zsets[$pendingKey]);
+
+            $repository->recordClick($this->decision(), 'duplicate-state', $occurredAt->modify('+10 minutes'));
+            self::assertSame([$eventKey => $originalScore], $redis->zsets[$pendingKey]);
+
+            $leased = $repository->lease(1);
+            self::assertCount(1, $leased);
+            $repository->recordClick($this->decision(), 'duplicate-state', $occurredAt);
+            self::assertSame([], $redis->zsets[$pendingKey] ?? []);
+            self::assertArrayHasKey($eventKey, $redis->zsets[$processingKey] ?? []);
+
+            $repository->acknowledge($leased[0]);
+            self::assertSame([], $redis->zsets[$pendingKey] ?? []);
+            self::assertSame([], $redis->zsets[$processingKey] ?? []);
+            self::assertSame(4, $redis->evalCalls[array_key_last($redis->evalCalls)]['numKeys']);
+
+            $repository->recordClick($this->decision(), 'duplicate-state', $occurredAt);
+            self::assertSame([], $redis->zsets[$pendingKey] ?? []);
+            self::assertSame([], $repository->lease(1));
         }
 
         public function testFactoryAppliesRedisConnectionSettings(): void
@@ -395,12 +557,20 @@ namespace VertoAD\Tests\Serving {
             self::assertSame(3600, $redis->ttl[$failureKey] ?? null);
             self::assertSame([], $redis->zsets['vertoad:test:serving-events:processing'] ?? []);
             self::assertCount(1, $redis->zsets['vertoad:test:serving-events:pending'] ?? []);
+            $retryScore = array_values($redis->zsets['vertoad:test:serving-events:pending'])[0];
+
+            $repository->recordClick($this->decision(), 'clk-poison', new DateTimeImmutable('2026-06-08T10:00:20Z'));
+            self::assertSame($retryScore, array_values($redis->zsets['vertoad:test:serving-events:pending'])[0]);
 
             $event = $repository->lease(1)[0];
             $repository->fail($event, new \RuntimeException('second failure'));
 
             self::assertSame(2, $redis->counts[$failureKey]);
             self::assertSame([], $redis->zsets['vertoad:test:serving-events:processing'] ?? []);
+            self::assertSame([], $redis->zsets['vertoad:test:serving-events:pending'] ?? []);
+            self::assertCount(1, $redis->zsets['vertoad:test:serving-events:dead-letter'] ?? []);
+
+            $repository->recordClick($this->decision(), 'clk-poison', new DateTimeImmutable('2026-06-08T10:00:20Z'));
             self::assertSame([], $redis->zsets['vertoad:test:serving-events:pending'] ?? []);
             self::assertCount(1, $redis->zsets['vertoad:test:serving-events:dead-letter'] ?? []);
         }
@@ -465,6 +635,20 @@ namespace VertoAD\Tests\Serving {
             $this->expectExceptionMessage('REDIS_PASSWORD is required for serving event buffering.');
 
             RedisAdEventRepository::fromSettings(['password' => '']);
+        }
+
+        public function testRejectsUnknownAtomicEnqueueResult(): void
+        {
+            $repository = new RedisAdEventRepository(new InMemoryRedisClient(), 'vertoad:test:', 60, 3600);
+
+            $this->expectException(\RuntimeException::class);
+            $this->expectExceptionMessage('Redis serving event enqueue returned an invalid status.');
+
+            $repository->recordClick(
+                $this->decision(),
+                'clk-invalid-enqueue-status',
+                new DateTimeImmutable('2026-06-08T10:00:20Z'),
+            );
         }
 
         public function testRejectsInvalidLeaseLimit(): void

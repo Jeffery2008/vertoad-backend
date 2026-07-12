@@ -264,7 +264,13 @@ final class AttributionFixedOAuthTokenRepository implements OAuthTokenRepository
         throw new \LogicException('Not used by this test.');
     }
 
-    public function consumeAuthorizationCode(string $codeHash, DateTimeImmutable $now): ?array
+    public function consumeAuthorizationCode(
+        string $codeHash,
+        int $clientId,
+        string $redirectUri,
+        string $codeChallenge,
+        DateTimeImmutable $now,
+    ): ?array
     {
         throw new \LogicException('Not used by this test.');
     }
@@ -294,7 +300,7 @@ final class AttributionFixedOAuthTokenRepository implements OAuthTokenRepository
         throw new \LogicException('Not used by this test.');
     }
 
-    public function rotateRefreshToken(int $oldRefreshTokenId, int $newRefreshTokenId, DateTimeImmutable $now): void
+    public function rotateRefreshToken(int $oldRefreshTokenId, int $newRefreshTokenId, DateTimeImmutable $now): bool
     {
         throw new \LogicException('Not used by this test.');
     }
@@ -353,6 +359,11 @@ final class AttributionNoMembershipRepository implements OrganizationMembershipR
     public function findActiveMembership(int $userId, int $organizationId): ?\VertoAD\Domain\Auth\OrganizationMembership
     {
         return null;
+    }
+
+    public function listActiveOrganizationsForUser(int $userId): array
+    {
+        return [];
     }
 
     public function listForOrganization(int $organizationId): array

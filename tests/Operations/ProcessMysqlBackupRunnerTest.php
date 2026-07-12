@@ -87,6 +87,10 @@ PHP);
         self::assertStringNotContainsString('secret-password', implode(' ', $dumpCapture['arguments']));
         self::assertContains('--single-transaction', $dumpCapture['arguments']);
         self::assertContains('--set-gtid-purged=OFF', $dumpCapture['arguments']);
+        self::assertContains(
+            '--ignore-table=vertoad_test.operation_backup_jobs',
+            $dumpCapture['arguments'],
+        );
 
         $runner->restore($dump);
         $restoreCapture = json_decode((string) file_get_contents($capture), true, flags: JSON_THROW_ON_ERROR);

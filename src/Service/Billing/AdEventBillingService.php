@@ -8,17 +8,28 @@ use Doctrine\DBAL\Connection;
 use VertoAD\Domain\Billing\AdEventBillingResult;
 use VertoAD\Domain\Billing\BillableAdEvent;
 use VertoAD\Domain\Serving\AdEvent;
+use VertoAD\Repository\Billing\CpmBillingRepositoryInterface;
+use VertoAD\Repository\Billing\DatabaseCpmBillingRepository;
+use VertoAD\Repository\Billing\InMemoryCpmBillingRepository;
 use VertoAD\Service\CampaignBudgetService;
 
 final readonly class AdEventBillingService
 {
     private const RESERVATION_TTL_SECONDS = 300;
 
+    private CpmBillingService $cpmBilling;
+
     public function __construct(
         private CampaignBudgetService $budgets,
         private RevenueShareService $revenueShare,
         private ?Connection $connection = null,
+        ?CpmBillingService $cpmBilling = null,
     ) {
+        $this->cpmBilling = $cpmBilling ?? new CpmBillingService(
+            $this->defaultCpmRepository($connection),
+            $this->budgets,
+            $this->revenueShare,
+        );
     }
 
     public function bill(BillableAdEvent $event): AdEventBillingResult
@@ -32,6 +43,10 @@ final readonly class AdEventBillingService
 
     private function billWithinTransaction(BillableAdEvent $event): AdEventBillingResult
     {
+        if ($event->eventType === 'impression') {
+            return $this->cpmBilling->bill($event);
+        }
+
         if (!$event->valid) {
             return AdEventBillingResult::skipped('invalid_event');
         }
@@ -128,5 +143,32 @@ final readonly class AdEventBillingService
     private function publisherEventId(BillableAdEvent $event): string
     {
         return $event->eventType . ':' . trim($event->decisionId) . ':' . trim($event->eventId);
+    }
+
+    private function defaultCpmRepository(?Connection $connection): CpmBillingRepositoryInterface
+    {
+        if ($connection === null) {
+            return new InMemoryCpmBillingRepository();
+        }
+
+        try {
+            $available = $connection->createSchemaManager()->tablesExist([
+                'cpm_billing_accumulators',
+                'cpm_billing_event_allocations',
+            ]);
+        } catch (\Throwable) {
+            $available = false;
+        }
+
+        if ($available) {
+            return new DatabaseCpmBillingRepository($connection);
+        }
+
+        $environment = strtolower(trim((string) (getenv('APP_ENV') ?: '')));
+        if (!in_array($environment, ['', 'local', 'test', 'testing'], true)) {
+            throw new \RuntimeException('CPM billing tables are required outside local/testing.');
+        }
+
+        return new InMemoryCpmBillingRepository();
     }
 }

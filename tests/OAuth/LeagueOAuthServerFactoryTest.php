@@ -10,8 +10,11 @@ use Doctrine\DBAL\DriverManager;
 use League\OAuth2\Server\AuthorizationServer;
 use League\OAuth2\Server\Entities\ClientEntityInterface;
 use League\OAuth2\Server\Entities\ScopeEntityInterface;
+use League\OAuth2\Server\Exception\OAuthServerException;
 use League\OAuth2\Server\ResourceServer;
 use PHPUnit\Framework\TestCase;
+use Slim\Psr7\Factory\ResponseFactory;
+use Slim\Psr7\Factory\ServerRequestFactory;
 use VertoAD\Domain\Auth\OAuthClient;
 use VertoAD\Infrastructure\OAuth\LeagueOAuthAccessTokenEntity;
 use VertoAD\Infrastructure\OAuth\LeagueOAuthAuthCodeEntity;
@@ -85,8 +88,85 @@ final class LeagueOAuthServerFactoryTest extends TestCase
         self::assertSame([], $repository->finalizeScopes([new LeagueOAuthScopeEntity('admin.root')], 'client_credentials', $entity));
         self::assertSame([], $repository->finalizeScopes([], 'client_credentials', $this->foreignClient()));
 
+        $unsafeClient = $this->storeClient(
+            $connection,
+            true,
+            'vocl_unsafe_client',
+            ['organizations.members.manage'],
+        );
+        $unsafeEntity = new LeagueOAuthClientEntity($unsafeClient);
+        self::assertSame([], $repository->finalizeScopes([], 'client_credentials', $unsafeEntity));
+        self::assertSame(
+            ['organizations.members.manage'],
+            $this->scopeIds($repository->finalizeScopes([], 'authorization_code', $unsafeEntity)),
+        );
+
         $publicClient = $this->storeClient($connection, false, 'vocl_public_client');
-        self::assertTrue($repository->validateClient($publicClient->clientIdentifier, null, 'client_credentials'));
+        self::assertTrue($repository->validateClient($publicClient->clientIdentifier, null, 'authorization_code'));
+        self::assertFalse($repository->validateClient($publicClient->clientIdentifier, null, 'client_credentials'));
+    }
+
+    public function testRealClientCredentialsGrantRequiresConfidentialClientValidSecretAndAllowedScope(): void
+    {
+        $connection = $this->createConnection();
+        $repository = $this->createRepository($connection);
+        $server = (new LeagueOAuthServerFactory($repository, $this->createKeySettings()))->authorizationServer();
+        $confidentialClient = $this->storeClient($connection, true);
+        $publicClient = $this->storeClient($connection, false, 'vocl_public_grant_client');
+        $requests = new ServerRequestFactory();
+        $responses = new ResponseFactory();
+
+        try {
+            $server->respondToAccessTokenRequest(
+                $requests->createServerRequest('POST', '/api/v1/oauth/token')->withParsedBody([
+                    'grant_type' => 'client_credentials',
+                    'client_id' => $publicClient->clientIdentifier,
+                    'scope' => 'report.read.own',
+                ]),
+                $responses->createResponse(),
+            );
+            self::fail('Expected the real League grant to reject a public client.');
+        } catch (OAuthServerException $exception) {
+            self::assertSame('invalid_client', $exception->getErrorType());
+        }
+
+        try {
+            $server->respondToAccessTokenRequest(
+                $requests->createServerRequest('POST', '/api/v1/oauth/token')->withParsedBody([
+                    'grant_type' => 'client_credentials',
+                    'client_id' => $confidentialClient->clientIdentifier,
+                    'client_secret' => 'wrong-secret',
+                    'scope' => 'report.read.own',
+                ]),
+                $responses->createResponse(),
+            );
+            self::fail('Expected the real League grant to reject an invalid client secret.');
+        } catch (OAuthServerException $exception) {
+            self::assertSame('invalid_client', $exception->getErrorType());
+        }
+
+        $response = $server->respondToAccessTokenRequest(
+            $requests->createServerRequest('POST', '/api/v1/oauth/token')->withParsedBody([
+                'grant_type' => 'client_credentials',
+                'client_id' => $confidentialClient->clientIdentifier,
+                'client_secret' => 'plain-secret',
+                'scope' => 'report.read.own',
+            ]),
+            $responses->createResponse(),
+        );
+        $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame('Bearer', $payload['token_type']);
+        self::assertIsString($payload['access_token']);
+        self::assertNotSame('', $payload['access_token']);
+        self::assertSame(1, (int) $connection->fetchOne('SELECT COUNT(*) FROM oauth_access_tokens'));
+        self::assertSame(
+            ['organization_id' => 99, 'user_id' => null, 'scopes_json' => '["report.read.own"]'],
+            $connection->fetchAssociative(
+                'SELECT organization_id, user_id, scopes_json FROM oauth_access_tokens ORDER BY id DESC LIMIT 1',
+            ),
+        );
     }
 
     public function testPersistsAndRevokesLeagueAccessAuthCodeAndRefreshEntities(): void
@@ -197,7 +277,13 @@ final class LeagueOAuthServerFactoryTest extends TestCase
         );
     }
 
-    private function storeClient(Connection $connection, bool $confidential, string $identifier = 'vocl_test_client'): OAuthClient
+    /** @param list<string> $scopes */
+    private function storeClient(
+        Connection $connection,
+        bool $confidential,
+        string $identifier = 'vocl_test_client',
+        array $scopes = ['campaign.read.own', 'report.read.own'],
+    ): OAuthClient
     {
         return (new OAuthClientRepository($connection))->store(new OAuthClient(
             id: null,
@@ -207,8 +293,10 @@ final class LeagueOAuthServerFactoryTest extends TestCase
             name: 'Test Client',
             secretHash: $confidential ? (new OAuthClientSecretHasher())->hash('plain-secret') : null,
             redirectUris: ['https://app.example.com/oauth/callback'],
-            grantTypes: ['authorization_code', 'client_credentials', 'refresh_token'],
-            scopes: ['campaign.read.own', 'report.read.own'],
+            grantTypes: $confidential
+                ? ['authorization_code', 'client_credentials', 'refresh_token']
+                : ['authorization_code', 'refresh_token'],
+            scopes: $scopes,
             isConfidential: $confidential,
             revokedAt: null,
         ));
@@ -220,7 +308,7 @@ final class LeagueOAuthServerFactoryTest extends TestCase
         $connection->executeStatement('CREATE TABLE oauth_clients (id INTEGER PRIMARY KEY AUTOINCREMENT, organization_id INTEGER NULL, owner_user_id INTEGER NULL, client_identifier TEXT NOT NULL UNIQUE, name TEXT NOT NULL, secret_hash TEXT NULL, redirect_uris_json TEXT NOT NULL, grant_types_json TEXT NOT NULL, scopes_json TEXT NULL, is_confidential INTEGER NOT NULL DEFAULT 1, revoked_at TEXT NULL)');
         $connection->executeStatement('CREATE TABLE oauth_authorization_codes (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, user_id INTEGER NOT NULL, organization_id INTEGER NULL, code_identifier TEXT NOT NULL UNIQUE, redirect_uri TEXT NOT NULL, scopes_json TEXT NULL, code_challenge TEXT NULL, code_challenge_method TEXT NULL, expires_at TEXT NOT NULL, revoked_at TEXT NULL)');
         $connection->executeStatement('CREATE TABLE oauth_access_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, user_id INTEGER NULL, organization_id INTEGER NULL, authorization_code_id INTEGER NULL, access_token_identifier TEXT NOT NULL UNIQUE, scopes_json TEXT NULL, expires_at TEXT NOT NULL, revoked_at TEXT NULL)');
-        $connection->executeStatement('CREATE TABLE oauth_refresh_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, access_token_id INTEGER NOT NULL, client_id INTEGER NOT NULL, user_id INTEGER NULL, refresh_token_identifier TEXT NOT NULL UNIQUE, previous_refresh_token_id INTEGER NULL, rotated_to_refresh_token_id INTEGER NULL, expires_at TEXT NOT NULL, revoked_at TEXT NULL, rotated_at TEXT NULL, reuse_detected_at TEXT NULL)');
+        $connection->executeStatement('CREATE TABLE oauth_refresh_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, access_token_id INTEGER NOT NULL, client_id INTEGER NOT NULL, user_id INTEGER NULL, refresh_token_identifier TEXT NOT NULL UNIQUE, family_identifier TEXT NOT NULL, previous_refresh_token_id INTEGER NULL, rotated_to_refresh_token_id INTEGER NULL, expires_at TEXT NOT NULL, revoked_at TEXT NULL, rotated_at TEXT NULL, reuse_detected_at TEXT NULL)');
 
         return $connection;
     }

@@ -59,13 +59,14 @@ final class BackupCheckJobTest extends TestCase
             ],
             redisHardeningInventory: [
                 'password_configured' => false,
-                'dangerous_commands_disabled' => [],
+                'dangerous_commands_disabled' => ['FLUSHALL'],
                 'auth_failure_alerting_configured' => false,
             ],
         ));
 
         $result = $job->run();
 
+        self::assertSame('failed', $result->status);
         self::assertFalse($result->metrics['healthy'] ?? true);
         self::assertSame('unknown', $result->metrics['backup_status'] ?? null);
         self::assertArrayHasKey('last_backup_at', $result->metrics);

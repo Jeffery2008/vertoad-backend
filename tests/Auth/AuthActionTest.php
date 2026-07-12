@@ -224,6 +224,22 @@ final class AuthActionTest extends TestCase
         self::assertSame(77, $payload['organization_id']);
         self::assertSame(['publisher-manager'], $payload['membership']['roles']);
         self::assertSame(['publisher.sites.manage'], $payload['membership']['permissions']);
+        self::assertSame([
+            [
+                'id' => 77,
+                'name' => 'Publisher One',
+                'slug' => 'publisher-one',
+                'roles' => ['publisher-manager'],
+                'permissions' => ['publisher.sites.manage'],
+            ],
+            [
+                'id' => 88,
+                'name' => 'Publisher Two',
+                'slug' => 'publisher-two',
+                'roles' => ['viewer'],
+                'permissions' => ['publisher.sites.read'],
+            ],
+        ], $payload['organizations']);
     }
 
     public function testMeActionReturnsNullMembershipWithoutOrganizationScope(): void
@@ -241,6 +257,41 @@ final class AuthActionTest extends TestCase
 
         self::assertNull($payload['organization_id']);
         self::assertNull($payload['membership']);
+        self::assertCount(2, $payload['organizations']);
+    }
+
+    public function testMeActionPreservesSelectedOrganizationWhenMembershipIsNotActive(): void
+    {
+        $request = $this->jsonRequest('/api/v1/auth/me?organization_id=99', [])
+            ->withAttribute(RequestUserContext::ATTRIBUTE, new RequestUserContext(
+                user: new AuthenticatedUser(5, 'owner@example.com', false),
+                organizationId: 99,
+            ));
+
+        $payload = $this->payload((new MeAction(new FixedMembershipRepository()))(
+            $request,
+            (new ResponseFactory())->createResponse(),
+        ));
+
+        self::assertSame(99, $payload['organization_id']);
+        self::assertNull($payload['membership']);
+        self::assertCount(2, $payload['organizations']);
+    }
+
+    public function testMeActionReturnsEmptyOrganizationListForAuthenticatedUserWithoutMemberships(): void
+    {
+        $request = $this->jsonRequest('/api/v1/auth/me', [])
+            ->withAttribute(RequestUserContext::ATTRIBUTE, new RequestUserContext(
+                user: new AuthenticatedUser(6, 'memberless@example.com', false),
+                organizationId: null,
+            ));
+
+        $payload = $this->payload((new MeAction(new FixedMembershipRepository()))(
+            $request,
+            (new ResponseFactory())->createResponse(),
+        ));
+
+        self::assertSame([], $payload['organizations']);
     }
 
     public function testMeAndLogoutActionsRejectAnonymousRequests(): void
@@ -405,6 +456,30 @@ final class AuthActionTest extends TestCase
 
 final class FixedMembershipRepository implements OrganizationMembershipRepositoryInterface
 {
+    public function listActiveOrganizationsForUser(int $userId): array
+    {
+        if ($userId !== 5) {
+            return [];
+        }
+
+        return [
+            [
+                'id' => 77,
+                'name' => 'Publisher One',
+                'slug' => 'publisher-one',
+                'roles' => ['publisher-manager'],
+                'permissions' => ['publisher.sites.manage'],
+            ],
+            [
+                'id' => 88,
+                'name' => 'Publisher Two',
+                'slug' => 'publisher-two',
+                'roles' => ['viewer'],
+                'permissions' => ['publisher.sites.read'],
+            ],
+        ];
+    }
+
     public function listForOrganization(int $organizationId): array
     {
         return [];

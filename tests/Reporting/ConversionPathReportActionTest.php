@@ -365,7 +365,13 @@ final class ConversionPathOAuthTokenRepository implements OAuthTokenRepositoryIn
         throw new \LogicException('Not used by this test.');
     }
 
-    public function consumeAuthorizationCode(string $codeHash, DateTimeImmutable $now): ?array
+    public function consumeAuthorizationCode(
+        string $codeHash,
+        int $clientId,
+        string $redirectUri,
+        string $codeChallenge,
+        DateTimeImmutable $now,
+    ): ?array
     {
         throw new \LogicException('Not used by this test.');
     }
@@ -395,7 +401,7 @@ final class ConversionPathOAuthTokenRepository implements OAuthTokenRepositoryIn
         throw new \LogicException('Not used by this test.');
     }
 
-    public function rotateRefreshToken(int $oldRefreshTokenId, int $newRefreshTokenId, DateTimeImmutable $now): void
+    public function rotateRefreshToken(int $oldRefreshTokenId, int $newRefreshTokenId, DateTimeImmutable $now): bool
     {
         throw new \LogicException('Not used by this test.');
     }
@@ -461,6 +467,11 @@ final readonly class ConversionPathMembershipRepository implements OrganizationM
     public function findActiveMembership(int $userId, int $organizationId): ?OrganizationMembership
     {
         return $this->memberships[$userId . ':' . $organizationId] ?? null;
+    }
+
+    public function listActiveOrganizationsForUser(int $userId): array
+    {
+        return [];
     }
 
     public function listForOrganization(int $organizationId): array

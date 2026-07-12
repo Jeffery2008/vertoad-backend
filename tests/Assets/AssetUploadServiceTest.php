@@ -13,6 +13,7 @@ use VertoAD\Domain\Assets\AssetUploadPolicy;
 use VertoAD\Domain\Assets\AssetUploadIntent;
 use VertoAD\Domain\Assets\CreativeAsset;
 use VertoAD\Infrastructure\Storage\DeterministicPresignedUploadSigner;
+use VertoAD\Infrastructure\Storage\ObjectStorageAssetFinalizerInterface;
 use VertoAD\Infrastructure\Storage\ObjectStorageInspectorInterface;
 use VertoAD\Infrastructure\Storage\StoredObjectInspection;
 use VertoAD\Repository\Assets\AssetRepository;
@@ -189,7 +190,7 @@ final class AssetUploadServiceTest extends TestCase
             1024,
         ));
         self::assertSame('asset_magic_mismatch', $missingMagic->errorCode);
-        self::assertSame('Magic bytes are required.', $missingMagic->getMessage());
+        self::assertSame('Magic bytes do not match content type.', $missingMagic->getMessage());
 
         $this->storeObject($inspector, $intent, "\x89PNG\r\n\x1A\npayload", width: 4097, height: 600);
         $tooWide = $this->captureValidation(fn () => $service->confirmUploadedAsset(
@@ -264,7 +265,7 @@ final class AssetUploadServiceTest extends TestCase
         ));
         self::assertSame('asset_uploaded_object_mismatch', $byteSizeMismatch->errorCode);
 
-        $this->storeObject($inspector, $intent, "\x89PNG\r\n\x1A\npayload", checksum: 'sha256:stored');
+        $this->storeObject($inspector, $intent, "\x89PNG\r\n\x1A\npayload", checksum: 'sha256:' . str_repeat('a', 64));
         $checksumMismatch = $this->captureValidation(fn () => $service->confirmUploadedAsset(
             99,
             7,
@@ -272,7 +273,7 @@ final class AssetUploadServiceTest extends TestCase
             $intent->objectKey,
             'image/png',
             1024,
-            'sha256:client',
+            'sha256:' . str_repeat('b', 64),
         ));
         self::assertSame('asset_uploaded_object_mismatch', $checksumMismatch->errorCode);
         self::assertSame('Stored object checksum does not match the confirmation payload.', $checksumMismatch->getMessage());
@@ -315,7 +316,9 @@ final class AssetUploadServiceTest extends TestCase
         $inspector = new InMemoryObjectStorageInspector();
         $service = $this->createService($connection, inspector: $inspector);
         $intent = $service->createUploadIntent(99, 7, 'image', 'creative.png', 'image/png', 1024);
-        $this->storeObject($inspector, $intent, "\x89PNG\r\n\x1A\npayload", checksum: 'sha256:abc');
+        $body = str_pad("\x89PNG\r\n\x1A\npayload", 1024, "\0");
+        $checksum = 'sha256:' . hash('sha256', $body);
+        $this->storeObject($inspector, $intent, $body, checksum: $checksum);
 
         $asset = $service->confirmUploadedAsset(
             99,
@@ -324,7 +327,7 @@ final class AssetUploadServiceTest extends TestCase
             $intent->objectKey,
             'image/png',
             1024,
-            'sha256:abc',
+            $checksum,
         );
 
         self::assertNotNull($asset->id);
@@ -332,12 +335,312 @@ final class AssetUploadServiceTest extends TestCase
         self::assertSame(7, $asset->uploaderUserId);
         self::assertSame('image', $asset->type->value);
         self::assertSame('pending_review', $asset->status->value);
-        self::assertSame($intent->objectKey, $asset->objectKey);
+        self::assertSame(
+            'organizations/99/assets/final/fixed-token/final-token-value-sha256-'
+                . hash('sha256', $body) . '.png',
+            $asset->objectKey,
+        );
 
         $jobs = $connection->fetchAllAssociative('SELECT * FROM asset_snapshot_jobs');
         self::assertCount(1, $jobs);
         self::assertSame((string) $asset->id, (string) $jobs[0]['asset_id']);
         self::assertSame('pending', $jobs[0]['status']);
+    }
+
+    public function testRepeatedConfirmationIsIdempotentAndPersistsOnlyAuthoritativeChecksum(): void
+    {
+        $connection = $this->createConnection();
+        $inspector = new InMemoryObjectStorageInspector();
+        $service = $this->createService($connection, inspector: $inspector);
+        $intent = $service->createUploadIntent(99, 7, 'image', 'creative.png', 'image/png', 1024);
+        $body = str_pad("\x89PNG\r\n\x1A\npayload", 1024, "\0");
+        $authoritativeChecksum = 'sha256:' . hash('sha256', $body);
+        $clientChecksum = strtoupper(substr($authoritativeChecksum, strlen('sha256:')));
+        $this->storeObject($inspector, $intent, $body, checksum: $authoritativeChecksum);
+
+        $confirmed = $service->confirmUploadedAsset(
+            99,
+            7,
+            (int) $intent->id,
+            $intent->objectKey,
+            'image/png',
+            1024,
+            $clientChecksum,
+        );
+        $retried = $service->confirmUploadedAsset(
+            99,
+            7,
+            (int) $intent->id,
+            $intent->objectKey,
+            ' IMAGE/PNG ',
+            1024,
+        );
+        $changedChecksum = $this->captureValidation(fn () => $service->confirmUploadedAsset(
+            99,
+            7,
+            (int) $intent->id,
+            $intent->objectKey,
+            'image/png',
+            1024,
+            'sha256:' . str_repeat('f', 64),
+        ));
+
+        self::assertSame($confirmed->id, $retried->id);
+        self::assertSame($authoritativeChecksum, $confirmed->checksum);
+        self::assertSame($authoritativeChecksum, $retried->checksum);
+        self::assertNotSame($clientChecksum, $confirmed->checksum);
+        self::assertSame('asset_upload_metadata_mismatch', $changedChecksum->errorCode);
+        self::assertSame(1, (int) $connection->fetchOne('SELECT COUNT(*) FROM creative_assets'));
+        self::assertSame(1, (int) $connection->fetchOne('SELECT COUNT(*) FROM asset_snapshot_jobs'));
+        self::assertSame(
+            AssetStatus::PendingReview->value,
+            $connection->fetchOne('SELECT status FROM asset_upload_intents WHERE id = ?', [$intent->id]),
+        );
+    }
+
+    public function testFinalizationIsImmutableAgainstPresignedStagingOverwriteAndReplay(): void
+    {
+        $connection = $this->createConnection();
+        $storage = new InMemoryObjectStorageInspector();
+        $service = $this->createService(
+            $connection,
+            inspector: $storage,
+            finalizer: $storage,
+            finalTokenGenerator: static fn (): string => 'final-attempt-token',
+        );
+        $intent = $service->createUploadIntent(99, 7, 'image', 'creative.png', 'image/png', 1024);
+        $body = str_pad("\x89PNG\r\n\x1A\noriginal", 1024, "\0");
+        $checksum = 'sha256:' . hash('sha256', $body);
+        $this->storeObject($storage, $intent, $body, checksum: $checksum);
+
+        $asset = $service->confirmUploadedAsset(
+            99,
+            7,
+            (int) $intent->id,
+            $intent->objectKey,
+            'image/png',
+            1024,
+            $checksum,
+        );
+
+        self::assertSame('organizations/99/assets/staging/fixed-token.png', $intent->objectKey);
+        self::assertSame(
+            'organizations/99/assets/final/fixed-token/final-attempt-token-sha256-'
+                . hash('sha256', $body) . '.png',
+            $asset->objectKey,
+        );
+        self::assertNull($storage->inspect($intent->objectKey));
+        self::assertSame($body, $storage->inspect($asset->objectKey)?->body);
+
+        $replacement = str_pad("\x89PNG\r\n\x1A\nreplacement", 1024, "\0");
+        $this->storeObject($storage, $intent, $replacement);
+        $replayed = $service->confirmUploadedAsset(
+            99,
+            7,
+            (int) $intent->id,
+            $intent->objectKey,
+            'image/png',
+            1024,
+            $checksum,
+        );
+
+        self::assertSame($asset->id, $replayed->id);
+        self::assertSame($checksum, $replayed->checksum);
+        self::assertSame($body, $storage->inspect($asset->objectKey)?->body);
+        self::assertNull($storage->inspect($intent->objectKey));
+        self::assertSame($asset->objectKey, $connection->fetchOne(
+            'SELECT object_key FROM creative_assets WHERE upload_intent_id = ?',
+            [$intent->id],
+        ));
+
+        $finalKeyReplay = $this->captureValidation(fn () => $service->confirmUploadedAsset(
+            99,
+            7,
+            (int) $intent->id,
+            $asset->objectKey,
+            'image/png',
+            1024,
+            $checksum,
+        ));
+
+        self::assertSame('asset_upload_metadata_mismatch', $finalKeyReplay->errorCode);
+        self::assertSame($body, $storage->inspect($asset->objectKey)?->body);
+    }
+
+    public function testCommittedFinalizationRetriesStagingCleanupIdempotently(): void
+    {
+        $connection = $this->createConnection();
+        $storage = new InMemoryObjectStorageInspector();
+        $service = $this->createService(
+            $connection,
+            inspector: $storage,
+            finalizer: $storage,
+            finalTokenGenerator: static fn (): string => 'cleanup-retry-token',
+        );
+        $intent = $service->createUploadIntent(99, 7, 'image', 'creative.png', 'image/png', 1024);
+        $body = str_pad("\x89PNG\r\n\x1A\ncleanup", 1024, "\0");
+        $this->storeObject($storage, $intent, $body);
+        $storage->failNextDelete($intent->objectKey);
+
+        $failedCleanup = $this->captureValidation(fn () => $service->confirmUploadedAsset(
+            99,
+            7,
+            (int) $intent->id,
+            $intent->objectKey,
+            'image/png',
+            1024,
+        ));
+
+        self::assertSame('asset_storage_cleanup_failed', $failedCleanup->errorCode);
+        self::assertSame(503, $failedCleanup->status);
+        self::assertNotNull($failedCleanup->getPrevious());
+        self::assertSame(1, (int) $connection->fetchOne('SELECT COUNT(*) FROM creative_assets'));
+        self::assertNotNull($storage->inspect($intent->objectKey));
+
+        $retried = $service->confirmUploadedAsset(
+            99,
+            7,
+            (int) $intent->id,
+            $intent->objectKey,
+            'image/png',
+            1024,
+        );
+
+        self::assertNotNull($retried->id);
+        self::assertNull($storage->inspect($intent->objectKey));
+        self::assertNotNull($storage->inspect($retried->objectKey));
+        self::assertSame(1, (int) $connection->fetchOne('SELECT COUNT(*) FROM asset_snapshot_jobs'));
+    }
+
+    public function testConfirmedRetryRecoversMissingFinalOnlyFromMatchingStagingBytes(): void
+    {
+        $connection = $this->createConnection();
+        $storage = new InMemoryObjectStorageInspector();
+        $service = $this->createService(
+            $connection,
+            inspector: $storage,
+            finalizer: $storage,
+            finalTokenGenerator: static fn (): string => 'recover-final-token',
+        );
+        $intent = $service->createUploadIntent(99, 7, 'image', 'creative.png', 'image/png', 1024);
+        $body = str_pad("\x89PNG\r\n\x1A\nrecover", 1024, "\0");
+        $checksum = 'sha256:' . hash('sha256', $body);
+        $this->storeObject($storage, $intent, $body, checksum: $checksum);
+        $asset = $service->confirmUploadedAsset(
+            99,
+            7,
+            (int) $intent->id,
+            $intent->objectKey,
+            'image/png',
+            1024,
+            $checksum,
+        );
+
+        $storage->delete($asset->objectKey);
+        $this->storeObject($storage, $intent, $body, checksum: $checksum);
+        $recovered = $service->confirmUploadedAsset(
+            99,
+            7,
+            (int) $intent->id,
+            $intent->objectKey,
+            'image/png',
+            1024,
+            $checksum,
+        );
+
+        self::assertSame($asset->id, $recovered->id);
+        self::assertSame($body, $storage->inspect($asset->objectKey)?->body);
+        self::assertNull($storage->inspect($intent->objectKey));
+
+        $storage->delete($asset->objectKey);
+        $replacement = str_pad("\x89PNG\r\n\x1A\nchanged", 1024, "\0");
+        $this->storeObject($storage, $intent, $replacement);
+        $mismatch = $this->captureValidation(fn () => $service->confirmUploadedAsset(
+            99,
+            7,
+            (int) $intent->id,
+            $intent->objectKey,
+            'image/png',
+            1024,
+            $checksum,
+        ));
+
+        self::assertSame('asset_storage_final_mismatch', $mismatch->errorCode);
+        self::assertSame(503, $mismatch->status);
+        self::assertNull($storage->inspect($asset->objectKey));
+        self::assertSame($replacement, $storage->inspect($intent->objectKey)?->body);
+        self::assertSame(1, (int) $connection->fetchOne('SELECT COUNT(*) FROM creative_assets'));
+    }
+
+    public function testPromotionDetectsSourceOverwriteRaceAndDeletesUncommittedFinalObject(): void
+    {
+        $connection = $this->createConnection();
+        $inspector = new InMemoryObjectStorageInspector();
+        $replacement = str_pad("\x89PNG\r\n\x1A\nraced", 1024, "\0");
+        $finalizer = new class($replacement) implements ObjectStorageAssetFinalizerInterface {
+            /** @var list<string> */
+            public array $deleted = [];
+
+            /** @var array<string, StoredObjectInspection> */
+            private array $objects = [];
+
+            public function __construct(private readonly string $replacement)
+            {
+            }
+
+            public function inspect(string $objectKey): ?StoredObjectInspection
+            {
+                return $this->objects[$objectKey] ?? null;
+            }
+
+            public function writeFinalFromValidatedBytes(
+                StoredObjectInspection $stagingObject,
+                string $finalObjectKey,
+            ): StoredObjectInspection {
+                return $this->objects[$finalObjectKey] = new StoredObjectInspection(
+                    objectKey: $finalObjectKey,
+                    contentType: $stagingObject->contentType,
+                    byteSize: strlen($this->replacement),
+                    width: $stagingObject->width,
+                    height: $stagingObject->height,
+                    durationSeconds: $stagingObject->durationSeconds,
+                    checksum: 'sha256:' . hash('sha256', $this->replacement),
+                    leadingBytes: substr($this->replacement, 0, 512),
+                    body: $this->replacement,
+                );
+            }
+
+            public function delete(string $objectKey): void
+            {
+                unset($this->objects[$objectKey]);
+                $this->deleted[] = $objectKey;
+            }
+        };
+        $service = $this->createService(
+            $connection,
+            inspector: $inspector,
+            finalizer: $finalizer,
+            finalTokenGenerator: static fn (): string => 'raced-final-token',
+        );
+        $intent = $service->createUploadIntent(99, 7, 'image', 'creative.png', 'image/png', 1024);
+        $racedBody = str_pad("\x89PNG\r\n\x1A\noriginal", 1024, "\0");
+        $this->storeObject($inspector, $intent, $racedBody);
+
+        $mismatch = $this->captureValidation(fn () => $service->confirmUploadedAsset(
+            99,
+            7,
+            (int) $intent->id,
+            $intent->objectKey,
+            'image/png',
+            1024,
+        ));
+
+        $expectedFinalKey = 'organizations/99/assets/final/fixed-token/raced-final-token-sha256-'
+            . hash('sha256', $racedBody) . '.png';
+        self::assertSame('asset_storage_promotion_mismatch', $mismatch->errorCode);
+        self::assertSame([$expectedFinalKey], $finalizer->deleted);
+        self::assertSame(0, (int) $connection->fetchOne('SELECT COUNT(*) FROM creative_assets'));
+        self::assertNotNull($inspector->inspect($intent->objectKey));
     }
 
     public function testConfirmRejectsExpiredUploadIntentWithoutCreatingAsset(): void
@@ -408,7 +711,7 @@ final class AssetUploadServiceTest extends TestCase
             ['image', 'creative.gif', 'image/gif', 'GIF89apayload', null],
             ['image', 'creative.webp', 'image/webp', 'RIFFxxxxWEBPpayload', null],
             ['video', 'creative.webm', 'video/webm', "\x1A\x45\xDF\xA3payload", 30.0],
-            ['fabric_snapshot', 'creative.json', 'application/json', ' {"objects":[]}', null],
+            ['fabric_snapshot', 'creative.json', 'application/json', $this->fabricPayload(), null],
             ['text', 'creative.txt', 'text/plain', 'plain copy', null],
         ];
 
@@ -486,6 +789,14 @@ final class AssetUploadServiceTest extends TestCase
                     );
                 }
 
+                public function findAssetByUploadIntent(
+                    int $uploadIntentId,
+                    int $organizationId,
+                    int $uploaderUserId,
+                ): ?CreativeAsset {
+                    return null;
+                }
+
                 public function createAssetWithSnapshotJob(CreativeAsset $asset): CreativeAsset
                 {
                     return $asset;
@@ -554,6 +865,8 @@ final class AssetUploadServiceTest extends TestCase
         Connection $connection,
         ?AssetUploadPolicy $policy = null,
         ?InMemoryObjectStorageInspector $inspector = null,
+        ?ObjectStorageAssetFinalizerInterface $finalizer = null,
+        ?callable $finalTokenGenerator = null,
     ): AssetUploadService
     {
         return new AssetUploadService(
@@ -568,6 +881,8 @@ final class AssetUploadServiceTest extends TestCase
             $inspector ?? new InMemoryObjectStorageInspector(),
             $policy ?? AssetUploadPolicy::default(),
             static fn (): string => 'fixed-token',
+            finalTokenGenerator: $finalTokenGenerator ?? static fn (): string => 'final-token-value',
+            finalizer: $finalizer,
         );
     }
 
@@ -582,16 +897,38 @@ final class AssetUploadServiceTest extends TestCase
         ?int $byteSize = null,
         ?string $checksum = null,
     ): void {
+        $storedByteSize = $byteSize ?? $intent->byteSize;
+        $body = strlen($leadingBytes) >= $storedByteSize
+            ? $leadingBytes
+            : str_pad($leadingBytes, $storedByteSize, $intent->type === AssetType::FabricSnapshot ? ' ' : "\0");
         $inspector->put(new StoredObjectInspection(
             objectKey: $intent->objectKey,
             contentType: $contentType ?? $intent->contentType,
-            byteSize: $byteSize ?? $intent->byteSize,
+            byteSize: $storedByteSize,
             width: $width,
             height: $height,
             durationSeconds: $durationSeconds,
-            checksum: $checksum ?? 'sha256:' . hash('sha256', $leadingBytes),
+            checksum: $checksum ?? 'sha256:' . hash('sha256', $body),
             leadingBytes: $leadingBytes,
+            body: $body,
         ));
+    }
+
+    private function fabricPayload(): string
+    {
+        return json_encode([
+            'asset_type' => 'fabric_ad',
+            'render_mode' => 'fabric-json',
+            'fabric_json' => ['objects' => []],
+            'resources' => [],
+            'snapshot' => [
+                'data_url' => 'data:image/png;base64,' . base64_encode(base64_decode(
+                    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+                    true,
+                )),
+                'usage' => 'preview-review-fallback',
+            ],
+        ], JSON_THROW_ON_ERROR);
     }
 
     private function createConnection(): Connection

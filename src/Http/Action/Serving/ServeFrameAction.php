@@ -12,6 +12,7 @@ use VertoAD\Domain\Serving\AdDecision;
 use VertoAD\Domain\Serving\ServingRequestContext;
 use VertoAD\Http\RequestIdContext;
 use VertoAD\Infrastructure\Security\ClientIpResolver;
+use VertoAD\Service\Assets\AssetPublicUrlResolver;
 use VertoAD\Service\Serving\AdServingService;
 use VertoAD\Service\Serving\GeoResolverInterface;
 use VertoAD\Service\Serving\NullGeoResolver;
@@ -25,6 +26,7 @@ final readonly class ServeFrameAction
         private AdServingService $serving,
         private ?ClientIpResolver $ipResolver = null,
         private ?GeoResolverInterface $geoResolver = null,
+        private ?AssetPublicUrlResolver $publicAssets = null,
     )
     {
     }
@@ -47,13 +49,14 @@ final readonly class ServeFrameAction
         }
 
         $nonce = $this->nonce();
+        $assetSource = $this->publicAssets?->cspSource() ?? "'self'";
         $response = $response
             ->withStatus(200)
             ->withHeader('Content-Type', 'text/html; charset=utf-8')
             ->withHeader('X-Content-Type-Options', 'nosniff')
             ->withHeader(
                 'Content-Security-Policy',
-                "sandbox allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts; default-src 'none'; img-src 'self' https: data:; connect-src 'self'; style-src 'unsafe-inline'; script-src 'nonce-" . $nonce . "'; base-uri 'none'; form-action 'none'",
+                "sandbox allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts; default-src 'none'; img-src {$assetSource} data:; media-src {$assetSource}; connect-src 'self' {$assetSource}; style-src 'unsafe-inline'; script-src 'nonce-" . $nonce . "'; base-uri 'none'; form-action 'none'",
             );
         $response->getBody()->write($this->frameDocument($decision, $nonce));
 
@@ -147,6 +150,39 @@ final readonly class ServeFrameAction
   };
   const eventId = (prefix) => prefix + ":" + config.decisionId + ":" + Date.now().toString(36) + ":" + Math.random().toString(36).slice(2);
   const envelopeData = (payload) => payload && typeof payload === "object" && "data" in payload ? payload.data : payload;
+  const trackVideoEvent = async (eventType) => {
+    const videoEventId = eventId(eventType);
+    try {
+      const response = await fetch(config.trackUrl, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          decision_id: config.decisionId,
+          viewer_id: config.viewerId,
+          event_id: videoEventId,
+          event_type: eventType
+        })
+      });
+      const payload = await response.json().catch(() => ({}));
+      const data = envelopeData(payload);
+      if (!response.ok || !data || data.accepted !== true) {
+        throw new Error("video tracking rejected");
+      }
+      post("video_event_tracked", {
+        event_type: eventType,
+        event_id: videoEventId,
+        duplicate: data.duplicate === true
+      });
+      return true;
+    } catch (error) {
+      post("error", { message: "video_tracking_failed", event_type: eventType });
+      return false;
+    }
+  };
   const trackImpression = async () => {
     if (impressionTracked) {
       return;
@@ -195,8 +231,55 @@ final readonly class ServeFrameAction
     }
     void trackImpression();
   });
+  document.querySelectorAll("[data-vertoad-video]").forEach((element) => {
+    if (!(element instanceof HTMLVideoElement)) {
+      return;
+    }
+    const completedMilestones = new Set();
+    const pendingMilestones = new Set();
+    const trackMilestone = (eventType) => {
+      if (completedMilestones.has(eventType) || pendingMilestones.has(eventType)) {
+        return;
+      }
+      pendingMilestones.add(eventType);
+      void trackVideoEvent(eventType).then((accepted) => {
+        pendingMilestones.delete(eventType);
+        if (accepted) {
+          completedMilestones.add(eventType);
+        }
+      });
+    };
+    let muted = element.muted || element.volume === 0;
+    element.addEventListener("play", () => trackMilestone("video_start"));
+    element.addEventListener("timeupdate", () => {
+      if (!Number.isFinite(element.duration) || element.duration <= 0) {
+        return;
+      }
+      const progress = element.currentTime / element.duration;
+      if (progress >= 0.25) trackMilestone("video_25");
+      if (progress >= 0.50) trackMilestone("video_50");
+      if (progress >= 0.75) trackMilestone("video_75");
+    });
+    element.addEventListener("ended", () => trackMilestone("video_complete"));
+    element.addEventListener("pause", () => {
+      if (!element.ended && element.currentTime > 0) {
+        void trackVideoEvent("video_pause");
+      }
+    });
+    element.addEventListener("volumechange", () => {
+      const nextMuted = element.muted || element.volume === 0;
+      if (nextMuted && !muted) {
+        void trackVideoEvent("video_mute");
+      }
+      muted = nextMuted;
+    });
+  });
   document.addEventListener("click", (event) => {
-    const target = event.target instanceof Element ? event.target.closest("[data-vertoad-click-target]") : null;
+    const element = event.target instanceof Element ? event.target : null;
+    if (element && element.closest("[data-vertoad-video]")) {
+      return;
+    }
+    const target = element ? element.closest("[data-vertoad-click-target]") : null;
     if (!(target instanceof HTMLAnchorElement)) {
       return;
     }

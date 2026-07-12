@@ -119,6 +119,7 @@ final class ServingRouteIntegrationTest extends TestCase
                 assetType: 'image',
                 assetObjectKey: 'organizations/40/assets/shanghai.png',
                 assetContentType: 'image/png',
+                snapshotWebpUrl: 'https://assets.example.test/organizations/40/assets/shanghai.webp',
                 geos: ['CN-SH'],
             ),
         ], geoResolver: $resolver);
@@ -277,6 +278,7 @@ final class ServingRouteIntegrationTest extends TestCase
                 assetType: 'image',
                 assetObjectKey: 'organizations/40/assets/shanghai.png',
                 assetContentType: 'image/png',
+                snapshotWebpUrl: 'https://assets.example.test/organizations/40/assets/shanghai.webp',
                 geos: ['CN-SH'],
             ),
         ], geoResolver: $resolver, trustedProxies: ['198.51.100.0/24']);
@@ -315,18 +317,36 @@ final class ServingRouteIntegrationTest extends TestCase
         self::assertSame('nosniff', $response->getHeaderLine('X-Content-Type-Options'));
         self::assertStringContainsString('sandbox allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts', $response->getHeaderLine('Content-Security-Policy'));
         self::assertStringContainsString("script-src 'nonce-", $response->getHeaderLine('Content-Security-Policy'));
+        self::assertStringContainsString('img-src https://assets.example.test data:', $response->getHeaderLine('Content-Security-Policy'));
+        self::assertStringContainsString('media-src https://assets.example.test', $response->getHeaderLine('Content-Security-Policy'));
+        self::assertStringContainsString("connect-src 'self' https://assets.example.test", $response->getHeaderLine('Content-Security-Policy'));
+        self::assertStringNotContainsString('img-src https: data:', $response->getHeaderLine('Content-Security-Policy'));
         $html = (string) $response->getBody();
         self::assertStringStartsWith('<!doctype html>', $html);
         self::assertStringNotContainsString('<iframe', $html);
         self::assertStringContainsString('data-vertoad-renderer="platform-controlled"', $html);
         self::assertStringContainsString('data-vertoad-fallback="snapshot"', $html);
-        self::assertStringContainsString('organizations/40/assets/creative.png', $html);
+        self::assertStringContainsString(
+            'https://assets.example.test/organizations/40/assets/creative.webp',
+            $html,
+        );
+        self::assertStringNotContainsString('organizations/40/assets/creative.png', $html);
+        self::assertStringNotContainsString('asset_object_key', $html);
         self::assertStringContainsString('data-vertoad-runtime', $html);
         self::assertStringContainsString('/api/v1/ads/track', $html);
         self::assertStringContainsString('/api/v1/ads/click?decision_id=', $html);
         self::assertStringContainsString('protocol: "vertoad"', $html);
         self::assertStringContainsString('impression_eligible', $html);
         self::assertStringContainsString('impression_tracked', $html);
+        self::assertStringContainsString('video_event_tracked', $html);
+        self::assertStringContainsString('trackMilestone("video_start")', $html);
+        self::assertStringContainsString('trackMilestone("video_25")', $html);
+        self::assertStringContainsString('trackMilestone("video_50")', $html);
+        self::assertStringContainsString('trackMilestone("video_75")', $html);
+        self::assertStringContainsString('trackMilestone("video_complete")', $html);
+        self::assertStringContainsString('trackVideoEvent("video_mute")', $html);
+        self::assertStringContainsString('trackVideoEvent("video_pause")', $html);
+        self::assertStringContainsString('element.closest("[data-vertoad-video]")', $html);
         self::assertStringContainsString('click_requested', $html);
 
         $invalidResponse = $this->handleRaw($app, 'GET', '/api/v1/ads/serve?site_id=0&slot_id=20&viewer_id=viewer-1');
@@ -388,6 +408,35 @@ final class ServingRouteIntegrationTest extends TestCase
             '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body></body></html>',
             $extract->invoke($action, $this->decisionWithIframe('<iframe title="Advertisement"></iframe>'))
         );
+    }
+
+    public function testServeFrameReusesPreResolvedServingContextWithItsOwnEndpoint(): void
+    {
+        $app = $this->createApp([]);
+        $container = $app->getContainer();
+        self::assertNotNull($container);
+        $action = $container->get(ServeFrameAction::class);
+        self::assertInstanceOf(ServeFrameAction::class, $action);
+        $context = new ServingRequestContext(
+            ipAddress: '198.51.100.44',
+            userAgent: 'Pre-resolved browser',
+            geoCode: 'CN-SH',
+            requestId: 'req-pre-resolved',
+            endpoint: '/previous-endpoint',
+            httpMethod: 'POST',
+        );
+        $request = (new ServerRequestFactory())->createServerRequest('GET', '/api/v1/ads/serve')
+            ->withAttribute(ServingRequestContext::class, $context);
+        $resolve = new ReflectionMethod(ServeFrameAction::class, 'requestContext');
+
+        $resolved = $resolve->invoke($action, $request);
+
+        self::assertInstanceOf(ServingRequestContext::class, $resolved);
+        self::assertSame('198.51.100.44', $resolved->ipAddress);
+        self::assertSame('CN-SH', $resolved->geoCode);
+        self::assertSame('req-pre-resolved', $resolved->requestId);
+        self::assertSame('/api/v1/ads/serve', $resolved->endpoint);
+        self::assertSame('GET', $resolved->httpMethod);
     }
 
     public function testTrackAcceptsValidImpressionAndDeduplicates(): void
@@ -666,7 +715,12 @@ final class ServingRouteIntegrationTest extends TestCase
                 AdServingService $serving,
                 ClientIpResolver $ipResolver,
                 GeoResolverInterface $geoResolver,
-            ): ServeFrameAction => new ServeFrameAction($serving, $ipResolver, $geoResolver),
+            ): ServeFrameAction => new ServeFrameAction(
+                $serving,
+                $ipResolver,
+                $geoResolver,
+                new \VertoAD\Service\Assets\AssetPublicUrlResolver('https://assets.example.test'),
+            ),
         ])->build();
 
         SlimAppFactory::setContainer($container);
@@ -762,6 +816,7 @@ final class ServingRouteIntegrationTest extends TestCase
             assetType: 'image',
             assetObjectKey: 'organizations/40/assets/creative.png',
             assetContentType: 'image/png',
+            snapshotWebpUrl: 'https://assets.example.test/organizations/40/assets/creative.webp',
         );
     }
 

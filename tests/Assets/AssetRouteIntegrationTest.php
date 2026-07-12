@@ -24,6 +24,7 @@ use VertoAD\Infrastructure\Storage\StoredObjectInspection;
 use VertoAD\Repository\Assets\AssetRepository;
 use VertoAD\Repository\Assets\AssetRepositoryInterface;
 use VertoAD\Repository\FirstPartySessionRepositoryInterface;
+use VertoAD\Service\Assets\AssetPublicUrlResolver;
 use VertoAD\Service\Assets\AssetUploadService;
 
 final class AssetRouteIntegrationTest extends TestCase
@@ -74,13 +75,27 @@ final class AssetRouteIntegrationTest extends TestCase
             'object_key' => $intent['data']['object_key'],
             'content_type' => 'image/png',
             'byte_size' => 1024,
-            'checksum' => 'sha256:abc',
+            'checksum' => 'sha256:' . hash('sha256', str_pad("\x89PNG\r\n\x1A\npayload", 1024, "\0")),
         ], 'valid-token');
 
         self::assertSame('pending_review', $confirmed['data']['status']);
         self::assertSame(99, $confirmed['data']['organization_id']);
         self::assertSame(7, $confirmed['data']['uploader_user_id']);
         self::assertSame('image/png', $confirmed['data']['content_type']);
+        self::assertSame('pending', $confirmed['data']['snapshot_status']);
+        self::assertSame(
+            'https://assets.example.test/creative-assets/organizations/99/assets/final/route-token/route-final-token-sha256-'
+                . hash('sha256', str_pad("\x89PNG\r\n\x1A\npayload", 1024, "\0")) . '.png',
+            $confirmed['data']['source_url'],
+        );
+        self::assertSame(
+            'organizations/99/assets/final/route-token/route-final-token-sha256-'
+                . hash('sha256', str_pad("\x89PNG\r\n\x1A\npayload", 1024, "\0")) . '.png',
+            $confirmed['data']['object_key'],
+        );
+        self::assertNull($confirmed['data']['snapshot_png_url']);
+        self::assertNull($confirmed['data']['snapshot_webp_url']);
+        self::assertNull($confirmed['data']['thumbnail_webp_url']);
         self::assertSame(1, (int) $connection->fetchOne('SELECT COUNT(*) FROM asset_snapshot_jobs'));
     }
 
@@ -111,7 +126,7 @@ final class AssetRouteIntegrationTest extends TestCase
         $connection = $this->createConnection();
         $inspector = $this->defaultInspector();
         $inspector->put(new StoredObjectInspection(
-            objectKey: 'organizations/99/assets/route-token.png',
+            objectKey: 'organizations/99/assets/staging/route-token.png',
             contentType: 'image/png',
             byteSize: 1024,
             width: 800,
@@ -249,11 +264,20 @@ final class AssetRouteIntegrationTest extends TestCase
                     'path_style_endpoint' => true,
                 ]),
             ObjectStorageInspectorInterface::class => static fn (): ObjectStorageInspectorInterface => $inspector,
+            AssetPublicUrlResolver::class => static fn (): AssetPublicUrlResolver =>
+                new AssetPublicUrlResolver('https://assets.example.test/creative-assets'),
             AssetUploadService::class => static fn (
                 AssetRepositoryInterface $repository,
                 ObjectStorageUploadSignerInterface $signer,
                 ObjectStorageInspectorInterface $objectInspector,
-            ): AssetUploadService => new AssetUploadService($repository, $signer, $objectInspector, tokenGenerator: static fn (): string => 'route-token'),
+            ): AssetUploadService => new AssetUploadService(
+                $repository,
+                $signer,
+                $objectInspector,
+                tokenGenerator: static fn (): string => 'route-token',
+                finalTokenGenerator: static fn (): string => 'route-final-token',
+                finalizer: $objectInspector,
+            ),
         ])->build();
 
         SlimAppFactory::setContainer($container);
@@ -272,24 +296,26 @@ final class AssetRouteIntegrationTest extends TestCase
     {
         return new InMemoryObjectStorageInspector([
             new StoredObjectInspection(
-                objectKey: 'organizations/99/assets/route-token.png',
+                objectKey: 'organizations/99/assets/staging/route-token.png',
                 contentType: 'image/png',
                 byteSize: 1024,
                 width: 800,
                 height: 600,
                 durationSeconds: null,
-                checksum: 'sha256:abc',
+                checksum: 'sha256:' . hash('sha256', str_pad("\x89PNG\r\n\x1A\npayload", 1024, "\0")),
                 leadingBytes: "\x89PNG\r\n\x1A\npayload",
+                body: str_pad("\x89PNG\r\n\x1A\npayload", 1024, "\0"),
             ),
             new StoredObjectInspection(
-                objectKey: 'organizations/99/assets/route-token.mp4',
+                objectKey: 'organizations/99/assets/staging/route-token.mp4',
                 contentType: 'video/mp4',
                 byteSize: 1024,
                 width: 640,
                 height: 360,
                 durationSeconds: 30.0,
-                checksum: 'sha256:' . hash('sha256', "\x00\x00\x00\x18ftypmp42"),
+                checksum: 'sha256:' . hash('sha256', str_pad("\x00\x00\x00\x18ftypmp42", 1024, "\0")),
                 leadingBytes: "\x00\x00\x00\x18ftypmp42",
+                body: str_pad("\x00\x00\x00\x18ftypmp42", 1024, "\0"),
             ),
         ]);
     }

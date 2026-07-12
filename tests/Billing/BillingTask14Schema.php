@@ -194,6 +194,132 @@ SQL
         );
         $connection->executeStatement(
             <<<'SQL'
+CREATE TABLE cpm_billing_accumulators (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    stream_key CHAR(64) NOT NULL UNIQUE,
+    advertiser_organization_id INTEGER NOT NULL,
+    campaign_id INTEGER NOT NULL,
+    publisher_organization_id INTEGER NOT NULL,
+    site_id INTEGER NOT NULL,
+    ad_slot_id INTEGER NOT NULL,
+    gross_remainder_milli_points INTEGER NOT NULL DEFAULT 0,
+    publisher_share_remainder_numerator INTEGER NOT NULL DEFAULT 0,
+    impression_count INTEGER NOT NULL DEFAULT 0,
+    billed_points INTEGER NOT NULL DEFAULT 0,
+    publisher_points INTEGER NOT NULL DEFAULT 0,
+    version INTEGER NOT NULL DEFAULT 0,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (gross_remainder_milli_points BETWEEN 0 AND 999),
+    CHECK (publisher_share_remainder_numerator BETWEEN 0 AND 9999999),
+    CHECK (publisher_points <= billed_points)
+)
+SQL
+        );
+        $connection->executeStatement(
+            <<<'SQL'
+CREATE TABLE cpm_billing_event_allocations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_key CHAR(64) NOT NULL UNIQUE,
+    event_type VARCHAR(32) NOT NULL,
+    event_id VARCHAR(160) NOT NULL,
+    decision_id VARCHAR(160) NOT NULL,
+    stream_key CHAR(64) NOT NULL,
+    accumulator_id INTEGER NULL,
+    advertiser_organization_id INTEGER NOT NULL,
+    campaign_id INTEGER NOT NULL,
+    publisher_organization_id INTEGER NOT NULL,
+    site_id INTEGER NOT NULL,
+    ad_slot_id INTEGER NOT NULL,
+    revenue_share_rule_id INTEGER NULL,
+    revenue_share_rule_key VARCHAR(64) NOT NULL,
+    share_ratio_bps INTEGER NOT NULL,
+    bid_points_per_thousand INTEGER NOT NULL,
+    assessed_gross_points INTEGER NOT NULL DEFAULT 0,
+    status VARCHAR(32) NOT NULL,
+    reason VARCHAR(120) NULL,
+    gross_remainder_before INTEGER NOT NULL DEFAULT 0,
+    gross_points INTEGER NOT NULL DEFAULT 0,
+    gross_remainder_after INTEGER NOT NULL DEFAULT 0,
+    publisher_share_remainder_before INTEGER NOT NULL DEFAULT 0,
+    publisher_points INTEGER NOT NULL DEFAULT 0,
+    publisher_share_remainder_after INTEGER NOT NULL DEFAULT 0,
+    platform_points INTEGER NOT NULL DEFAULT 0,
+    advertiser_ledger_entry_id INTEGER NULL,
+    publisher_ledger_entry_id INTEGER NULL,
+    reservation_id VARCHAR(160) NULL,
+    occurred_at DATETIME NOT NULL,
+    processed_at DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (event_type = 'impression'),
+    CHECK (share_ratio_bps BETWEEN 0 AND 10000),
+    CHECK (bid_points_per_thousand > 0),
+    CHECK (status IN ('processing', 'accrued', 'billed', 'skipped')),
+    CHECK (gross_remainder_before BETWEEN 0 AND 999),
+    CHECK (gross_remainder_after BETWEEN 0 AND 999),
+    CHECK (publisher_share_remainder_before BETWEEN 0 AND 9999999),
+    CHECK (publisher_share_remainder_after BETWEEN 0 AND 9999999),
+    CHECK (gross_points = publisher_points + platform_points),
+    CHECK (assessed_gross_points >= gross_points),
+    CHECK ((status = 'processing' AND processed_at IS NULL) OR (status <> 'processing' AND processed_at IS NOT NULL)),
+    CHECK (
+        status <> 'processing'
+        OR (
+            assessed_gross_points = 0
+            AND gross_points = 0
+            AND publisher_points = 0
+            AND platform_points = 0
+            AND advertiser_ledger_entry_id IS NULL
+            AND publisher_ledger_entry_id IS NULL
+            AND reservation_id IS NULL
+        )
+    ),
+    CHECK (
+        status <> 'accrued'
+        OR (
+            assessed_gross_points = 0
+            AND gross_points = 0
+            AND publisher_points = 0
+            AND platform_points = 0
+            AND advertiser_ledger_entry_id IS NULL
+            AND publisher_ledger_entry_id IS NULL
+            AND reservation_id IS NULL
+        )
+    ),
+    CHECK (
+        status <> 'billed'
+        OR (
+            (gross_points > 0 OR publisher_points > 0)
+            AND assessed_gross_points = gross_points
+            AND reason IS NULL
+            AND (
+                (gross_points = 0 AND advertiser_ledger_entry_id IS NULL AND reservation_id IS NULL)
+                OR (gross_points > 0 AND advertiser_ledger_entry_id IS NOT NULL AND reservation_id IS NOT NULL)
+            )
+            AND (
+                (publisher_points = 0 AND publisher_ledger_entry_id IS NULL)
+                OR (publisher_points > 0 AND publisher_ledger_entry_id IS NOT NULL)
+            )
+        )
+    ),
+    CHECK (
+        status <> 'skipped'
+        OR (
+            reason IS NOT NULL
+            AND gross_points = 0
+            AND publisher_points = 0
+            AND platform_points = 0
+            AND gross_remainder_before = gross_remainder_after
+            AND publisher_share_remainder_before = publisher_share_remainder_after
+            AND advertiser_ledger_entry_id IS NULL
+            AND publisher_ledger_entry_id IS NULL
+            AND reservation_id IS NULL
+        )
+    )
+)
+SQL
+        );
+        $connection->executeStatement(
+            <<<'SQL'
 CREATE TABLE withdrawal_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     organization_id INTEGER NOT NULL,

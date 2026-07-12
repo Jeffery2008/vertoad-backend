@@ -108,15 +108,14 @@ HTML);
                 'admin_user_id' => $result['admin_user_id'],
                 'organization_id' => $result['organization_id'],
                 'oauth_client_id' => $result['oauth_client_id'],
-                'oauth_client_secret' => $result['oauth_client_secret'],
-                'credentials_shown_once' => true,
+                'oauth_client_type' => 'public',
+                'oauth_pkce_required' => true,
             ], JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT));
             $response = $response->withHeader('Content-Type', 'application/json');
         } else {
             $response->getBody()->write($this->page('VertoAD installed', sprintf(
-                '<main><header><span>VertoAD</span><h1>Installation complete</h1><p>The installer is now permanently disabled.</p></header><section class="result"><p>OAuth client ID</p><code>%s</code><p>OAuth client secret</p><code>%s</code><strong>This secret is shown once.</strong></section></main>',
+                '<main><header><span>VertoAD</span><h1>Installation complete</h1><p>The installer is now permanently disabled.</p></header><section class="result"><p>First-party SPA OAuth client ID</p><code>%s</code><strong>Public client: configure this ID in the SPA and use Authorization Code + S256 PKCE. No client secret is issued.</strong></section></main>',
                 $this->escape($result['oauth_client_id']),
-                $this->escape($result['oauth_client_secret']),
             )));
             $response = $response->withHeader('Content-Type', 'text/html; charset=utf-8');
         }

@@ -32,6 +32,7 @@ final readonly class WebhookDeliveryJob implements CronJobInterface
         private int $batchSize = 50,
         private int $maxRetryCount = self::DEFAULT_MAX_RETRY_COUNT,
         private int $baseBackoffSeconds = self::DEFAULT_BACKOFF_SECONDS,
+        private ?WebhookOutboxDispatchService $outboxDispatcher = null,
     ) {
         if ($batchSize <= 0) {
             throw new \InvalidArgumentException('Webhook retry batch size must be positive.');
@@ -93,6 +94,13 @@ final readonly class WebhookDeliveryJob implements CronJobInterface
 
     public function run(): CronJobResult
     {
+        $outbox = $this->outboxDispatcher?->dispatchPending($this->batchSize) ?? [
+            'claimed' => 0,
+            'dispatched' => 0,
+            'failed' => 0,
+            'queued_deliveries' => 0,
+            'lease_lost' => 0,
+        ];
         $processed = 0;
         $delivered = 0;
         $failed = 0;
@@ -114,11 +122,18 @@ final readonly class WebhookDeliveryJob implements CronJobInterface
         }
 
         return CronJobResult::completed($this->name(), [
+            'outbox_claimed' => $outbox['claimed'],
+            'outbox_dispatched' => $outbox['dispatched'],
+            'outbox_failed' => $outbox['failed'],
+            'outbox_lease_lost' => $outbox['lease_lost'],
+            'queued_deliveries' => $outbox['queued_deliveries'],
             'processed' => $processed,
             'delivered' => $delivered,
             'failed' => $failed,
             'exhausted' => $exhausted,
-        ], $processed === 0 && $exhausted === 0 ? 'No pending webhook deliveries.' : 'Webhook retry batch completed.');
+        ], $processed === 0 && $exhausted === 0 && $outbox['claimed'] === 0
+            ? 'No pending webhook deliveries.'
+            : 'Webhook retry batch completed.');
     }
 
     /**

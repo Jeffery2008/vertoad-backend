@@ -55,6 +55,19 @@ final class InMemoryWebhookEndpointRepository implements WebhookEndpointReposito
         ));
     }
 
+    public function listActiveForEvent(int $organizationId, string $eventType): array
+    {
+        $eventType = trim($eventType);
+
+        return array_values(array_filter(
+            $this->byId,
+            static fn (WebhookEndpoint $endpoint): bool =>
+                $endpoint->organizationId === $organizationId
+                && $endpoint->enabled()
+                && in_array($eventType, $endpoint->events, true),
+        ));
+    }
+
     public function rotateSecret(
         string $endpointId,
         int $organizationId,

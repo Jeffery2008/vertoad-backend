@@ -40,6 +40,11 @@ final class AssetSchema
                 duration_seconds REAL NULL,
                 checksum TEXT NULL,
                 status TEXT NOT NULL,
+                snapshot_status TEXT NOT NULL DEFAULT "pending",
+                snapshot_png_object_key TEXT NULL UNIQUE,
+                snapshot_webp_object_key TEXT NULL UNIQUE,
+                thumbnail_webp_object_key TEXT NULL UNIQUE,
+                snapshot_completed_at TEXT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )',
         );
@@ -50,7 +55,15 @@ final class AssetSchema
                 organization_id INTEGER NOT NULL,
                 status TEXT NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                available_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                lease_token TEXT NULL,
+                lease_expires_at TEXT NULL,
+                last_error_code TEXT NULL,
+                last_error_message TEXT NULL,
+                completed_at TEXT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (asset_id)
             )',
         );
     }

@@ -29,6 +29,7 @@ final readonly class MeAction
         $membership = $organizationId === null
             ? null
             : $this->memberships->findActiveMembership($context->user->id, $organizationId);
+        $organizations = $this->memberships->listActiveOrganizationsForUser($context->user->id);
 
         return $this->json($response, [
             'user' => [
@@ -41,6 +42,7 @@ final readonly class MeAction
                 'roles' => $membership->roleSlugs,
                 'permissions' => $membership->permissions,
             ],
+            'organizations' => $organizations,
         ], 200);
     }
 

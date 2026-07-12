@@ -27,7 +27,9 @@ use VertoAD\Http\Middleware\RequestIdMiddleware;
 use VertoAD\Infrastructure\Storage\DeterministicPresignedUploadSigner;
 use VertoAD\Infrastructure\Storage\StoredObjectInspection;
 use VertoAD\Repository\Assets\AssetRepository;
+use VertoAD\Repository\Assets\AssetSnapshotJobRepository;
 use VertoAD\Repository\Attribution\DatabaseAttributionEventRepository;
+use VertoAD\Repository\Billing\DatabaseCpmBillingRepository;
 use VertoAD\Repository\Billing\RevenueShareRepository;
 use VertoAD\Repository\Billing\WithdrawalRepository;
 use VertoAD\Repository\Campaign\CampaignRepository;
@@ -39,6 +41,11 @@ use VertoAD\Repository\Reporting\DatabaseConversionPathRepository;
 use VertoAD\Repository\Reporting\DatabaseReportAggregateRepository;
 use VertoAD\Repository\Review\ReviewRepository;
 use VertoAD\Repository\Serving\DatabaseAdCandidateRepository;
+use VertoAD\Service\Assets\AssetPublicUrlResolver;
+use VertoAD\Service\Assets\AssetObjectStorageInterface;
+use VertoAD\Service\Assets\AssetSnapshotGenerator;
+use VertoAD\Service\Assets\FabricCreativePayloadValidator;
+use VertoAD\Service\Assets\FfmpegAssetFrameExtractor;
 use VertoAD\Repository\Serving\DatabaseAdDecisionRepository;
 use VertoAD\Repository\Serving\DatabaseAdEventRepository;
 use VertoAD\Repository\Serving\DatabaseServingInventoryRepository;
@@ -46,12 +53,14 @@ use VertoAD\Repository\Serving\InMemoryAdEventRepository;
 use VertoAD\Service\Assets\AssetUploadService;
 use VertoAD\Service\Attribution\AttributionService;
 use VertoAD\Service\Billing\AdEventBillingService;
+use VertoAD\Service\Billing\CpmBillingService;
 use VertoAD\Service\Billing\RevenueShareService;
 use VertoAD\Service\Billing\WithdrawalProofService;
 use VertoAD\Service\Billing\WithdrawalService;
 use VertoAD\Service\Campaign\CampaignService;
 use VertoAD\Service\CampaignBudgetService;
 use VertoAD\Service\Cron\AggregateStatisticsJob;
+use VertoAD\Service\Cron\AssetSnapshotGenerationJob;
 use VertoAD\Service\Cron\EventConsumptionJob;
 use VertoAD\Service\DefuseRechargeKeyPlaintextCipher;
 use VertoAD\Service\PointsLedgerService;
@@ -123,6 +132,8 @@ final class CommercialLifecycleAcceptanceTest extends TestCase
 
         $signer = $this->signer('commercial-assets');
         $inspector = new InMemoryObjectStorageInspector();
+        $sourceBytes = $this->pngBytes(300, 250);
+        $sourceChecksum = hash('sha256', $sourceBytes);
         $assetUploads = new AssetUploadService(
             new AssetRepository($connection),
             $signer,
@@ -135,17 +146,18 @@ final class CommercialLifecycleAcceptanceTest extends TestCase
             type: 'image',
             filename: 'commercial.png',
             contentType: 'image/png',
-            byteSize: 1_024,
+            byteSize: strlen($sourceBytes),
         );
         $inspector->put(new StoredObjectInspection(
             objectKey: $uploadIntent->objectKey,
             contentType: 'image/png',
-            byteSize: 1_024,
+            byteSize: strlen($sourceBytes),
             width: 300,
             height: 250,
             durationSeconds: null,
-            checksum: 'sha256:commercial-image',
-            leadingBytes: "\x89PNG\r\n\x1a\n",
+            checksum: $sourceChecksum,
+            leadingBytes: substr($sourceBytes, 0, 16),
+            body: $sourceBytes,
         ));
         $asset = $assetUploads->confirmUploadedAsset(
             organizationId: self::ADVERTISER_ORGANIZATION_ID,
@@ -153,12 +165,48 @@ final class CommercialLifecycleAcceptanceTest extends TestCase
             uploadIntentId: (int) $uploadIntent->id,
             objectKey: $uploadIntent->objectKey,
             contentType: 'image/png',
-            byteSize: 1_024,
-            checksum: 'sha256:commercial-image',
+            byteSize: strlen($sourceBytes),
+            checksum: $sourceChecksum,
         );
 
         self::assertSame('pending_review', $asset->status->value);
         self::assertSame(1, (int) $connection->fetchOne('SELECT COUNT(*) FROM asset_snapshot_jobs WHERE asset_id = ?', [$asset->id]));
+
+        $snapshotStorage = new AcceptanceAssetObjectStorage([
+            $asset->objectKey => $sourceBytes,
+        ]);
+        $snapshotAvailableAt = new DateTimeImmutable((string) $connection->fetchOne(
+            'SELECT available_at FROM asset_snapshot_jobs WHERE asset_id = ?',
+            [$asset->id],
+        ));
+        $snapshotJob = new AssetSnapshotGenerationJob(
+            new AssetSnapshotJobRepository($connection, static fn (): string => 'commercial-snapshot-lease'),
+            $snapshotStorage,
+            new AssetSnapshotGenerator(
+                new FabricCreativePayloadValidator(new AssetPublicUrlResolver('https://assets.example.test')),
+                new FfmpegAssetFrameExtractor(),
+            ),
+            batchSize: 10,
+            leaseSeconds: 60,
+            maxAttempts: 3,
+            retryBackoffSeconds: 30,
+            clock: static fn (): DateTimeImmutable => $snapshotAvailableAt->modify('+1 second'),
+        );
+        $snapshotResult = $snapshotJob->run();
+        $snapshotRow = $connection->fetchAssociative(
+            'SELECT snapshot_status, snapshot_png_object_key, snapshot_webp_object_key, thumbnail_webp_object_key FROM creative_assets WHERE id = ?',
+            [$asset->id],
+        );
+
+        self::assertSame(
+            ['leased' => 1, 'completed' => 1, 'retried' => 0, 'dead' => 0, 'stale' => 0],
+            $snapshotResult->metrics,
+        );
+        self::assertSame('ready', $snapshotRow['snapshot_status'] ?? null);
+        foreach (['snapshot_png_object_key', 'snapshot_webp_object_key', 'thumbnail_webp_object_key'] as $column) {
+            self::assertIsString($snapshotRow[$column] ?? null);
+            self::assertTrue($snapshotStorage->has((string) $snapshotRow[$column]));
+        }
 
         $reviewRepository = new ReviewRepository($connection);
         $budgetService = new CampaignBudgetService(
@@ -174,7 +222,7 @@ final class CommercialLifecycleAcceptanceTest extends TestCase
         $campaign = $campaigns->create(self::ADVERTISER_ORGANIZATION_ID, [
             'name' => 'Commercial acceptance campaign',
             'pricing_model' => 'cpm',
-            'bid_points' => 40,
+            'bid_points' => 40_000,
             'landing_url' => 'https://advertiser.example/offer',
             'creative_asset_id' => (int) $asset->id,
             'targeting' => [
@@ -235,6 +283,12 @@ final class CommercialLifecycleAcceptanceTest extends TestCase
             self::ADMIN_USER_ID,
             new DateTimeImmutable('2026-07-10T08:02:00+00:00'),
         );
+        $revenueShareService = new RevenueShareService($revenueShares, $ledger);
+        $cpmBilling = new CpmBillingService(
+            new DatabaseCpmBillingRepository($connection),
+            $budgetService,
+            $revenueShareService,
+        );
 
         $riskAssessor = new DatabaseServingRiskAssessor(new DatabaseFraudRiskFeatureRepository($connection));
         self::assertTrue($riskAssessor->assess(self::SITE_ID, self::SLOT_ID, self::VIEWER_ID)->allowed);
@@ -243,11 +297,15 @@ final class CommercialLifecycleAcceptanceTest extends TestCase
         $decisionRepository = new DatabaseAdDecisionRepository($connection);
         $serving = new AdServingService(
             new DatabaseServingInventoryRepository($connection),
-            new DatabaseAdCandidateRepository($connection),
+            new DatabaseAdCandidateRepository(
+                $connection,
+                new AssetPublicUrlResolver('https://assets.example.test'),
+            ),
             $decisionRepository,
             $eventBuffer,
             $budgetService,
             new DefaultAdSelectionPolicy(new InMemoryServingFrequencyCapStore(), $riskAssessor),
+            cpmChargeEstimator: $cpmBilling,
         );
 
         $cpmServeAt = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->modify('-10 minutes');
@@ -261,7 +319,7 @@ final class CommercialLifecycleAcceptanceTest extends TestCase
             new ServingRequestContext(requestId: 'commercial-cpm-serve'),
         );
         self::assertTrue($cpmDecision->filled);
-        self::assertSame(40, $cpmDecision->impressionCostPoints);
+        self::assertSame(40_000, $cpmDecision->impressionCostPoints);
         self::assertSame(0, $cpmDecision->clickCostPoints);
 
         $cpmImpression = $serving->trackImpression(
@@ -335,8 +393,9 @@ final class CommercialLifecycleAcceptanceTest extends TestCase
         $persistence = new DatabaseAdEventRepository($connection);
         $billing = new AdEventBillingService(
             $budgetService,
-            new RevenueShareService($revenueShares, $ledger),
+            $revenueShareService,
             $connection,
+            $cpmBilling,
         );
         $eventConsumption = new EventConsumptionJob($eventBuffer, $persistence, $billing, 100);
         $consumed = $eventConsumption->run();
@@ -351,7 +410,7 @@ final class CommercialLifecycleAcceptanceTest extends TestCase
 
         self::assertSame(840, $ledgerRepository->balanceForOrganization(self::ADVERTISER_ORGANIZATION_ID));
         self::assertSame(96, $ledgerRepository->balanceForOrganization(self::PUBLISHER_ORGANIZATION_ID, 'publisher_earnings'));
-        self::assertSame(2, (int) $connection->fetchOne('SELECT COUNT(*) FROM publisher_earning_events'));
+        self::assertSame(1, (int) $connection->fetchOne('SELECT COUNT(*) FROM publisher_earning_events'));
         self::assertSame(2, (int) $connection->fetchOne('SELECT COUNT(*) FROM spend_reservations'));
         self::assertSame(4, (int) $connection->fetchOne('SELECT COUNT(*) FROM ad_serving_events'));
         self::assertSame(40, (int) $connection->fetchOne("SELECT billed_points FROM ad_serving_events WHERE event_id = 'commercial-cpm-impression'"));
@@ -740,5 +799,48 @@ final class CommercialLifecycleAcceptanceTest extends TestCase
             'secret_access_key' => 'commercial-secret-key',
             'path_style_endpoint' => true,
         ]);
+    }
+
+    private function pngBytes(int $width, int $height): string
+    {
+        $image = imagecreatetruecolor($width, $height);
+        self::assertInstanceOf(\GdImage::class, $image);
+        $background = imagecolorallocate($image, 14, 116, 144);
+        imagefilledrectangle($image, 0, 0, $width - 1, $height - 1, $background);
+        ob_start();
+        self::assertTrue(imagepng($image));
+        $bytes = ob_get_clean();
+        imagedestroy($image);
+        self::assertIsString($bytes);
+        self::assertNotSame('', $bytes);
+
+        return $bytes;
+    }
+}
+
+final class AcceptanceAssetObjectStorage implements AssetObjectStorageInterface
+{
+    /** @param array<string, string> $objects */
+    public function __construct(private array $objects)
+    {
+    }
+
+    public function read(string $objectKey): string
+    {
+        return $this->objects[$objectKey] ?? throw new \RuntimeException('Acceptance source object not found.');
+    }
+
+    public function putSnapshot(string $objectKey, string $body, string $contentType): void
+    {
+        if (!in_array($contentType, ['image/png', 'image/webp'], true) || $body === '') {
+            throw new \RuntimeException('Acceptance snapshot payload is invalid.');
+        }
+
+        $this->objects[$objectKey] = $body;
+    }
+
+    public function has(string $objectKey): bool
+    {
+        return isset($this->objects[$objectKey]);
     }
 }

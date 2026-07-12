@@ -2276,6 +2276,11 @@ final class BillingPermissionMembershipRepository implements OrganizationMembers
         );
     }
 
+    public function listActiveOrganizationsForUser(int $userId): array
+    {
+        return [];
+    }
+
     public function listForOrganization(int $organizationId): array
     {
         return [];

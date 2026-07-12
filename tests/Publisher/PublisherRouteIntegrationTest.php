@@ -703,6 +703,11 @@ final readonly class PublisherPermissionMembershipRepository implements Organiza
         return new OrganizationMembership($organizationId, $userId, 'active', ['publisher'], $this->permissions);
     }
 
+    public function listActiveOrganizationsForUser(int $userId): array
+    {
+        return [];
+    }
+
     public function listForOrganization(int $organizationId): array
     {
         return [];

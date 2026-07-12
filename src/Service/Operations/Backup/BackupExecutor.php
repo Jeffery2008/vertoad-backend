@@ -40,7 +40,7 @@ final readonly class BackupExecutor
         }
         $directory = '';
         try {
-            $directory = $this->jobDirectory($job->jobId);
+            $directory = $this->jobDirectory($job);
             $dumpPath = $directory . DIRECTORY_SEPARATOR . 'mysql.sql';
             $this->mysql->dump($dumpPath);
             $dumpSize = filesize($dumpPath);
@@ -48,6 +48,7 @@ final readonly class BackupExecutor
             if (!is_int($dumpSize) || $dumpSize <= 0 || !is_string($dumpHash)) {
                 throw new RuntimeException('Unable to measure completed MySQL backup.');
             }
+            $job = $this->heartbeat($job);
 
             $base = $this->jobBase($job->jobId);
             $mysqlObjectKey = $base . '/mysql.sql';
@@ -60,6 +61,7 @@ final readonly class BackupExecutor
             if (!hash_equals($dumpHash, $this->storage->sha256($mysqlObjectKey))) {
                 throw new RuntimeException('MySQL backup upload checksum verification failed.');
             }
+            $job = $this->heartbeat($job);
 
             $configJson = $this->json($this->inventory->configurationSnapshot($this->now()));
             $this->storage->putString($configObjectKey, $configJson, 'application/json');
@@ -71,6 +73,7 @@ final readonly class BackupExecutor
             if (!hash_equals($configHash, $this->storage->sha256($configObjectKey))) {
                 throw new RuntimeException('Configuration backup upload checksum verification failed.');
             }
+            $job = $this->heartbeat($job);
             $objects = [];
             foreach ($this->inventory->criticalObjects() as $index => $source) {
                 $sourceStorage = $this->sourceStorage($source->sourceStorage);
@@ -95,6 +98,7 @@ final readonly class BackupExecutor
                     $sourceHash,
                     'Critical source object download',
                 );
+                $job = $this->heartbeat($job);
 
                 $targetKey = $this->backupObjectKey($base, $source);
                 $this->storage->putFile($targetKey, $localPath, $source->contentType);
@@ -105,6 +109,7 @@ final readonly class BackupExecutor
                     $sourceHash,
                     'Critical object backup',
                 );
+                $job = $this->heartbeat($job);
                 $objects[] = [
                     'source_storage' => $source->sourceStorage,
                     'source_key' => $source->sourceKey,
@@ -142,6 +147,7 @@ final readonly class BackupExecutor
             if (!hash_equals($manifestHash, $this->storage->sha256($manifestObjectKey))) {
                 throw new RuntimeException('Backup manifest upload checksum verification failed.');
             }
+            $job = $this->heartbeat($job);
 
             $completed = $this->completedBackup(
                 $job,
@@ -164,19 +170,26 @@ final readonly class BackupExecutor
                     'byte_count' => $payloadBytes,
                     'manifest_object_key' => $manifestObjectKey,
                     'object_count' => count($objects),
+                    'attempt_count' => $job->attemptCount,
                 ],
             );
 
             return new BackupExecutionResult('backup', $job->jobId, 'completed', count($objects), $payloadBytes);
         } catch (Throwable $exception) {
-            $message = $this->errorMessage($exception);
-            $this->jobs->save($this->failed($job, $message));
+            $message = $this->persistFailure($job, $exception);
+            if ($message === null) {
+                return $this->leaseLostResult($job);
+            }
             $this->audit->record(
                 action: 'operations.backup.failed',
                 subjectType: 'operation_backup',
                 actorUserId: $job->requestedByUserId,
                 requestId: $job->requestId,
-                metadata: ['backup_id' => $job->jobId, 'error' => $message],
+                metadata: [
+                    'backup_id' => $job->jobId,
+                    'error' => $message,
+                    'attempt_count' => $job->attemptCount,
+                ],
             );
 
             return new BackupExecutionResult('backup', $job->jobId, 'failed', errorMessage: $message);
@@ -195,7 +208,7 @@ final readonly class BackupExecutor
         }
         $directory = '';
         try {
-            $directory = $this->jobDirectory($job->jobId);
+            $directory = $this->jobDirectory($job);
             $allowed = array_map(static fn (string $value): string => strtolower(trim($value)), $this->restoreAllowedEnvironments);
             if (!in_array(strtolower($job->environment), $allowed, true)) {
                 throw new RuntimeException('Restore executor rejected the target environment.');
@@ -235,6 +248,7 @@ final readonly class BackupExecutor
                     'Restore preflight backed-up object',
                 );
             }
+            $job = $this->heartbeat($job);
 
             $configJson = $this->storage->readString($configuration['object_key']);
             if (!hash_equals($configuration['sha256'], hash('sha256', $configJson))) {
@@ -253,10 +267,9 @@ final readonly class BackupExecutor
                 $mysql['sha256'],
                 'MySQL backup download',
             );
+            $job = $this->heartbeat($job);
             $this->mysql->restore($dumpPath);
-            // The dump captured the source job while it was running and predates this restore job.
-            $this->jobs->save($source);
-            $this->jobs->save($job);
+            $job = $this->heartbeat($job);
             foreach ($objects as $index => $object) {
                 $localPath = $this->objectTemporaryPath($directory, 'restore', $index);
                 $this->storage->getFile($object['target_key'], $localPath);
@@ -266,6 +279,7 @@ final readonly class BackupExecutor
                     $object['sha256'],
                     'Backed-up object download',
                 );
+                $job = $this->heartbeat($job);
                 $sourceStorage = $this->sourceStorage($object['source_storage']);
                 $sourceStorage->putFile($object['source_key'], $localPath, $object['content_type']);
                 $this->verifyStorageObject(
@@ -275,6 +289,7 @@ final readonly class BackupExecutor
                     $object['sha256'],
                     'Restored object',
                 );
+                $job = $this->heartbeat($job);
             }
 
             $evidenceObjectKey = rtrim($this->baseObjectKey, '/') . '/restore-evidence/' . $job->jobId . '.json';
@@ -291,6 +306,7 @@ final readonly class BackupExecutor
                 'reason' => $job->reason,
             ];
             $this->storage->putString($evidenceObjectKey, $this->json($evidence), 'application/json');
+            $job = $this->heartbeat($job);
             $completed = $this->completedRestore($job, $evidenceObjectKey, count($objects));
             $this->jobs->save($completed);
             $this->audit->record(
@@ -303,13 +319,16 @@ final readonly class BackupExecutor
                     'evidence_object_key' => $evidenceObjectKey,
                     'objects_restored' => count($objects),
                     'restore_id' => $job->jobId,
+                    'attempt_count' => $job->attemptCount,
                 ],
             );
 
             return new BackupExecutionResult('restore', $job->jobId, 'completed', count($objects));
         } catch (Throwable $exception) {
-            $message = $this->errorMessage($exception);
-            $this->jobs->save($this->failed($job, $message));
+            $message = $this->persistFailure($job, $exception);
+            if ($message === null) {
+                return $this->leaseLostResult($job);
+            }
             $this->audit->record(
                 action: 'operations.backup.restore_failed',
                 subjectType: 'operation_restore',
@@ -319,6 +338,7 @@ final readonly class BackupExecutor
                     'backup_id' => $job->sourceBackupId,
                     'error' => $message,
                     'restore_id' => $job->jobId,
+                    'attempt_count' => $job->attemptCount,
                 ],
             );
 
@@ -482,6 +502,10 @@ final readonly class BackupExecutor
             createdAt: $job->createdAt,
             startedAt: $job->startedAt,
             completedAt: $this->now(),
+            leaseOwner: $job->leaseOwner,
+            leaseExpiresAt: $job->leaseExpiresAt,
+            attemptCount: $job->attemptCount,
+            heartbeatAt: $job->heartbeatAt,
         );
     }
 
@@ -508,6 +532,10 @@ final readonly class BackupExecutor
             createdAt: $job->createdAt,
             startedAt: $job->startedAt,
             completedAt: $this->now(),
+            leaseOwner: $job->leaseOwner,
+            leaseExpiresAt: $job->leaseExpiresAt,
+            attemptCount: $job->attemptCount,
+            heartbeatAt: $job->heartbeatAt,
         );
     }
 
@@ -534,7 +562,58 @@ final readonly class BackupExecutor
             createdAt: $job->createdAt,
             startedAt: $job->startedAt,
             completedAt: $this->now(),
+            leaseOwner: $job->leaseOwner,
+            leaseExpiresAt: $job->leaseExpiresAt,
+            attemptCount: $job->attemptCount,
+            heartbeatAt: $job->heartbeatAt,
         );
+    }
+
+    private function heartbeat(BackupJob $job): BackupJob
+    {
+        if ($job->leaseOwner === null) {
+            return $job;
+        }
+        if (
+            $job->status !== 'running'
+            || $job->leaseExpiresAt === null
+            || $job->heartbeatAt === null
+            || $job->attemptCount <= 0
+        ) {
+            throw new RuntimeException('backup_job_lease_lost');
+        }
+        $leaseDurationSeconds = $job->leaseExpiresAt->getTimestamp() - $job->heartbeatAt->getTimestamp();
+        if ($leaseDurationSeconds <= 0) {
+            throw new RuntimeException('backup_job_lease_lost');
+        }
+        $heartbeatAt = $this->now();
+
+        return $this->jobs->save(new BackupJob(
+            jobId: $job->jobId,
+            jobType: $job->jobType,
+            sourceBackupId: $job->sourceBackupId,
+            status: 'running',
+            requestedByUserId: $job->requestedByUserId,
+            requestId: $job->requestId,
+            environment: $job->environment,
+            reason: $job->reason,
+            manifestObjectKey: $job->manifestObjectKey,
+            manifestSha256: $job->manifestSha256,
+            mysqlObjectKey: $job->mysqlObjectKey,
+            mysqlSha256: $job->mysqlSha256,
+            configObjectKey: $job->configObjectKey,
+            evidenceObjectKey: $job->evidenceObjectKey,
+            objectCount: $job->objectCount,
+            byteCount: $job->byteCount,
+            errorMessage: $job->errorMessage,
+            createdAt: $job->createdAt,
+            startedAt: $job->startedAt,
+            completedAt: null,
+            leaseOwner: $job->leaseOwner,
+            leaseExpiresAt: $heartbeatAt->modify('+' . $leaseDurationSeconds . ' seconds'),
+            attemptCount: $job->attemptCount,
+            heartbeatAt: $heartbeatAt,
+        ));
     }
 
     private function jobBase(string $jobId): string
@@ -623,8 +702,9 @@ final readonly class BackupExecutor
         return $directory . DIRECTORY_SEPARATOR . sprintf('%s-object-%06d.tmp', $operation, $index);
     }
 
-    private function jobDirectory(string $jobId): string
+    private function jobDirectory(BackupJob $job): string
     {
+        $jobId = $job->jobId;
         if (!preg_match('/^[a-z][a-z0-9_]{7,63}$/', $jobId)) {
             throw new RuntimeException('Backup job identifier is invalid.');
         }
@@ -632,7 +712,15 @@ final readonly class BackupExecutor
         if ($root === '') {
             throw new RuntimeException('Backup temporary directory is required.');
         }
-        $directory = $root . DIRECTORY_SEPARATOR . $jobId;
+        $directoryName = $jobId;
+        if ($job->leaseOwner !== null) {
+            $directoryName .= sprintf(
+                '-attempt-%06d-%s',
+                $job->attemptCount,
+                substr(hash('sha256', $job->leaseOwner), 0, 16),
+            );
+        }
+        $directory = $root . DIRECTORY_SEPARATOR . $directoryName;
         if (!is_dir($directory) && !@mkdir($directory, 0700, true) && !is_dir($directory)) {
             throw new RuntimeException('Unable to create backup temporary directory.');
         }
@@ -671,6 +759,40 @@ final readonly class BackupExecutor
         $message = trim($exception->getMessage());
 
         return substr($message === '' ? $exception::class : $message, 0, 2000);
+    }
+
+    private function leaseLost(Throwable $exception): bool
+    {
+        return $exception->getMessage() === 'backup_job_lease_lost';
+    }
+
+    private function persistFailure(BackupJob $job, Throwable $exception): ?string
+    {
+        if ($this->leaseLost($exception)) {
+            return null;
+        }
+        $message = $this->errorMessage($exception);
+        try {
+            $this->jobs->save($this->failed($job, $message));
+        } catch (Throwable $saveException) {
+            if ($this->leaseLost($saveException)) {
+                return null;
+            }
+
+            throw $saveException;
+        }
+
+        return $message;
+    }
+
+    private function leaseLostResult(BackupJob $job): BackupExecutionResult
+    {
+        return new BackupExecutionResult(
+            $job->jobType,
+            $job->jobId,
+            'failed',
+            errorMessage: 'backup_job_lease_lost',
+        );
     }
 
     private function now(): DateTimeImmutable

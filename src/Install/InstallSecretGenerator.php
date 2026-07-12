@@ -6,7 +6,6 @@ namespace VertoAD\Install;
 
 use Defuse\Crypto\Key;
 use OpenSSLAsymmetricKey;
-use VertoAD\Service\OAuthClientSecretHasher;
 
 final readonly class InstallSecretGenerator
 {
@@ -16,7 +15,7 @@ final readonly class InstallSecretGenerator
     ) {
     }
 
-    /** @return array{installation_id: string, app_key: string, oauth_encryption_key: string, oauth_client_id: string, oauth_client_secret: string, cron_api_token: string, webhook_signing_secret: string} */
+    /** @return array{installation_id: string, app_key: string, oauth_encryption_key: string, oauth_client_id: string, cron_api_token: string, webhook_signing_secret: string} */
     public function generate(): array
     {
         return [
@@ -24,7 +23,6 @@ final readonly class InstallSecretGenerator
             'app_key' => Key::createNewRandomKey()->saveToAsciiSafeString(),
             'oauth_encryption_key' => $this->token('', 32),
             'oauth_client_id' => $this->token('voc_', 24),
-            'oauth_client_secret' => (new OAuthClientSecretHasher())->generateSecret(),
             'cron_api_token' => $this->token('vcron_', 48),
             'webhook_signing_secret' => $this->token('vwhsec_', 48),
         ];

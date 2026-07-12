@@ -3,6 +3,8 @@
 declare(strict_types=1);
 
 namespace {
+    require_once dirname(__DIR__) . '/Support/FakeRedisExtension.php';
+
     if (!class_exists('Redis')) {
         final class Redis
         {

@@ -44,13 +44,13 @@ final class RedisReadinessPolicy
 
     public function interpretAclDryRun(string $command, ?string $result, ?string $errorMessage): ?bool
     {
-        if ($errorMessage === null) {
-            return strtoupper(trim((string) $result)) === 'OK' ? true : null;
+        if ($errorMessage === null && strtoupper(trim((string) $result)) === 'OK') {
+            return true;
         }
 
-        $message = strtolower($errorMessage);
+        $message = strtolower(trim($errorMessage ?? (string) $result));
         $target = strtolower(trim($command));
-        if (!str_contains($message, 'no permissions') || str_contains($message, 'acl|dryrun')) {
+        if (!str_contains($message, 'no permissions')) {
             return null;
         }
 

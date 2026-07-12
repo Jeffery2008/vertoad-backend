@@ -9,7 +9,9 @@ use PHPUnit\Framework\TestCase;
 use VertoAD\Domain\Budget\SpendFailureReason;
 use VertoAD\Domain\Campaign\CampaignTimeWindow;
 use VertoAD\Domain\Serving\AdCandidate;
+use VertoAD\Domain\Serving\AdDecision;
 use VertoAD\Domain\Serving\ServingRequestContext;
+use VertoAD\Repository\Cron\ServingRequestEventBufferInterface;
 use VertoAD\Repository\Operations\InMemoryOperationRiskDecisionLogRepository;
 use VertoAD\Repository\Operations\OperationRiskDecisionLogRepositoryInterface;
 use VertoAD\Domain\Serving\ServingEventPolicy;
@@ -17,6 +19,8 @@ use VertoAD\Repository\Serving\InMemoryAdDecisionRepository;
 use VertoAD\Repository\Serving\InMemoryAdEventRepository;
 use VertoAD\Repository\Serving\StaticAdCandidateRepository;
 use VertoAD\Repository\Serving\StaticServingInventoryRepository;
+use VertoAD\Service\Billing\CpmBillingUnavailableException;
+use VertoAD\Service\Billing\CpmChargeEstimatorInterface;
 use VertoAD\Service\Serving\CampaignSpendEligibilityInterface;
 use VertoAD\Service\Serving\AdServingService;
 use VertoAD\Service\Serving\AdTrafficRiskDecision;
@@ -44,7 +48,7 @@ final class AdServingServiceTest extends TestCase
         }
     }
 
-    public function testServeReturnsDeterministicNoFillWhenNoEligibleAdExists(): void
+    public function testServeReturnsNoFillWithRequestScopedDecisionIdWhenNoEligibleAdExists(): void
     {
         $service = new AdServingService(
             new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
@@ -57,8 +61,110 @@ final class AdServingServiceTest extends TestCase
 
         self::assertFalse($decision->filled);
         self::assertSame('no_eligible_ad', $decision->reason);
-        self::assertSame('no-fill:10:20:viewer-1', $decision->decisionId);
+        self::assertMatchesRegularExpression('/^no-fill:[a-f0-9]{32}$/', $decision->decisionId);
         self::assertStringContainsString('data-vertoad-no-fill="1"', $decision->iframeHtml);
+    }
+
+    public function testNoFillDecisionIdsAreUniqueAtTheSameTimeAndRetainBothRequestIds(): void
+    {
+        $decisions = new InMemoryAdDecisionRepository();
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([]),
+            $decisions,
+            new InMemoryAdEventRepository(),
+        );
+        $now = new DateTimeImmutable('2026-06-08T10:00:00Z');
+
+        $first = $service->serve(
+            10,
+            20,
+            'viewer-same-input',
+            null,
+            false,
+            $now,
+            new ServingRequestContext(requestId: 'req-no-fill-a'),
+        );
+        $second = $service->serve(
+            10,
+            20,
+            'viewer-same-input',
+            null,
+            false,
+            $now,
+            new ServingRequestContext(requestId: 'req-no-fill-b'),
+        );
+
+        self::assertFalse($first->filled);
+        self::assertFalse($second->filled);
+        self::assertNotSame($first->decisionId, $second->decisionId);
+        self::assertMatchesRegularExpression('/^no-fill:[a-f0-9]{32}$/', $first->decisionId);
+        self::assertMatchesRegularExpression('/^no-fill:[a-f0-9]{32}$/', $second->decisionId);
+        self::assertSame('req-no-fill-a', $decisions->find($first->decisionId)?->requestId);
+        self::assertSame('req-no-fill-b', $decisions->find($second->decisionId)?->requestId);
+    }
+
+    public function testFilledDecisionIdsAreUniqueAtTheSameTimeAndRetainBothRequestIds(): void
+    {
+        $decisions = new InMemoryAdDecisionRepository();
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([$this->safeCandidate()]),
+            $decisions,
+            new InMemoryAdEventRepository(),
+        );
+        $now = new DateTimeImmutable('2026-06-08T10:00:00Z');
+
+        $first = $service->serve(
+            10,
+            20,
+            'viewer-same-input',
+            null,
+            false,
+            $now,
+            new ServingRequestContext(requestId: 'req-filled-a'),
+        );
+        $second = $service->serve(
+            10,
+            20,
+            'viewer-same-input',
+            null,
+            false,
+            $now,
+            new ServingRequestContext(requestId: 'req-filled-b'),
+        );
+
+        self::assertTrue($first->filled);
+        self::assertTrue($second->filled);
+        self::assertNotSame($first->decisionId, $second->decisionId);
+        self::assertMatchesRegularExpression('/^ad:[a-f0-9]{32}$/', $first->decisionId);
+        self::assertMatchesRegularExpression('/^ad:[a-f0-9]{32}$/', $second->decisionId);
+        self::assertSame('req-filled-a', $decisions->find($first->decisionId)?->requestId);
+        self::assertSame('req-filled-b', $decisions->find($second->decisionId)?->requestId);
+    }
+
+    public function testServeRecordsRequestTelemetryWhenProductionBufferIsConfigured(): void
+    {
+        $serveEvents = new RecordingServingRequestEventBuffer();
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+            serveEvents: $serveEvents,
+        );
+
+        $decision = $service->serve(
+            10,
+            20,
+            'viewer-telemetry',
+            null,
+            false,
+            new DateTimeImmutable('2026-06-08 10:00:00'),
+            new ServingRequestContext(requestId: 'req-serve-telemetry'),
+        );
+
+        self::assertSame([$decision], $serveEvents->decisions());
     }
 
     public function testServeRejectsUnverifiedInventoryAndUnsafeLandingUrlWithoutThrowing(): void
@@ -115,6 +221,7 @@ final class AdServingServiceTest extends TestCase
             ]),
             new InMemoryAdDecisionRepository(),
             new InMemoryAdEventRepository(),
+            cpmChargeEstimator: new FixedCpmChargeEstimator(0),
         );
 
         $matched = $service->serve(10, 20, 'viewer-shanghai', null, false, new DateTimeImmutable('2026-06-08 10:00:00'), 'CN-SH');
@@ -143,6 +250,7 @@ final class AdServingServiceTest extends TestCase
             ]),
             new InMemoryAdDecisionRepository(),
             new InMemoryAdEventRepository(),
+            cpmChargeEstimator: new FixedCpmChargeEstimator(0),
         );
 
         $decision = $service->serve(10, 20, 'viewer-beijing', null, false, new DateTimeImmutable('2026-06-08 10:00:00'), 'CN-BJ');
@@ -210,6 +318,7 @@ final class AdServingServiceTest extends TestCase
             ]),
             new InMemoryAdDecisionRepository(),
             new InMemoryAdEventRepository(),
+            cpmChargeEstimator: new FixedCpmChargeEstimator(0),
         );
         $now = new DateTimeImmutable('2026-06-08T10:00:00Z');
 
@@ -263,6 +372,7 @@ final class AdServingServiceTest extends TestCase
             ]),
             new InMemoryAdDecisionRepository(),
             new InMemoryAdEventRepository(),
+            cpmChargeEstimator: new FixedCpmChargeEstimator(0),
         );
 
         $decision = $service->serve(
@@ -305,6 +415,7 @@ final class AdServingServiceTest extends TestCase
             ]),
             new InMemoryAdDecisionRepository(),
             new InMemoryAdEventRepository(),
+            cpmChargeEstimator: new FixedCpmChargeEstimator(0),
         );
 
         $decision = $service->serve(
@@ -336,6 +447,7 @@ final class AdServingServiceTest extends TestCase
             new StaticAdCandidateRepository([$candidate]),
             new InMemoryAdDecisionRepository(),
             new InMemoryAdEventRepository(),
+            cpmChargeEstimator: new FixedCpmChargeEstimator(0),
         );
 
         $mondayLocal = $service->serve(
@@ -437,6 +549,220 @@ final class AdServingServiceTest extends TestCase
         self::assertSame(1, $events->impressionCount());
     }
 
+    public function testFabricRendererUrlEnforcesPublicUrlSafetyBoundaries(): void
+    {
+        $candidate = $this->assetCandidate(
+            adId: 'ad-fabric-renderer-boundary',
+            assetType: 'fabric_snapshot',
+            assetContentType: 'application/json',
+            assetUrl: 'https://assets.example.test/fabric/creative.json',
+            snapshotWebpUrl: 'https://assets.example.test/fabric/creative.webp',
+        );
+
+        foreach (
+            [
+                [' https://sdk.example.test/fabric-renderer.js ', 'https://sdk.example.test/fabric-renderer.js'],
+                ['http://localhost:5173/fabric-renderer.js', 'http://localhost:5173/fabric-renderer.js'],
+                ['http://127.0.0.1:5173/fabric-renderer.js', 'http://127.0.0.1:5173/fabric-renderer.js'],
+            ] as [$configuredUrl, $renderedUrl]
+        ) {
+            $service = new AdServingService(
+                new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+                new StaticAdCandidateRepository([$candidate]),
+                new InMemoryAdDecisionRepository(),
+                new InMemoryAdEventRepository(),
+                fabricRendererUrl: $configuredUrl,
+            );
+
+            $decision = $service->serve(10, 20, 'viewer-renderer-boundary', null, false, new DateTimeImmutable('2026-06-08 10:00:00'));
+            $srcdoc = html_entity_decode($decision->iframeHtml, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+            self::assertTrue($decision->filled);
+            self::assertStringContainsString('data-vertoad-fabric-renderer src="' . $renderedUrl . '"', $srcdoc);
+        }
+
+        foreach (
+            [
+                'http://sdk.example.test/fabric-renderer.js',
+                'https://user:secret@sdk.example.test/fabric-renderer.js',
+                'https://sdk.example.test/fabric-renderer.js?v=1',
+                'https://sdk.example.test/fabric-renderer.js#latest',
+                '/fabric-renderer.js',
+                'https://[',
+            ] as $rendererUrl
+        ) {
+            try {
+                new AdServingService(
+                    new StaticServingInventoryRepository(verifiedSlots: []),
+                    new StaticAdCandidateRepository([]),
+                    new InMemoryAdDecisionRepository(),
+                    new InMemoryAdEventRepository(),
+                    fabricRendererUrl: $rendererUrl,
+                );
+                self::fail('Unsafe Fabric renderer URL must be rejected: ' . $rendererUrl);
+            } catch (\InvalidArgumentException $exception) {
+                self::assertSame(
+                    'Fabric renderer URL must use HTTPS, except for localhost development.',
+                    $exception->getMessage(),
+                );
+            }
+        }
+    }
+
+    public function testServeRendersSupportedAssetMarkupAndRenderModes(): void
+    {
+        $cases = [
+            [
+                $this->assetCandidate(
+                    adId: 'ad-image-markup',
+                    assetType: 'image',
+                    assetContentType: 'image/webp',
+                    assetUrl: 'https://assets.example.test/image/original.webp',
+                    snapshotWebpUrl: 'http://localhost:8080/image/snapshot.webp',
+                ),
+                'snapshot',
+                [
+                    'data-vertoad-asset-type="image"',
+                    '<img class="vertoad-media" alt="Advertisement" data-vertoad-fallback="snapshot" src="http://localhost:8080/image/snapshot.webp">',
+                ],
+            ],
+            [
+                $this->assetCandidate(
+                    adId: 'ad-text-markup',
+                    assetType: 'text',
+                    assetContentType: 'text/plain',
+                    assetUrl: '',
+                    snapshotWebpUrl: 'https://assets.example.test/text/snapshot.webp',
+                ),
+                'snapshot',
+                [
+                    'data-vertoad-asset-type="text"',
+                    '<img class="vertoad-media" alt="Advertisement" data-vertoad-fallback="snapshot" src="https://assets.example.test/text/snapshot.webp">',
+                ],
+            ],
+            [
+                $this->assetCandidate(
+                    adId: 'ad-video-markup',
+                    assetType: 'video',
+                    assetContentType: 'video/webm',
+                    assetUrl: 'http://127.0.0.1:8080/video/creative.webm',
+                    snapshotWebpUrl: 'https://assets.example.test/video/poster.webp',
+                ),
+                'video',
+                [
+                    'data-vertoad-asset-type="video"',
+                    '<video class="vertoad-media" data-vertoad-video controls playsinline preload="metadata" poster="https://assets.example.test/video/poster.webp">',
+                    '<source src="http://127.0.0.1:8080/video/creative.webm" type="video/webm">',
+                    '<img class="vertoad-media" alt="Advertisement" data-vertoad-fallback="snapshot" hidden src="https://assets.example.test/video/poster.webp">',
+                    'data-vertoad-video-cta',
+                ],
+            ],
+            [
+                $this->assetCandidate(
+                    adId: 'ad-placeholder-markup',
+                    assetType: 'html_placeholder',
+                    assetContentType: '',
+                    assetUrl: '',
+                    snapshotWebpUrl: '',
+                ),
+                'empty',
+                [
+                    'data-vertoad-asset-type="html_placeholder"',
+                    '<div data-vertoad-fallback="empty"></div>',
+                ],
+            ],
+        ];
+
+        foreach ($cases as [$candidate, $renderMode, $expectedMarkup]) {
+            $service = new AdServingService(
+                new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+                new StaticAdCandidateRepository([$candidate]),
+                new InMemoryAdDecisionRepository(),
+                new InMemoryAdEventRepository(),
+            );
+
+            $decision = $service->serve(10, 20, 'viewer-' . $candidate->adId, null, false, new DateTimeImmutable('2026-06-08 10:00:00'));
+            $srcdoc = html_entity_decode($decision->iframeHtml, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+            self::assertTrue($decision->filled, $candidate->assetType . ' should be renderable.');
+            self::assertStringContainsString('"render_mode":"' . $renderMode . '"', $srcdoc);
+            foreach ($expectedMarkup as $markup) {
+                self::assertStringContainsString($markup, $srcdoc);
+            }
+            if ($candidate->assetType === 'video') {
+                $document = new \DOMDocument();
+                self::assertTrue(@$document->loadHTML($srcdoc));
+                $xpath = new \DOMXPath($document);
+                $linkedVideos = $xpath->query('//a[@data-vertoad-click-target]//video[@data-vertoad-video]');
+                $videos = $xpath->query('//video[@data-vertoad-video]');
+                $videoCtas = $xpath->query('//a[@data-vertoad-video-cta and @data-vertoad-click-target]');
+                self::assertNotFalse($linkedVideos);
+                self::assertNotFalse($videos);
+                self::assertNotFalse($videoCtas);
+                self::assertSame(0, $linkedVideos->length);
+                self::assertSame(1, $videos->length);
+                self::assertSame(1, $videoCtas->length);
+            }
+            self::assertStringNotContainsString('<script>window.top.location', $srcdoc);
+        }
+    }
+
+    public function testServeNoFillsWhenEveryCandidateHasUnsafeAssetMetadataOrUrl(): void
+    {
+        $unsafeCandidates = [
+            $this->assetCandidate('ad-unsupported-type', 'script', 'application/javascript', 'https://assets.example.test/ad.js', 'https://assets.example.test/ad.webp'),
+            $this->assetCandidate('ad-image-content-type', 'image', 'text/html', '', 'https://assets.example.test/image.webp'),
+            $this->assetCandidate('ad-image-query', 'image', 'image/webp', '', 'https://assets.example.test/image.webp?signature=secret'),
+            $this->assetCandidate('ad-video-content-type', 'video', 'video/quicktime', 'https://assets.example.test/video.mov', 'https://assets.example.test/video.webp'),
+            $this->assetCandidate('ad-video-remote-http', 'video', 'video/mp4', 'http://assets.example.test/video.mp4', 'https://assets.example.test/video.webp'),
+            $this->assetCandidate('ad-video-fragment', 'video', 'video/webm', 'https://assets.example.test/video.webm', 'https://assets.example.test/video.webp#poster'),
+            $this->assetCandidate('ad-fabric-content-type', 'fabric_snapshot', 'text/html', 'https://assets.example.test/fabric.json', 'https://assets.example.test/fabric.webp'),
+            $this->assetCandidate('ad-fabric-credentials', 'fabric_snapshot', 'application/json', 'https://user:secret@assets.example.test/fabric.json', 'https://assets.example.test/fabric.webp'),
+            $this->assetCandidate('ad-text-content-type', 'text', 'text/html', '', 'https://assets.example.test/text.webp'),
+            $this->assetCandidate('ad-text-protocol-relative', 'text', 'text/plain', '', '//assets.example.test/text.webp'),
+        ];
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository($unsafeCandidates),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+            fabricRendererUrl: 'https://sdk.example.test/fabric-renderer.js',
+        );
+
+        $decision = $service->serve(10, 20, 'viewer-unsafe-assets', null, false, new DateTimeImmutable('2026-06-08 10:00:00'));
+
+        self::assertFalse($decision->filled);
+        self::assertSame('unsafe_asset_url', $decision->reason);
+        self::assertStringContainsString('data-vertoad-no-fill="1"', $decision->iframeHtml);
+
+        $missingRenderer = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([
+                $this->assetCandidate(
+                    'ad-fabric-missing-renderer',
+                    'fabric_snapshot',
+                    'application/json',
+                    'https://assets.example.test/fabric.json',
+                    'https://assets.example.test/fabric.webp',
+                ),
+            ]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+        );
+
+        $missingRendererDecision = $missingRenderer->serve(
+            10,
+            20,
+            'viewer-missing-renderer',
+            null,
+            false,
+            new DateTimeImmutable('2026-06-08 10:00:00'),
+        );
+
+        self::assertFalse($missingRendererDecision->filled);
+        self::assertSame('unsafe_asset_url', $missingRendererDecision->reason);
+    }
+
     public function testServeUsesPlatformControlledRendererForFabricCandidates(): void
     {
         $candidate = new AdCandidate(
@@ -452,12 +778,17 @@ final class AdServingServiceTest extends TestCase
             assetType: 'fabric_snapshot',
             assetObjectKey: 'organizations/40/assets/fabric-creative.json',
             assetContentType: 'application/json',
+            assetUrl: 'https://assets.example.test/organizations/40/assets/fabric-creative.json',
+            snapshotPngUrl: 'https://assets.example.test/organizations/40/assets/fabric-creative.png',
+            snapshotWebpUrl: 'https://assets.example.test/organizations/40/assets/fabric-creative.webp',
+            thumbnailWebpUrl: 'https://assets.example.test/organizations/40/assets/fabric-creative.thumb.webp',
         );
         $service = new AdServingService(
             new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
             new StaticAdCandidateRepository([$candidate]),
             new InMemoryAdDecisionRepository(),
             new InMemoryAdEventRepository(),
+            fabricRendererUrl: 'https://sdk.example.test/fabric-renderer.js',
         );
 
         $decision = $service->serve(10, 20, 'viewer-1', null, false, new DateTimeImmutable('2026-06-08 10:00:00'));
@@ -469,7 +800,11 @@ final class AdServingServiceTest extends TestCase
         self::assertStringNotContainsString('https://advertiser.example/landing', $srcdoc);
         self::assertStringContainsString('data-vertoad-renderer="platform-controlled"', $srcdoc);
         self::assertStringContainsString('"render_mode":"fabric-json"', $srcdoc);
-        self::assertStringContainsString('"fallback_object_key":"organizations\/40\/assets\/fabric-creative.json"', $srcdoc);
+        self::assertStringContainsString('"asset_url":"https:\/\/assets.example.test\/organizations\/40\/assets\/fabric-creative.json"', $srcdoc);
+        self::assertStringContainsString('"fallback_url":"https:\/\/assets.example.test\/organizations\/40\/assets\/fabric-creative.webp"', $srcdoc);
+        self::assertStringContainsString('data-vertoad-fabric-renderer src="https://sdk.example.test/fabric-renderer.js"', $srcdoc);
+        self::assertStringNotContainsString('asset_object_key', $srcdoc);
+        self::assertStringNotContainsString('fallback_object_key', $srcdoc);
         self::assertStringNotContainsString('<script>window.top.location', $srcdoc);
     }
 
@@ -950,6 +1285,83 @@ final class AdServingServiceTest extends TestCase
         self::assertSame('budget_daily_cap', $decision->reason);
     }
 
+    public function testServeFailsClosedForMissingAndInvalidCpmRevenueShareRules(): void
+    {
+        foreach (['missing_revenue_share_rule', 'zero_publisher_earning'] as $reason) {
+            $service = new AdServingService(
+                new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+                new StaticAdCandidateRepository([
+                    $this->candidate('ad-cpm-unavailable', 30, 40, 'https://advertiser.example/cpm', 999, 0),
+                ]),
+                new InMemoryAdDecisionRepository(),
+                new InMemoryAdEventRepository(),
+                cpmChargeEstimator: new UnavailableCpmChargeEstimator($reason),
+            );
+
+            $decision = $service->serve(
+                10,
+                20,
+                'viewer-cpm-' . $reason,
+                null,
+                false,
+                new DateTimeImmutable('2026-06-08 10:00:00'),
+            );
+
+            self::assertFalse($decision->filled);
+            self::assertSame($reason, $decision->reason);
+        }
+    }
+
+    public function testServeFailsClosedWhenCpmEstimatorIsNotConfigured(): void
+    {
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([
+                $this->candidate('ad-cpm-no-estimator', 30, 40, 'https://advertiser.example/cpm', 999, 0),
+            ]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+        );
+
+        $decision = $service->serve(
+            10,
+            20,
+            'viewer-cpm-no-estimator',
+            null,
+            false,
+            new DateTimeImmutable('2026-06-08 10:00:00'),
+        );
+
+        self::assertFalse($decision->filled);
+        self::assertSame('cpm_charge_estimator_unavailable', $decision->reason);
+    }
+
+    public function testServeSkipsUnavailableCpmCandidateAndUsesFundedCpcCandidate(): void
+    {
+        $service = new AdServingService(
+            new StaticServingInventoryRepository(verifiedSlots: [[10, 20]]),
+            new StaticAdCandidateRepository([
+                $this->candidate('ad-cpm-unavailable', 30, 40, 'https://advertiser.example/cpm', 999, 0),
+                $this->candidate('ad-cpc-funded', 31, 41, 'https://advertiser.example/cpc', 0, 10),
+            ]),
+            new InMemoryAdDecisionRepository(),
+            new InMemoryAdEventRepository(),
+            cpmChargeEstimator: new UnavailableCpmChargeEstimator('missing_revenue_share_rule'),
+        );
+
+        $decision = $service->serve(
+            10,
+            20,
+            'viewer-cpm-fallback',
+            null,
+            false,
+            new DateTimeImmutable('2026-06-08 10:00:00'),
+        );
+
+        self::assertTrue($decision->filled);
+        self::assertSame('ad-cpc-funded', $decision->adId);
+    }
+
     public function testServeRanksCandidatesByQualityWeightedBidAndHistoricalCtr(): void
     {
         $service = new AdServingService(
@@ -980,6 +1392,7 @@ final class AdServingServiceTest extends TestCase
             new InMemoryAdEventRepository(),
             null,
             DefaultAdSelectionPolicy::inMemory(),
+            cpmChargeEstimator: new FixedCpmChargeEstimator(0),
         );
 
         $decision = $service->serve(10, 20, 'viewer-quality', null, false, new DateTimeImmutable('2026-06-08 10:00:00'));
@@ -1043,6 +1456,7 @@ final class AdServingServiceTest extends TestCase
             new InMemoryAdEventRepository(),
             null,
             $policy,
+            cpmChargeEstimator: new FixedCpmChargeEstimator(0),
         );
         $now = new DateTimeImmutable('2026-06-08 10:00:00');
 
@@ -1098,6 +1512,7 @@ final class AdServingServiceTest extends TestCase
             $events,
             null,
             $policy,
+            cpmChargeEstimator: new FixedCpmChargeEstimator(0),
         );
         $now = new DateTimeImmutable('2026-06-08 10:00:00');
 
@@ -1138,6 +1553,7 @@ final class AdServingServiceTest extends TestCase
             new InMemoryAdEventRepository(),
             null,
             new DefaultAdSelectionPolicy($frequencyCaps),
+            cpmChargeEstimator: new FixedCpmChargeEstimator(0),
         );
         $now = new DateTimeImmutable('2026-06-08 10:00:00');
 
@@ -1285,7 +1701,7 @@ final class AdServingServiceTest extends TestCase
         self::assertSame('fraud_high_risk_viewer', $decision->reason);
         self::assertCount(1, $logs);
         self::assertSame('req-risk-serve', $logs[0]->request_id);
-        self::assertSame('no-fill:10:20:viewer-risk', $logs[0]->ad_decision_id);
+        self::assertSame($decision->decisionId, $logs[0]->ad_decision_id);
         self::assertSame(['fraud_high_risk_viewer'], $logs[0]->reason_codes);
         self::assertSame('198.51.100.9', $logs[0]->ip_address);
         self::assertSame('Risk Browser', $logs[0]->user_agent);
@@ -1396,6 +1812,33 @@ final class AdServingServiceTest extends TestCase
         return $this->candidate('ad-1', 30, 40, 'https://advertiser.example/landing', 10, 20);
     }
 
+    private function assetCandidate(
+        string $adId,
+        string $assetType,
+        string $assetContentType,
+        string $assetUrl,
+        string $snapshotWebpUrl,
+    ): AdCandidate {
+        return new AdCandidate(
+            adId: $adId,
+            campaignId: 30,
+            advertiserOrganizationId: 40,
+            creativeHtml: '<script>window.top.location="https://evil.example"</script>',
+            landingUrl: 'https://advertiser.example/landing',
+            width: 300,
+            height: 250,
+            impressionCostPoints: 10,
+            clickCostPoints: 20,
+            assetType: $assetType,
+            assetObjectKey: 'organizations/40/assets/' . $adId,
+            assetContentType: $assetContentType,
+            assetUrl: $assetUrl,
+            snapshotPngUrl: 'https://assets.example.test/snapshots/' . $adId . '.png',
+            snapshotWebpUrl: $snapshotWebpUrl,
+            thumbnailWebpUrl: 'https://assets.example.test/thumbnails/' . $adId . '.webp',
+        );
+    }
+
     private function candidate(
         string $adId,
         int $campaignId,
@@ -1433,6 +1876,42 @@ final class AdServingServiceTest extends TestCase
     }
 }
 
+final readonly class FixedCpmChargeEstimator implements CpmChargeEstimatorInterface
+{
+    public function __construct(private int $points)
+    {
+    }
+
+    public function nextChargePoints(
+        int $advertiserOrganizationId,
+        int $campaignId,
+        int $publisherOrganizationId,
+        int $siteId,
+        int $adSlotId,
+        int $bidPointsPerThousand,
+    ): int {
+        return $this->points;
+    }
+}
+
+final readonly class UnavailableCpmChargeEstimator implements CpmChargeEstimatorInterface
+{
+    public function __construct(private string $reason)
+    {
+    }
+
+    public function nextChargePoints(
+        int $advertiserOrganizationId,
+        int $campaignId,
+        int $publisherOrganizationId,
+        int $siteId,
+        int $adSlotId,
+        int $bidPointsPerThousand,
+    ): int {
+        throw new CpmBillingUnavailableException($this->reason);
+    }
+}
+
 final readonly class FixedCampaignSpendEligibility implements CampaignSpendEligibilityInterface
 {
     /**
@@ -1445,6 +1924,23 @@ final readonly class FixedCampaignSpendEligibility implements CampaignSpendEligi
     public function rejectionReason(int $organizationId, int $campaignId, int $pointsAmount, DateTimeImmutable $at): ?SpendFailureReason
     {
         return $this->results[$campaignId] ?? null;
+    }
+}
+
+final class RecordingServingRequestEventBuffer implements ServingRequestEventBufferInterface
+{
+    /** @var list<AdDecision> */
+    private array $decisions = [];
+
+    public function recordServe(AdDecision $decision): void
+    {
+        $this->decisions[] = $decision;
+    }
+
+    /** @return list<AdDecision> */
+    public function decisions(): array
+    {
+        return $this->decisions;
     }
 }
 

@@ -98,6 +98,29 @@ final readonly class DatabaseWebhookEndpointRepository implements WebhookEndpoin
         return array_map(fn (array $row): WebhookEndpoint => $this->hydrate($row), $rows);
     }
 
+    public function listActiveForEvent(int $organizationId, string $eventType): array
+    {
+        $eventType = trim($eventType);
+        if ($organizationId <= 0 || $eventType === '') {
+            return [];
+        }
+
+        $rows = $this->connection->createQueryBuilder()
+            ->select('we.*')
+            ->from('webhook_endpoints', 'we')
+            ->innerJoin('we', 'webhook_endpoint_events', 'wee', 'wee.webhook_endpoint_id = we.id')
+            ->where('we.organization_id = :organization_id')
+            ->andWhere('we.status = :status')
+            ->andWhere('wee.event_type = :event_type')
+            ->orderBy('we.id', 'ASC')
+            ->setParameter('organization_id', $organizationId)
+            ->setParameter('status', 'active')
+            ->setParameter('event_type', $eventType)
+            ->fetchAllAssociative();
+
+        return array_map(fn (array $row): WebhookEndpoint => $this->hydrate($row), $rows);
+    }
+
     public function rotateSecret(
         string $endpointId,
         int $organizationId,

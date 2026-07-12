@@ -6,10 +6,13 @@ namespace VertoAD\Tests\Webhooks;
 
 use DateTimeImmutable;
 use Doctrine\DBAL\Connection;
+use Doctrine\DBAL\Driver\Exception as DriverException;
 use Doctrine\DBAL\DriverManager;
+use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use PHPUnit\Framework\TestCase;
 use VertoAD\Domain\Webhooks\WebhookDelivery;
 use VertoAD\Domain\Webhooks\WebhookEndpoint;
+use VertoAD\Domain\Webhooks\WebhookEvent;
 use VertoAD\Http\RequestIdContext;
 use VertoAD\Repository\Webhooks\DatabaseWebhookDeliveryRepository;
 use VertoAD\Repository\Webhooks\DatabaseWebhookEndpointRepository;
@@ -300,6 +303,142 @@ final class DatabaseWebhookDeliveryRepositoryTest extends TestCase
         $repository->listForOrganization(99, limit: 0);
     }
 
+    public function testBusinessEventQueueRejectsWrongOrganizationInactiveSubscriptionAndMissingId(): void
+    {
+        $connection = $this->createConnection();
+        $endpoints = new DatabaseWebhookEndpointRepository($connection);
+        $repository = new DatabaseWebhookDeliveryRepository($connection);
+        $endpoint = $this->storeEndpoint(
+            $endpoints,
+            endpointId: 'whe_business_validation',
+            endpointUrl: 'https://hooks.example/business-validation',
+            events: ['review.approved'],
+        );
+        $event = $this->businessEvent('evt_review_validation');
+        $missingId = new WebhookEndpoint(
+            id: null,
+            endpointId: 'whe_missing_business_id',
+            organizationId: 99,
+            createdByUserId: 7,
+            name: 'Missing business ID',
+            endpointUrl: 'https://hooks.example/missing-business-id',
+            status: 'active',
+            events: ['review.approved'],
+            encryptedSigningSecret: 'defuse:v1:encrypted',
+            secretPreview: 'whsec_...',
+            secretRotatedAt: $event->occurredAt,
+            createdAt: $event->occurredAt,
+            updatedAt: $event->occurredAt,
+        );
+
+        foreach ([
+            [$endpoint, $this->businessEvent('evt_wrong_org', organizationId: 100), 'organization does not match'],
+            [$endpoint->withChanges(status: 'paused'), $event, 'not active for this event type'],
+            [$endpoint, $this->businessEvent('evt_wrong_type', eventType: 'billing.points_changed'), 'not active for this event type'],
+            [$missingId, $event, 'internal ID is required'],
+        ] as [$candidateEndpoint, $candidateEvent, $message]) {
+            try {
+                $repository->queueEventForEndpoint($candidateEndpoint, $candidateEvent);
+                self::fail('Expected invalid business-event delivery target.');
+            } catch (\InvalidArgumentException $exception) {
+                self::assertStringContainsString($message, $exception->getMessage());
+            }
+        }
+    }
+
+    public function testBusinessEventQueueReturnsConcurrentWinnerAndFailsWhenWinnerCannotBeReloaded(): void
+    {
+        $connection = $this->createConnection(ConcurrentWebhookDeliveryInsertConnection::class);
+        $endpoints = new DatabaseWebhookEndpointRepository($connection);
+        $repository = new DatabaseWebhookDeliveryRepository($connection);
+        $endpoint = $this->storeEndpoint(
+            $endpoints,
+            endpointId: 'whe_business_race',
+            endpointUrl: 'https://hooks.example/business-race',
+            events: ['review.approved'],
+        );
+
+        $winner = $repository->queueEventForEndpoint($endpoint, $this->businessEvent('evt_review_race'));
+
+        self::assertSame($winner->delivery_id, $repository->find($winner->delivery_id)?->delivery_id);
+        self::assertCount(1, $repository->all());
+
+        $lostConnection = $this->createConnection(LostWebhookDeliveryInsertConnection::class);
+        $lostEndpoints = new DatabaseWebhookEndpointRepository($lostConnection);
+        $lostRepository = new DatabaseWebhookDeliveryRepository($lostConnection);
+        $lostEndpoint = $this->storeEndpoint(
+            $lostEndpoints,
+            endpointId: 'whe_business_lost_race',
+            endpointUrl: 'https://hooks.example/business-lost-race',
+            events: ['review.approved'],
+        );
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Webhook delivery idempotency lookup failed.');
+        $lostRepository->queueEventForEndpoint($lostEndpoint, $this->businessEvent('evt_review_lost_race'));
+    }
+
+    public function testBusinessEventQueueRejectsEveryConflictingDeterministicDeliveryField(): void
+    {
+        $connection = $this->createConnection();
+        $endpoints = new DatabaseWebhookEndpointRepository($connection);
+        $repository = new DatabaseWebhookDeliveryRepository($connection);
+        $endpoint = $this->storeEndpoint(
+            $endpoints,
+            endpointId: 'whe_business_conflict',
+            endpointUrl: 'https://hooks.example/business-conflict',
+            events: ['review.approved'],
+        );
+        $otherEndpoint = $this->storeEndpoint(
+            $endpoints,
+            endpointId: 'whe_business_conflict_other',
+            endpointUrl: 'https://hooks.example/business-conflict-other',
+            events: ['review.approved'],
+        );
+        $event = $this->businessEvent('evt_review_conflict');
+        $original = $repository->queueEventForEndpoint($endpoint, $event);
+
+        foreach ([
+            ['organization_id' => 100],
+            ['webhook_endpoint_id' => $otherEndpoint->id],
+            ['event_type' => 'review.rejected'],
+            ['payload_json' => '{"different":true}'],
+            ['request_id' => 'req-different'],
+        ] as $changes) {
+            $repository->save(new WebhookDelivery(
+                delivery_id: $original->delivery_id,
+                organization_id: $changes['organization_id'] ?? $original->organization_id,
+                webhook_endpoint_id: $changes['webhook_endpoint_id'] ?? $original->webhook_endpoint_id,
+                endpoint_id: $original->endpoint_id,
+                endpoint_url: $original->endpoint_url,
+                event_type: $changes['event_type'] ?? $original->event_type,
+                payload_json: $changes['payload_json'] ?? $original->payload_json,
+                request_id: $changes['request_id'] ?? $original->request_id,
+                status: $original->status,
+                retry_count: $original->retry_count,
+                next_attempt_at: $original->next_attempt_at,
+                last_attempt_at: $original->last_attempt_at,
+                last_status_code: $original->last_status_code,
+                last_error: $original->last_error,
+                signature_header: $original->signature_header,
+                created_at: $original->created_at,
+                delivered_at: $original->delivered_at,
+            ));
+
+            try {
+                $repository->queueEventForEndpoint($endpoint, $event);
+                self::fail('Expected deterministic delivery conflict.');
+            } catch (\InvalidArgumentException $exception) {
+                self::assertSame(
+                    'Webhook delivery ID conflicts with an existing event delivery.',
+                    $exception->getMessage(),
+                );
+            } finally {
+                $repository->save($original);
+            }
+        }
+    }
+
     public function testWebhookMigrationDefinesDurableDeliveryLog(): void
     {
         $path = dirname(__DIR__, 2) . '/db/migrations/20260609010000_create_webhook_delivery_tables.php';
@@ -389,9 +528,29 @@ final class DatabaseWebhookDeliveryRepositoryTest extends TestCase
         );
     }
 
-    private function createConnection(): Connection
+    private function businessEvent(
+        string $eventId,
+        int $organizationId = 99,
+        string $eventType = 'review.approved',
+    ): WebhookEvent {
+        return new WebhookEvent(
+            eventId: $eventId,
+            eventType: $eventType,
+            organizationId: $organizationId,
+            data: ['review_id' => 10, 'decision' => 'approved'],
+            occurredAt: new DateTimeImmutable('2026-07-12T00:00:00+00:00'),
+            requestId: 'req-review-business',
+        );
+    }
+
+    /** @param class-string<Connection>|null $wrapperClass */
+    private function createConnection(?string $wrapperClass = null): Connection
     {
-        $connection = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'memory' => true]);
+        $params = ['driver' => 'pdo_sqlite', 'memory' => true];
+        if ($wrapperClass !== null) {
+            $params['wrapperClass'] = $wrapperClass;
+        }
+        $connection = DriverManager::getConnection($params);
         $connection->executeStatement(
             'CREATE TABLE webhook_endpoints (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -449,5 +608,59 @@ final class DatabaseWebhookDeliveryRepositoryTest extends TestCase
         );
 
         return $connection;
+    }
+}
+
+final class ConcurrentWebhookDeliveryInsertConnection extends Connection
+{
+    private bool $raceNextDeliveryInsert = true;
+
+    public function insert(string $table, array $data, array $types = []): int|string
+    {
+        if ($table === 'webhook_deliveries' && $this->raceNextDeliveryInsert) {
+            $this->raceNextDeliveryInsert = false;
+            parent::insert($table, $data, $types);
+
+            throw new SyntheticWebhookDeliveryUniqueConstraintViolationException();
+        }
+
+        return parent::insert($table, $data, $types);
+    }
+}
+
+final class LostWebhookDeliveryInsertConnection extends Connection
+{
+    private bool $failNextDeliveryInsert = true;
+
+    public function insert(string $table, array $data, array $types = []): int|string
+    {
+        if ($table === 'webhook_deliveries' && $this->failNextDeliveryInsert) {
+            $this->failNextDeliveryInsert = false;
+
+            throw new SyntheticWebhookDeliveryUniqueConstraintViolationException();
+        }
+
+        return parent::insert($table, $data, $types);
+    }
+}
+
+final class SyntheticWebhookDeliveryUniqueConstraintViolationException extends UniqueConstraintViolationException
+{
+    public function __construct()
+    {
+        parent::__construct(new SyntheticWebhookDeliveryDriverException(), null);
+    }
+}
+
+final class SyntheticWebhookDeliveryDriverException extends \Exception implements DriverException
+{
+    public function __construct()
+    {
+        parent::__construct('Synthetic webhook delivery unique constraint violation.');
+    }
+
+    public function getSQLState(): ?string
+    {
+        return '23000';
     }
 }

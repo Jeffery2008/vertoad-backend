@@ -79,7 +79,15 @@ function coverageRunner(string $phpunit, string $clover, ?array $diagnostics = n
  */
 function phpunitGateArguments(): array
 {
-    return ['--exclude-group', 'redis-integration', '--fail-on-skipped'];
+    return [
+        '--exclude-group',
+        'redis-integration',
+        '--exclude-group',
+        'mysql-install-rehearsal',
+        '--exclude-group',
+        'external-tools-integration',
+        '--fail-on-skipped',
+    ];
 }
 
 /**

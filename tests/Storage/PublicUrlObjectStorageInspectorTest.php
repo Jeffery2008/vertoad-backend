@@ -5,12 +5,25 @@ declare(strict_types=1);
 namespace VertoAD\Tests\Storage;
 
 use PHPUnit\Framework\TestCase;
+use VertoAD\AppFactory;
 use VertoAD\Infrastructure\Storage\PublicUrlObjectStorageInspector;
 use VertoAD\Infrastructure\Storage\StoredObjectFetchResult;
 use VertoAD\Infrastructure\Storage\UnavailableObjectStorageInspector;
 
 final class PublicUrlObjectStorageInspectorTest extends TestCase
 {
+    public function testLocalAppFactoryUsesPublicUrlInspectorWhenConfigured(): void
+    {
+        $factory = new \ReflectionMethod(AppFactory::class, 'objectStorageInspector');
+
+        $inspector = $factory->invoke(null, [
+            'app' => ['env' => 'testing'],
+            'storage' => ['s3' => ['public_base_url' => 'https://assets.example.test']],
+        ]);
+
+        self::assertInstanceOf(PublicUrlObjectStorageInspector::class, $inspector);
+    }
+
     public function testInspectsPublicObjectUrlWithEncodedKeyAndImageDimensions(): void
     {
         $seenUrl = null;
@@ -63,6 +76,90 @@ final class PublicUrlObjectStorageInspectorTest extends TestCase
         $this->expectExceptionMessage('Object storage returned HTTP 503 while inspecting uploaded object.');
 
         $failing->inspect('unavailable.png');
+    }
+
+    public function testRejectsInjectedObjectThatExceedsTheInspectionLimit(): void
+    {
+        $inspector = new PublicUrlObjectStorageInspector(
+            ['public_base_url' => 'https://assets.example.test', 'max_inspect_bytes' => 16],
+            static fn (): StoredObjectFetchResult => new StoredObjectFetchResult(
+                200,
+                ['content-type' => 'text/plain', 'content-length' => '17'],
+                str_repeat('x', 17),
+            ),
+        );
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Object storage object exceeds the configured inspection byte limit.');
+        $inspector->inspect('oversized.txt');
+    }
+
+    public function testRejectsInjectedObjectWhoseDeclaredLengthDoesNotMatchItsBody(): void
+    {
+        $inspector = new PublicUrlObjectStorageInspector(
+            ['public_base_url' => 'https://assets.example.test', 'max_inspect_bytes' => 16],
+            static fn (): StoredObjectFetchResult => new StoredObjectFetchResult(
+                200,
+                ['content-type' => 'text/plain', 'content-length' => '1'],
+                'two',
+            ),
+        );
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Object storage object length changed during inspection.');
+        $inspector->inspect('changed.txt');
+    }
+
+    public function testAcceptsOnlyCompletePartialResponses(): void
+    {
+        $complete = new PublicUrlObjectStorageInspector(
+            ['public_base_url' => 'https://assets.example.test', 'max_inspect_bytes' => 16],
+            static fn (): StoredObjectFetchResult => new StoredObjectFetchResult(
+                206,
+                [
+                    'content-type' => 'text/plain',
+                    'content-length' => '5',
+                    'content-range' => 'bytes 0-4/5',
+                ],
+                'hello',
+            ),
+        );
+        self::assertSame(5, $complete->inspect('complete.txt')?->byteSize);
+
+        $truncated = new PublicUrlObjectStorageInspector(
+            ['public_base_url' => 'https://assets.example.test', 'max_inspect_bytes' => 16],
+            static fn (): StoredObjectFetchResult => new StoredObjectFetchResult(
+                206,
+                [
+                    'content-type' => 'text/plain',
+                    'content-length' => '16',
+                    'content-range' => 'bytes 0-15/17',
+                ],
+                str_repeat('x', 16),
+            ),
+        );
+
+        try {
+            $truncated->inspect('truncated.txt');
+            self::fail('Expected a truncated partial response to be rejected.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('Object storage object length changed during inspection.', $exception->getMessage());
+        }
+
+        $missingRange = new PublicUrlObjectStorageInspector(
+            ['public_base_url' => 'https://assets.example.test', 'max_inspect_bytes' => 16],
+            static fn (): StoredObjectFetchResult => new StoredObjectFetchResult(
+                206,
+                ['content-type' => 'text/plain', 'content-length' => '5'],
+                'hello',
+            ),
+        );
+        try {
+            $missingRange->inspect('missing-range.txt');
+            self::fail('Expected a partial response without Content-Range to be rejected.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('Object storage object length changed during inspection.', $exception->getMessage());
+        }
     }
 
     public function testExtractsJsonDimensionsAndDefaultsTextGeometry(): void
@@ -139,6 +236,26 @@ final class PublicUrlObjectStorageInspectorTest extends TestCase
             self::assertSame(1, $object->height);
             self::assertSame('sha256:' . hash('sha256', 'plain copy'), $object->checksum);
             self::assertNull($inspector->inspect('missing.txt'));
+        } finally {
+            @unlink($path);
+            @rmdir($directory);
+        }
+    }
+
+    public function testDefaultFetcherBoundsFileReadsWhenTheSourceExceedsTheLimit(): void
+    {
+        $directory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'vertoad-public-inspector-limit-' . bin2hex(random_bytes(4));
+        self::assertTrue(mkdir($directory));
+        $path = $directory . DIRECTORY_SEPARATOR . 'oversized.txt';
+        file_put_contents($path, str_repeat('x', 17));
+
+        try {
+            $baseUrl = 'file:///' . str_replace('\\', '/', $directory);
+            $inspector = new PublicUrlObjectStorageInspector(['public_base_url' => $baseUrl, 'max_inspect_bytes' => 16]);
+
+            $this->expectException(\RuntimeException::class);
+            $this->expectExceptionMessage('Object storage object exceeds the configured inspection byte limit.');
+            $inspector->inspect('oversized.txt');
         } finally {
             @unlink($path);
             @rmdir($directory);

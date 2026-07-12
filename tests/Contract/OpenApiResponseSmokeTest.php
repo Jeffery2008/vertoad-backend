@@ -291,7 +291,13 @@ final class OpenApiResponseSmokeTest extends TestCase
                 throw new \LogicException('Not used by this contract smoke.');
             }
 
-            public function consumeAuthorizationCode(string $codeHash, DateTimeImmutable $now): ?array
+            public function consumeAuthorizationCode(
+                string $codeHash,
+                int $clientId,
+                string $redirectUri,
+                string $codeChallenge,
+                DateTimeImmutable $now,
+            ): ?array
             {
                 throw new \LogicException('Not used by this contract smoke.');
             }
@@ -321,7 +327,7 @@ final class OpenApiResponseSmokeTest extends TestCase
                 throw new \LogicException('Not used by this contract smoke.');
             }
 
-            public function rotateRefreshToken(int $oldRefreshTokenId, int $newRefreshTokenId, DateTimeImmutable $now): void
+            public function rotateRefreshToken(int $oldRefreshTokenId, int $newRefreshTokenId, DateTimeImmutable $now): bool
             {
                 throw new \LogicException('Not used by this contract smoke.');
             }
@@ -434,6 +440,17 @@ final class OpenApiResponseSmokeTest extends TestCase
                 public function findActiveMembership(int $userId, int $organizationId): ?OrganizationMembership
                 {
                     return new OrganizationMembership($organizationId, $userId, 'active', ['advertiser-owner'], ['campaigns.manage']);
+                }
+
+                public function listActiveOrganizationsForUser(int $userId): array
+                {
+                    return [[
+                        'id' => 99,
+                        'name' => 'Example Advertiser',
+                        'slug' => 'example-advertiser',
+                        'roles' => ['advertiser-owner'],
+                        'permissions' => ['campaigns.manage'],
+                    ]];
                 }
 
                 public function listForOrganization(int $organizationId): array
@@ -622,6 +639,7 @@ final class OpenApiResponseSmokeTest extends TestCase
             assetType: 'image',
             assetObjectKey: 'organizations/40/assets/creative.png',
             assetContentType: 'image/png',
+            snapshotWebpUrl: 'https://assets.example.test/organizations/40/assets/creative.webp',
         );
     }
 }

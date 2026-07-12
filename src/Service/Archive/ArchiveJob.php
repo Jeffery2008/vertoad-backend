@@ -21,6 +21,7 @@ final readonly class ArchiveJob
     public function run(): ArchiveJobResult
     {
         $events = $this->repository->pendingEvents();
+        $batchFingerprint = $this->batchFingerprint($events);
         $eventIds = [];
         $partitions = [];
         $partitionEvents = [];
@@ -41,7 +42,8 @@ final readonly class ArchiveJob
         ksort($partitions);
         ksort($partitionEvents);
         $objectSuffix = 'part-' . ($first ?? new DateTimeImmutable())->format('Ymd\THis\Z')
-            . '-' . ($last ?? new DateTimeImmutable())->format('Ymd\THis\Z') . '.parquet';
+            . '-' . ($last ?? new DateTimeImmutable())->format('Ymd\THis\Z')
+            . '-' . substr($batchFingerprint, 0, 16) . '.parquet';
 
         foreach ($partitions as $partition => $metadata) {
             $objectKey = rtrim($this->baseObjectKey, '/') . '/' . $partition . '/' . $objectSuffix;
@@ -52,7 +54,7 @@ final readonly class ArchiveJob
             $partitions[$partition]['row_count'] = $write->rowCount;
         }
 
-        $manifestId = 'manifest_' . sha1(implode('|', array_keys($partitions)) . '|' . count($events));
+        $manifestId = 'manifest_' . $batchFingerprint;
         $manifest = $this->repository->saveManifest(new ArchiveManifest(
             manifestId: $manifestId,
             status: 'completed',
@@ -73,5 +75,24 @@ final readonly class ArchiveJob
     private function partition(string $eventType, DateTimeImmutable $occurredAt): string
     {
         return 'event_type=' . $eventType . '/date=' . $occurredAt->format('Y-m-d') . '/hour=' . $occurredAt->format('H');
+    }
+
+    /**
+     * @param list<\VertoAD\Domain\Archive\ArchiveEvent> $events
+     */
+    private function batchFingerprint(array $events): string
+    {
+        $identities = array_map(
+            static fn ($event): string => json_encode([
+                'event_id' => $event->eventId,
+                'event_type' => $event->eventType,
+                'occurred_at' => $event->occurredAt->format('U.uP'),
+                'payload' => $event->payload,
+            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            $events,
+        );
+        sort($identities, SORT_STRING);
+
+        return hash('sha256', implode("\n", $identities));
     }
 }

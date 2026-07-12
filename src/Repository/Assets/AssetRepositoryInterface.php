@@ -13,5 +13,7 @@ interface AssetRepositoryInterface
 
     public function findUploadIntentForConfirmation(int $id, int $organizationId, int $uploaderUserId): ?AssetUploadIntent;
 
+    public function findAssetByUploadIntent(int $uploadIntentId, int $organizationId, int $uploaderUserId): ?CreativeAsset;
+
     public function createAssetWithSnapshotJob(CreativeAsset $asset): CreativeAsset;
 }

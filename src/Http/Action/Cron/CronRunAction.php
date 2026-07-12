@@ -22,15 +22,24 @@ final readonly class CronRunAction
     {
         $result = $this->runner->run((string) ($args['job_name'] ?? ''));
         $statusCode = $this->statusCode($result);
-        $payload = $result->status === 'not_found'
-            ? ['code' => 'cron_job_not_found', 'message' => $result->message]
-            : [
+        $payload = match ($result->status) {
+            'not_found' => ['code' => 'cron_job_not_found', 'message' => $result->message],
+            'failed' => [
+                'code' => 'cron_job_failed',
+                'message' => $result->message ?? 'Cron job failed.',
+                'job' => $result->jobName,
+                'status' => $result->status,
+                'acquired_lock' => $result->acquiredLock,
+                'metrics' => $result->metrics,
+            ],
+            default => [
                 'job' => $result->jobName,
                 'status' => $result->status,
                 'acquired_lock' => $result->acquiredLock,
                 'metrics' => $result->metrics,
                 'message' => $result->message,
-            ];
+            ],
+        };
 
         $response = $response->withStatus($statusCode);
         $response->getBody()->write(json_encode($payload, JSON_THROW_ON_ERROR));
@@ -42,6 +51,7 @@ final readonly class CronRunAction
     {
         return match ($result->status) {
             'not_found' => 404,
+            'failed' => 500,
             default => 200,
         };
     }

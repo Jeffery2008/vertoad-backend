@@ -43,6 +43,22 @@ composer test:coverage
 composer test:redis-integration
 ```
 
+Object-storage readiness uses the same ignored environment file as the API and
+performs an authenticated bucket check, direct PUT/HEAD/GET round trip,
+presigned PUT round trip, checksum verification, required SSE verification, and
+verified cleanup. Run each configured storage boundary independently; the
+command never prints credentials or presigned URLs:
+
+```powershell
+composer s3:readiness -- --profile=asset
+composer s3:readiness -- --profile=withdrawal-proof
+composer s3:readiness -- --profile=backup
+```
+
+Use `--env-file=D:\\secrets\\vertoad.env` when the deployment environment file
+is stored outside the checkout. A successful run ends with
+`probe_objects_remaining=0` and `s3_readiness=passed`.
+
 The PHPUnit suite uses `phpunit.xml` and boots from `vendor/autoload.php`.
 
 `composer test` and `composer test:coverage` exclude only the explicit external `redis-integration` group and fail if any default-suite test is skipped. `composer test:coverage` runs `scripts/coverage-gate.php`. When Xdebug, PCOV, or a working phpdbg coverage driver is available, it generates Clover coverage for `src/` and requires 100% line coverage. If no working coverage driver is available, the script prints an explicit blocker with the detected SAPI, coverage extensions, and phpdbg status, then still runs the default PHPUnit suite so this environment remains test-gated. Install or enable Xdebug with `XDEBUG_MODE=coverage`, PCOV, or phpdbg to make the coverage gate enforce line coverage locally. No `src/` files are excluded from the configured coverage source.
@@ -95,15 +111,21 @@ Operations request correlation uses `GET /api/v1/operations/request-correlations
 
 The current backend slice establishes the Slim application shell, environment-backed settings, health checks, protected Cron API surface, first-party auth/session bridge endpoints, permission metadata, and the implemented authenticated billing endpoints documented in OpenAPI.
 
+The web installer seeds the first-party SPA as a public OAuth client with no secret, exact callback URI, `authorization_code` and `refresh_token` grants, and S256 PKCE. Its returned client ID is frontend configuration, not a credential. Confidential clients and one-time secrets are created later through the authenticated advertiser OAuth-client API for server-side integrations; a browser bundle must never contain one.
+
 System configuration is loaded from `.env` only for infrastructure integrations and secrets such as MySQL, Redis, S3-compatible storage, OAuth key paths, cron protection, Cloudflare real IP handling, Turnstile secrets, and provider API keys. Business configuration must live in versioned, auditable `system_config_versions` records so it can be reviewed and rolled back without code or deployment variable edits.
 
-Creative upload limits are business configuration, not deployment variables. Upload intent TTL, blocked extensions/content types, per-type byte limits, dimensions, video duration, allowed content types, and magic signatures come from the current `system_config_versions.assets.upload_policy`. `.env` keeps only S3/R2 connection details and secrets for object storage: endpoint, region, bucket, access key, secret key, path-style mode, and public base URL. In `prod`/`staging`, upload intents are AWS SDK `S3Client` S3-compatible SigV4 presigned PUT URLs, initially targeting Cloudflare R2. `local`, `test`, and `testing` keep the deterministic signer only so isolated tests and local development do not require live object storage credentials. Upload confirmation does not trust client-supplied file magic, dimensions, or video duration; the backend reads the stored object through `R2_PUBLIC_BASE_URL` and validates authoritative object metadata and bytes.
+Creative upload limits are business configuration, not deployment variables. Upload intent TTL, blocked extensions/content types, per-type byte limits, dimensions, video duration, allowed content types, and magic signatures come from the current `system_config_versions.assets.upload_policy`. `.env` keeps only S3/R2 connection details and secrets for object storage: endpoint, region, bucket, access key, secret key, path-style mode, and public base URL. In `prod`/`staging`, upload intents are AWS SDK `S3Client` S3-compatible SigV4 presigned PUT URLs, initially targeting Cloudflare R2. The presigned URL is scoped to a server-generated `assets/staging/` key and may be retried or overwritten only there until expiry; clients must treat that key as opaque and must not deliver it. After validation, the backend writes the exact already-inspected bytes with private credentials to an `assets/final/` key containing both an unguessable server token and the authoritative SHA-256 digest. The finalizer rejects a key whose digest does not match the bytes, performs an unconditional private `PutObject`, streams the final object back through an authoritative SHA-256 check without retaining a second full body, and commits only the final key to `creative_assets`. It does not depend on conditional PUT support and does not copy again from the mutable staging key; reusing a final key can therefore only rewrite identical bytes. A committed retry verifies the final bytes against the database, can recover a missing final object only from staging bytes with the same authoritative checksum, and then deletes staging. Database write failures delete only an uncommitted per-attempt final object; when the commit outcome cannot be queried, the unguessable candidate final object is retained to avoid creating database-to-object drift. Concurrent confirmations use per-content final keys and the unique upload-intent constraint: a loser deletes only its own candidate and returns or validates the committed winner. A storage lifecycle rule should purge abandoned `assets/staging/` objects after the maximum intent TTL plus a bounded grace period. `local`, `test`, and `testing` keep the deterministic signer only so isolated tests and local development do not require live object storage credentials. Upload confirmation does not trust client-supplied file magic, dimensions, video duration, object metadata, or checksum. Because validation still holds one complete bounded upload body, hosted PHP must set `memory_limit` with adequate SDK/runtime headroom; the default 200 MiB video policy requires at least `512M`.
+
+Upload confirmation queues a durable snapshot job and returns `snapshot_status=pending`; generated URLs remain null until the protected `asset-snapshot-generate` Cron job completes. The job verifies source size and SHA-256 again, then writes a PNG snapshot, WebP snapshot, and WebP thumbnail under the asset's organization-scoped derived-object prefix. Images are decoded directly, Fabric payloads use their validated embedded snapshot, text creatives render to a controlled canvas, and videos use a bounded FFmpeg subprocess. Failures use a lease, bounded attempts, exponential retry, and terminal `failed` state instead of blocking upload confirmation. PHP GD with WebP support is required for every snapshot type, and FFmpeg is required for video snapshots.
 
 Finance payment proofs use a separate private S3-compatible bucket configured with `WITHDRAWAL_PROOF_S3_*`. Outside local/testing, the endpoint must use HTTPS, the bucket must differ from both public `S3_*` assets and the `BACKUP_S3_*` target, and presigned uploads require server-side encryption (`AES256` by default). `WITHDRAWAL_PROOF_S3_MAX_INSPECT_BYTES` must remain `10485760`, matching the API and database limit. Proof confirmation accepts only `proof_id`; the backend reads the private object through the S3 API, validates key/MIME/size/magic bytes and actual SSE metadata, and computes the authoritative `sha256:` checksum before a withdrawal can be marked paid.
 
 Creative templates and design versions are first-class backend records. `/api/v1/creative/templates` lists platform templates plus the requested organization's templates, with platform templates ordered before organization-private templates. `POST /api/v1/creative/templates` creates organization templates with `creative.template.write.own` and platform templates with `creative.template.manage.platform`; platform template creation must not be hard-coded to super administrators. `/api/v1/creative/designs` creates an organization design and initial version in one transaction, while `/api/v1/creative/designs/{design_id}/versions` lists or appends append-only versions. Cross-organization design/version access returns `404 not_found`. All Creative endpoints use the standard API envelope, preserve `request_id`, write audit events for template/design/version creation, and are covered by OpenAPI contract tests.
 
 Cloudflare real-IP handling is fail-closed. `CLOUDFLARE_REAL_IP_HEADER` defaults to `CF-Connecting-IP`, but the header is trusted only when `CLOUDFLARE_TRUSTED_PROXIES` contains the connecting proxy IP or CIDR. If the trusted proxy list is empty or does not match `REMOTE_ADDR`, the API ignores forwarded IP headers and uses `REMOTE_ADDR` for rate limits, Turnstile audit metadata, Cron IP checks, password reset logs, and billing admin audit logs.
+
+Browser CORS is also fail-closed. Set `CORS_ALLOWED_ORIGINS` to the exact comma-separated app/docs origins that may call authenticated API routes; entries are normalized HTTP(S) origins and wildcard entries are rejected. Preflight requests validate methods and request headers before routing, and normal responses expose only `X-Request-Id`. Public `/api/v1/ads/*` delivery routes use credential-free `Access-Control-Allow-Origin: *` so publisher pages and sandboxed ad frames can report events without opening authenticated console routes to arbitrary origins.
 
 IP geo is a backend middle layer, not a synchronous dependency in the ad request path. Serving code reads a canonical store keyed by IP hash and queues unresolved IPs for the protected `ip-geo-resolve` Cron job. `GET /api/v1/ads/serve`, `POST /api/v1/ads/serve`, `/api/v1/ads/track`, `/api/v1/ads/click`, and risk-scoring request paths must return without waiting on a provider registry lookup; unknown geo is allowed and should not create an API error. The admin lookup endpoint is `POST /api/v1/operations/ip-geo/lookup`; it is for support/debugging, accepts only `ip_address`, requires platform permissions, writes an audit event, and lets the backend policy decide provider selection and canonical-store persistence. The admin logs page uses the same operations surface for real-time geo lookup and request-correlation drilldown. The provider registry belongs in `system_config_versions.serving.geo_provider`; provider API keys or bearer tokens stay in deployment secrets and are referenced by `api_key_env_var`.
 
@@ -129,6 +151,20 @@ Redis serving settings:
 - `REDIS_AUTH_FAILURE_ALERTING_CONFIGURED`: set to `true` only after failed-auth/connectivity alerting is configured for the managed Redis service.
 - `CRON_EVENT_CONSUME_BATCH_SIZE`: max events consumed per Cron run.
 - `CRON_LOCK_TTL_SECONDS`: Redis lock TTL used to prevent concurrent Cron runs.
+
+Asset snapshot runtime settings:
+
+- `ASSET_S3_MAX_READ_BYTES`: maximum source object bytes read by the snapshot worker; staging/prod validation requires at least `209715200`.
+- `ASSET_S3_SNAPSHOT_CACHE_CONTROL`: cache policy applied only to generated snapshot objects.
+- `ASSET_S3_SERVER_SIDE_ENCRYPTION`: empty, `AES256`, or `aws:kms`, according to storage-provider support.
+- `CRON_ASSET_SNAPSHOT_BATCH_SIZE`: maximum durable snapshot jobs leased per Cron invocation.
+- `CRON_ASSET_SNAPSHOT_LEASE_SECONDS`: lease duration before an interrupted job can be reclaimed.
+- `CRON_ASSET_SNAPSHOT_MAX_ATTEMPTS`: terminal failure threshold for retryable processing errors.
+- `CRON_ASSET_SNAPSHOT_RETRY_BACKOFF_SECONDS`: base exponential retry delay.
+- `CRON_ASSET_SNAPSHOT_FFMPEG_BINARY`: absolute Windows path or executable name for FFmpeg.
+- `CRON_ASSET_SNAPSHOT_FFMPEG_TIMEOUT_SECONDS`: hard timeout for each video frame extraction.
+
+Before deployment, verify `extension_loaded('gd')`, `function_exists('imagewebp')`, and `ffmpeg -version` under the same PHP/service account used by Apache and Cron calls. The Cron status response must list `asset-snapshot-generate`.
 
 IP geo business configuration:
 

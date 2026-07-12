@@ -25,7 +25,13 @@ interface OAuthTokenRepositoryInterface
     ): int;
 
     /** @return array<string, mixed>|null */
-    public function consumeAuthorizationCode(string $codeHash, DateTimeImmutable $now): ?array;
+    public function consumeAuthorizationCode(
+        string $codeHash,
+        int $clientId,
+        string $redirectUri,
+        string $codeChallenge,
+        DateTimeImmutable $now,
+    ): ?array;
 
     public function revokeAuthorizationCode(string $codeHash, DateTimeImmutable $now): bool;
 
@@ -51,11 +57,20 @@ interface OAuthTokenRepositoryInterface
         DateTimeImmutable $expiresAt,
     ): int;
 
-    /** @return array<string, mixed>|null */
+    /**
+     * Implementations must serialize a usable rotation candidate when called inside
+     * an active transaction, before any successor token is inserted.
+     *
+     * @return array<string, mixed>|null
+     */
     public function findUsableRefreshToken(string $refreshTokenHash, DateTimeImmutable $now): ?array;
 
-    public function rotateRefreshToken(int $oldRefreshTokenId, int $newRefreshTokenId, DateTimeImmutable $now): void;
+    public function rotateRefreshToken(int $oldRefreshTokenId, int $newRefreshTokenId, DateTimeImmutable $now): bool;
 
+    /**
+     * Marks a known token as reused and atomically revokes its refresh-token family
+     * together with every access token issued for that family.
+     */
     public function markRefreshTokenReuse(string $refreshTokenHash, DateTimeImmutable $now): bool;
 
     public function revokeAccessToken(string $accessTokenHash, DateTimeImmutable $now): bool;

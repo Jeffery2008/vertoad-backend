@@ -8,12 +8,16 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use VertoAD\Domain\Assets\CreativeAsset;
 use VertoAD\Http\Auth\RequestUserContext;
+use VertoAD\Service\Assets\AssetPublicUrlResolver;
 use VertoAD\Service\Assets\AssetUploadService;
 use VertoAD\Service\Assets\AssetValidationException;
 
 final readonly class ConfirmAssetUploadAction
 {
-    public function __construct(private AssetUploadService $service)
+    public function __construct(
+        private AssetUploadService $service,
+        private AssetPublicUrlResolver $publicUrls,
+    )
     {
     }
 
@@ -85,6 +89,7 @@ final readonly class ConfirmAssetUploadAction
             'uploader_user_id' => $asset->uploaderUserId,
             'type' => $asset->type->value,
             'object_key' => $asset->objectKey,
+            'source_url' => $this->publicUrls->urlFor($asset->objectKey),
             'content_type' => $asset->contentType,
             'byte_size' => $asset->byteSize,
             'width' => $asset->width,
@@ -92,6 +97,16 @@ final readonly class ConfirmAssetUploadAction
             'duration_seconds' => $asset->durationSeconds,
             'checksum' => $asset->checksum,
             'status' => $asset->status->value,
+            'snapshot_status' => $asset->snapshotStatus->value,
+            'snapshot_png_url' => $asset->snapshotPngObjectKey === null
+                ? null
+                : $this->publicUrls->urlFor($asset->snapshotPngObjectKey),
+            'snapshot_webp_url' => $asset->snapshotWebpObjectKey === null
+                ? null
+                : $this->publicUrls->urlFor($asset->snapshotWebpObjectKey),
+            'thumbnail_webp_url' => $asset->thumbnailWebpObjectKey === null
+                ? null
+                : $this->publicUrls->urlFor($asset->thumbnailWebpObjectKey),
         ];
     }
 

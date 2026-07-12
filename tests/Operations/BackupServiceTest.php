@@ -56,10 +56,65 @@ final class BackupServiceTest extends TestCase
         self::assertSame('operations.backup.restore_queued', $audit->entries[0]->action);
         self::assertSame('Scheduled staging restore drill', $audit->entries[0]->metadata['reason'] ?? null);
         self::assertSame('restore_fixed_id', $service->list('restore')['items'][0]['job_id']);
+        $jobs->save($this->completedBackup(id: 'backup_other_id'));
 
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage('restore_already_queued');
-        $service->queueRestore('backup_source_id', 'backup_source_id', 'Another staging restore drill', 9, 'req-two');
+        $service->queueRestore('backup_other_id', 'backup_other_id', 'Another staging restore drill', 9, 'req-two');
+    }
+
+    public function testFailedRestoreCanBeRetriedWithoutOverwritingItsAuditMetadata(): void
+    {
+        $sequence = 0;
+        [$service, $jobs, $audit] = $this->service(id: static function (string $prefix) use (&$sequence): string {
+            return $prefix . '_retry_' . ++$sequence;
+        });
+        $jobs->save($this->completedBackup());
+        $first = $service->queueRestore(
+            'backup_source_id',
+            'backup_source_id',
+            'First scheduled restore drill',
+            9,
+            'req-first-restore',
+        );
+        $jobs->save(new BackupJob(
+            jobId: $first->jobId,
+            jobType: $first->jobType,
+            sourceBackupId: $first->sourceBackupId,
+            status: 'failed',
+            requestedByUserId: $first->requestedByUserId,
+            requestId: $first->requestId,
+            environment: $first->environment,
+            reason: $first->reason,
+            manifestObjectKey: $first->manifestObjectKey,
+            manifestSha256: $first->manifestSha256,
+            mysqlObjectKey: $first->mysqlObjectKey,
+            mysqlSha256: $first->mysqlSha256,
+            configObjectKey: $first->configObjectKey,
+            evidenceObjectKey: null,
+            objectCount: 0,
+            byteCount: 0,
+            errorMessage: 'interrupted after preflight',
+            createdAt: $first->createdAt,
+            startedAt: new DateTimeImmutable('2026-07-10T10:01:00Z'),
+            completedAt: new DateTimeImmutable('2026-07-10T10:02:00Z'),
+        ));
+
+        $retry = $service->queueRestore(
+            'backup_source_id',
+            'backup_source_id',
+            'Retry scheduled restore drill',
+            10,
+            'req-retry-restore',
+        );
+
+        self::assertSame('restore_retry_2', $retry->jobId);
+        self::assertSame('queued', $retry->status);
+        self::assertSame('failed', $jobs->find('restore_retry_1')?->status);
+        self::assertSame('req-first-restore', $jobs->find('restore_retry_1')?->requestId);
+        self::assertSame('First scheduled restore drill', $jobs->find('restore_retry_1')?->reason);
+        self::assertSame('interrupted after preflight', $jobs->find('restore_retry_1')?->errorMessage);
+        self::assertSame(2, count($audit->entries));
     }
 
     #[DataProvider('invalidRestoreProvider')]
@@ -163,10 +218,10 @@ final class BackupServiceTest extends TestCase
         ];
     }
 
-    private function completedBackup(string $status = 'completed'): BackupJob
+    private function completedBackup(string $status = 'completed', string $id = 'backup_source_id'): BackupJob
     {
         return new BackupJob(
-            jobId: 'backup_source_id',
+            jobId: $id,
             jobType: 'backup',
             sourceBackupId: null,
             status: $status,
@@ -174,11 +229,11 @@ final class BackupServiceTest extends TestCase
             requestId: 'req-source',
             environment: 'staging',
             reason: null,
-            manifestObjectKey: $status === 'completed' ? 'backups/backup_source_id/manifest.json' : null,
+            manifestObjectKey: $status === 'completed' ? 'backups/' . $id . '/manifest.json' : null,
             manifestSha256: $status === 'completed' ? str_repeat('b', 64) : null,
-            mysqlObjectKey: $status === 'completed' ? 'backups/backup_source_id/mysql.sql' : null,
+            mysqlObjectKey: $status === 'completed' ? 'backups/' . $id . '/mysql.sql' : null,
             mysqlSha256: $status === 'completed' ? str_repeat('a', 64) : null,
-            configObjectKey: $status === 'completed' ? 'backups/backup_source_id/configuration.json' : null,
+            configObjectKey: $status === 'completed' ? 'backups/' . $id . '/configuration.json' : null,
             evidenceObjectKey: null,
             objectCount: 2,
             byteCount: 200,
