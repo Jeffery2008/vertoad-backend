@@ -151,7 +151,7 @@ jobs:
           git diff --cached --quiet
           while IFS= read -r entry; do
             case "$entry" in
-              '?? .user.ini'|'?? storage') ;;
+              '?? .user.ini'|'?? public/.user.ini'|'?? storage') ;;
               '') ;;
               *) echo "unexpected working-tree entry: $entry" >&2; exit 1 ;;
             esac
