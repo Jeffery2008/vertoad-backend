@@ -105,7 +105,7 @@ final class CorsMiddlewareTest extends TestCase
             $this->request('OPTIONS', '/api/v1/campaigns', [
                 'Origin' => 'http://localhost:5173',
                 'Access-Control-Request-Method' => 'PATCH',
-                'Access-Control-Request-Headers' => 'Content-Type, Authorization, X-Request-Id, content-type',
+                'Access-Control-Request-Headers' => 'Content-Type, Authorization, X-Request-Id, CF-Turnstile-Token, content-type',
             ]),
             $this->handler($handled),
         );
@@ -115,7 +115,7 @@ final class CorsMiddlewareTest extends TestCase
         self::assertSame('http://localhost:5173', $response->getHeaderLine('Access-Control-Allow-Origin'));
         self::assertStringContainsString('PATCH', $response->getHeaderLine('Access-Control-Allow-Methods'));
         self::assertSame(
-            'content-type, authorization, x-request-id',
+            'content-type, authorization, x-request-id, cf-turnstile-token',
             $response->getHeaderLine('Access-Control-Allow-Headers'),
         );
         self::assertSame('600', $response->getHeaderLine('Access-Control-Max-Age'));

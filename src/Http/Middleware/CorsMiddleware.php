@@ -21,6 +21,7 @@ final class CorsMiddleware implements MiddlewareInterface
         'content-language',
         'content-type',
         'x-request-id',
+        'cf-turnstile-token',
         'x-turnstile-token',
     ];
     private const PUBLIC_PATH_PREFIXES = ['/api/v1/ads/'];
